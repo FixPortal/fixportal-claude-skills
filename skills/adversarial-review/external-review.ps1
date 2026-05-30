@@ -1,0 +1,134 @@
+#Requires -Version 7
+<#
+.SYNOPSIS
+    Cross-vendor reviewer for the adversarial-review skill.
+
+.DESCRIPTION
+    Runs the GitHub Copilot CLI headless so a non-Claude model (via the user's
+    GitHub Copilot subscription) can act as an independent code reviewer.
+
+    The Copilot agent is constrained to a read-only analysis call: the shell
+    and write tools are denied, built-in MCP servers are disabled, and
+    repository custom instructions are not loaded. File access is whitelisted
+    (--add-dir) to only the directories holding the input files. The agent can
+    read those inputs and emit text -- nothing is executed and nothing is
+    modified.
+
+    The Copilot CLI rejects plain-text files as --attachment ("native
+    document" only), so inputs are delivered as files the model reads with its
+    file tool.
+
+    Used by ~/.claude/skills/adversarial-review for Phase 1 (blind review,
+    -DiffPath only) and Phase 2 (cross-examination, -DiffPath and
+    -FindingsPath).
+
+.PARAMETER Instruction
+    The review or cross-examination instruction passed to the model. Typically
+    supplied as (Get-Content brief.txt -Raw).
+
+.PARAMETER DiffPath
+    Path to the diff file under review.
+
+.PARAMETER FindingsPath
+    Optional. Path to the pooled-findings file -- supplied in the Phase 2
+    cross-examination round, omitted in Phase 1.
+
+.PARAMETER Model
+    Copilot model id. Must be a non-Claude model so the review adds genuine
+    cross-vendor diversity to the panel.
+
+.OUTPUTS
+    The model's review text on stdout. Non-zero exit code on failure.
+
+.EXAMPLE
+    pwsh -NoProfile -File external-review.ps1 `
+        -Instruction (Get-Content brief.txt -Raw) `
+        -DiffPath review-diff.txt -Model gpt-5.4
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $Instruction,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $DiffPath,
+
+    [string] $FindingsPath,
+
+    [string] $Model = 'gpt-5.4'
+)
+
+if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) {
+    Write-Error 'GitHub Copilot CLI not found on PATH. Install with: npm install -g @github/copilot'
+    exit 2
+}
+
+# Collect the input files: the diff always, the pooled findings in Phase 2.
+$inputPaths = @($DiffPath)
+if ($FindingsPath) { $inputPaths += $FindingsPath }
+
+$files = foreach ($path in $inputPaths) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Write-Error "Input file not found: $path"
+        exit 2
+    }
+    (Resolve-Path -LiteralPath $path).Path
+}
+
+# Whitelist only the directories that hold the input files.
+$dirArgs = $files |
+    ForEach-Object { Split-Path -Parent $_ } |
+    Sort-Object -Unique |
+    ForEach-Object { '--add-dir'; $_ }
+
+# The model reads the inputs itself; spell out which files and forbid wandering.
+$fileList = ($files | ForEach-Object { "- $_" }) -join "`n"
+$prompt = @"
+$Instruction
+
+--- FILES TO REVIEW ---
+Read each of the following files in full before you respond. They contain the
+diff to review (and, in a cross-examination round, the pooled findings). Work
+only from these files; do not look at anything else.
+$fileList
+"@
+
+# Run from a throwaway working directory for cwd hygiene.
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ('adv-review-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+
+# -p                  headless, single-shot run (exits when done)
+# --allow-all-tools   required by the CLI for non-interactive mode...
+# --deny-tool         ...but shell + write are denied (deny takes precedence),
+#                     leaving a read-only analysis call with no side effects.
+# --disable-builtin-mcps / --no-custom-instructions  close the repo/MCP
+#                     side-channels so the review depends only on the inputs.
+$copilotArgs = @(
+    '-p', $prompt
+    '--model', $Model
+    '-C', $scratch
+    '--allow-all-tools'
+    '--deny-tool=shell'
+    '--deny-tool=write'
+    '--disable-builtin-mcps'
+    '--no-custom-instructions'
+    '--no-color'
+    '--silent'
+) + $dirArgs
+
+try {
+    $captured = (& copilot @copilotArgs 2>&1 | Out-String)
+    $exitCode = $LASTEXITCODE
+}
+finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($exitCode -ne 0) {
+    Write-Error ("copilot exited with code {0}.`n{1}" -f $exitCode, $captured)
+    exit $exitCode
+}
+
+($captured ?? '').TrimEnd()
