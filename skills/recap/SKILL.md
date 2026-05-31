@@ -12,6 +12,12 @@ description: Use when the user runs /recap, asks for a summary of recent work an
 up to?". It is one operation with no modes: the user asks, you give a concise
 answer.
 
+"What is next" is split by **actionability**, not lumped into one list:
+**Actionable Now** (startable this session), **Deferred** (real but parked or
+blocked), and **Information Only** (state and context, no action). The split is
+the whole value of the digest — it keeps status noise out of the list the user
+actually acts on.
+
 Before gathering, it does a quick, **safe** housekeeping pass on the local repo
 — pruning only branches and worktrees whose content is provably preserved
 elsewhere, never touching uncommitted, unpushed, or stashed work (step 2).
@@ -131,10 +137,12 @@ context and HEAD has not moved since, the marker is known — no file read neede
   changes.
 
 If there are no commits in `<marker>..HEAD` and no uncommitted changes,
-**re-display the last journal entry's digest** — its `## ` heading line plus
-the **Done since last recap** and **Up next** sections (skip `<details>`) —
-prefaced with a one-line note that nothing has moved, e.g. "No new work since
-last recap — here's the last one:". Then stop; write nothing to the journal.
+**re-display the last journal entry's digest** — everything from its `## `
+heading line down to (but not including) `<details>`, whatever forward sections
+that entry happens to carry (older entries predate the three-bucket split and
+may still show a single **Up next**; render them as-is) — prefaced with a
+one-line note that nothing has moved, e.g. "No new work since last recap —
+here's the last one:". Then stop; write nothing to the journal.
 If the SessionStart hook has already loaded the latest digest into your
 context, render that; otherwise read the journal file. If the journal is
 genuinely empty (first-ever recap on a branch with no commits past the
@@ -163,12 +171,49 @@ never an error.
 - **`[memory]`** — relevant `project` and `feedback` memories already in your
   context. No file read needed.
 
+**Then classify every candidate into one of three buckets.** This split is the
+whole point of the digest — do it deliberately, item by item. The bucket is
+about *actionability*, independent of which source the item came from:
+
+- **Actionable Now** — work you could pick up **this session with nothing
+  blocking it**: a concrete next step, an unblocked `TODO`/`FIXME`, review
+  feedback to act on, the next phase of a plan, an open PR that needs *your*
+  action (address comments, merge). If you could literally start it now, it
+  goes here.
+- **Deferred** — real, intended work that is **parked or blocked**: waiting on
+  someone else (handed off to another agent, awaiting the user's review/red-pen),
+  gated behind another task, scheduled for a later phase, or explicitly
+  postponed. Not noise — just not startable yet.
+- **Information Only** — state and context that carries **no action**: a
+  clean/in-sync working tree, no open PR, a decision already recorded as closed
+  ("don't reopen"), background facts about where things stand. This is the
+  bucket that keeps status out of the action list.
+
+When torn between Actionable Now and Deferred, ask "could I literally start this
+right now?" — if no, it is **Deferred**. A blocked item is never Actionable Now;
+a pure status fact is never an action.
+
 ### 6. Answer the user
 
-Give the digest: the heading line (format below) plus the **Done since last
-recap** and **Up next** sections — nothing from inside `<details>`. Cap each
-section at 3–7 bullets. This is what the user asked for: lead with it, keep it
-tight, and do not narrate the steps you took.
+Give the digest: the heading line (format below), then **Done since last
+recap**, then the three forward-looking sections — **Actionable Now**,
+**Deferred**, **Information Only** — nothing from inside `<details>`. This is
+what the user asked for: lead with it, keep it tight, and do not narrate the
+steps you took.
+
+- **Actionable Now** is a **numbered** list in recommended order: put whatever
+  unblocks or is a prerequisite for other items first, then order by leverage.
+  This is the section the user acts on — it leads the forward-looking part.
+- **Deferred** and **Information Only** are bulleted (`-`).
+- **Render all three headings every time.** If a bucket is empty, show it with a
+  single `- none` bullet rather than dropping the heading — the `- none`
+  placeholder uses a dash even under the otherwise-numbered Actionable Now.
+- Keep every forward-looking entry tagged with its source: `[code] [doc] [pr]
+  [memory]`. An entry drawing on more than one source may carry more than one
+  tag (e.g. `[pr] [doc]`).
+- Cap each section at 7 entries; push overflow into `<details>`. Keep
+  **Information Only** the tersest — it is the section most likely to become
+  noise.
 
 End the digest with a single confirmation line that you have re-read and will
 follow the global instructions — e.g. `✓ Re-read global CLAUDE.md — standing
@@ -200,8 +245,14 @@ remark, no commit.
 **Done since last recap**
 - 3–7 concise bullets
 
-**Up next**
-- 3–7 bullets, each tagged with its source: [code] [doc] [pr] [memory]
+**Actionable Now**
+1. numbered, recommended order; each tagged [code] [doc] [pr] [memory]
+
+**Deferred**
+- parked or blocked work; each tagged [code] [doc] [pr] [memory]
+
+**Information Only**
+- state/context, no action; each tagged [code] [doc] [pr] [memory]
 
 <details><summary>Detail</summary>
 
@@ -217,6 +268,9 @@ Commit list, file-change stats, caveats — the fuller record.
   recap time and becomes the next run's marker.
 - Timestamp the heading with local system time.
 - Cap each digest section at 7 bullets; everything else goes inside `<details>`.
+- Always write all three forward sections (**Actionable Now**, **Deferred**,
+  **Information Only**); an empty bucket gets a single `- none` bullet, never a
+  dropped heading. Actionable Now is numbered; the other two are bulleted.
 - When an entry is written and uncommitted work also exists, flag it
   `(uncommitted)` in the digest and note the files in `<details>`.
 
@@ -238,8 +292,16 @@ Commit list, file-change stats, caveats — the fuller record.
   memories — each is skipped silently.
 - **Writing into the user's repo.** The journal lives under `~/.claude/recap/`,
   never in the repository.
-- **A wall of text.** The digest is capped at 3–7 bullets per section; detail
-  belongs inside `<details>`.
+- **A wall of text.** Each section is capped at 7 bullets; detail belongs inside
+  `<details>`. Keep **Information Only** the tersest.
+- **Leaking status into Actionable Now.** A clean/in-sync tree, "no open PR", or
+  a closed-and-don't-reopen decision is **Information Only**, never an action.
+  Work that is blocked or handed off is **Deferred**, never Actionable Now. If
+  you cannot literally start it this session, it does not belong in Actionable
+  Now. Misfiling here is exactly the noise the split exists to remove.
+- **Collapsing the split back to one list, or dropping empty buckets.** Always
+  render all three forward headings; an empty one shows `- none`. Do not revert
+  to a single "Up next".
 - **Bare "nothing new" answer.** When `<marker>..HEAD` is empty, re-render the
   last entry's digest — the user is asking where things stand, not whether the
   marker has advanced.
