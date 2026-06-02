@@ -12,16 +12,6 @@
 
   "reviewers": [
     {
-      "id": "O",
-      "label": "Claude Opus",
-      "wrapper": "claude",
-      "model": "opus",
-      "vendor": "anthropic",
-      "effort": "high",
-      "repoAccess": true,
-      "enabled": true
-    },
-    {
       "id": "S",
       "label": "Claude Sonnet",
       "wrapper": "claude",
@@ -29,6 +19,16 @@
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "id": "G",
+      "label": "Gemini",
+      "wrapper": "gemini",
+      "model": "gemini-3.1-pro-preview",
+      "vendor": "google",
+      "effort": "high",
+      "repoAccess": false,
       "enabled": true
     },
     {
@@ -45,14 +45,14 @@
 
   "alternates": [
     {
-      "_comment": "Not in the default panel. Enable to add a fourth vendor or to replace a reviewer above. Do NOT pair a Gemini reviewer with a Gemini-backed host (e.g. an Antigravity/`agy` adjudication) acting as judge over the same finding — same-vendor reviewer-and-judge re-correlates the error the panel exists to decorrelate.",
-      "id": "G",
-      "label": "Gemini",
-      "wrapper": "gemini",
-      "model": "gemini-3.1-pro-preview",
-      "vendor": "google",
+      "_comment": "Opus is reserved as judge (Phase 3) and verifier — not a blind reviewer. Do NOT pair a Gemini reviewer with a Gemini-backed host adjudicating the same finding — same-vendor reviewer-and-judge re-correlates the error the panel exists to decorrelate.",
+      "id": "O",
+      "label": "Claude Opus",
+      "wrapper": "claude",
+      "model": "opus",
+      "vendor": "anthropic",
       "effort": "high",
-      "repoAccess": false,
+      "repoAccess": true,
       "enabled": false
     }
   ],
