@@ -1,0 +1,18 @@
+This is an AUDIT of existing code, not a review of a change. The diff shows
+the current state of the code with every line marked as an addition — but most
+of it is pre-existing, and some is inherited from an upstream project. Do not
+treat code as defective merely because it is old, unfashionable, or not how
+you would write it today. Calibrate severity to defects that are genuinely
+wrong or hazardous as the code stands now; ignore legacy style and design
+choices that are working as intended.
+
+Before raising anything, separate "this is wrong" from "this is not how I would
+write it". The following are NOT defects and must not be reported as such:
+- code that is unidiomatic, verbose, or dated but behaves correctly;
+- tolerance of out-of-spec / malformed input that is a deliberate robustness
+  choice (lenient parsing, first-match-wins, null-coercion) rather than a bug;
+- defensive fallbacks and guards that fire on inputs the system never produces;
+- a design you would have built differently but which honours its own contract.
+For every defect you do raise, name the specific input, caller, or call path
+that makes it go wrong as the code stands. If you cannot, it is an observation,
+not a finding — drop it.

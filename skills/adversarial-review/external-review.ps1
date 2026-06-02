@@ -19,8 +19,9 @@
     file tool.
 
     Used by ~/.claude/skills/adversarial-review for Phase 1 (blind review,
-    -DiffPath only) and Phase 2 (cross-examination, -DiffPath and
-    -FindingsPath).
+    -DiffPath) and Phase 2 (cross-examination, -DiffPath and -FindingsPath).
+    Either phase may also pass -ContextPath to supply repo files the diff
+    depends on but does not contain, since this reviewer never sees the repo.
 
 .PARAMETER Instruction
     The review or cross-examination instruction passed to the model. Typically
@@ -32,6 +33,14 @@
 .PARAMETER FindingsPath
     Optional. Path to the pooled-findings file -- supplied in the Phase 2
     cross-examination round, omitted in Phase 1.
+
+.PARAMETER ContextPath
+    Optional. One or more repository files supplied as read-only BACKGROUND --
+    interfaces, contracts, and callers the diff refers to but does not contain.
+    This reviewer never sees the repository, so without context it withholds
+    ("needs evidence") on any finding whose mechanism lives outside the diff.
+    Context files are labelled as not-under-review and are not a source of
+    findings in their own right.
 
 .PARAMETER Model
     Copilot model id. Must be a non-Claude model so the review adds genuine
@@ -57,6 +66,8 @@ param(
 
     [string] $FindingsPath,
 
+    [string[]] $ContextPath,
+
     [string] $Model = 'gpt-5.4'
 )
 
@@ -65,17 +76,30 @@ if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
-# Collect the input files: the diff always, the pooled findings in Phase 2.
-$inputPaths = @($DiffPath)
-if ($FindingsPath) { $inputPaths += $FindingsPath }
+# The diff (always) and the pooled findings (Phase 2) are the material under
+# review. The optional context files are repo background the cross-vendor
+# reviewer would otherwise be blind to -- it never sees the repository.
+$reviewPaths  = @($DiffPath)
+if ($FindingsPath) { $reviewPaths += $FindingsPath }
+$contextPaths = @($ContextPath | Where-Object { $_ })
 
-$files = foreach ($path in $inputPaths) {
+$reviewFiles = foreach ($path in $reviewPaths) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         Write-Error "Input file not found: $path"
         exit 2
     }
     (Resolve-Path -LiteralPath $path).Path
 }
+
+$contextFiles = foreach ($path in $contextPaths) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Write-Error "Context file not found: $path"
+        exit 2
+    }
+    (Resolve-Path -LiteralPath $path).Path
+}
+
+$files = @($reviewFiles) + @($contextFiles)
 
 # Whitelist only the directories that hold the input files.
 $dirArgs = $files |
@@ -84,16 +108,31 @@ $dirArgs = $files |
     ForEach-Object { '--add-dir'; $_ }
 
 # The model reads the inputs itself; spell out which files and forbid wandering.
-$fileList = ($files | ForEach-Object { "- $_" }) -join "`n"
+$reviewList = ($reviewFiles | ForEach-Object { "- $_" }) -join "`n"
 $prompt = @"
 $Instruction
 
 --- FILES TO REVIEW ---
 Read each of the following files in full before you respond. They contain the
-diff to review (and, in a cross-examination round, the pooled findings). Work
-only from these files; do not look at anything else.
-$fileList
+diff to review (and, in a cross-examination round, the pooled findings). These
+are the material under review.
+$reviewList
 "@
+
+if ($contextFiles) {
+    $contextList = ($contextFiles | ForEach-Object { "- $_" }) -join "`n"
+    $prompt += @"
+
+
+--- REPO CONTEXT (read-only background, NOT under review) ---
+The following files are supporting context from the repository: interfaces,
+contracts, and callers the diff refers to but does not contain. Use them to
+judge whether a defect is real -- does the caller exist, does the contract
+permit null, is the type reachable. Do NOT raise findings against these files;
+they are background, not the change under review.
+$contextList
+"@
+}
 
 # Run from a throwaway working directory for cwd hygiene.
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('adv-review-' + [Guid]::NewGuid().ToString('N'))

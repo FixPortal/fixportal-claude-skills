@@ -1,0 +1,66 @@
+{
+  "_comment": "Adversarial-review panel composition, as data. The driver (run-review.ps1 / run_review.py) reads this to know which reviewers to run, with which wrapper, model, and reasoning effort. Swap or add reviewers HERE, not in code. INVARIANT: the active (enabled) reviewer set must span at least `minVendors` distinct vendors — uncorrelated error across vendors is the entire point of the panel. A panel of same-vendor reviewers is just self-review.",
+
+  "minVendors": 2,
+
+  "wrappers": {
+    "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction -DiffPath [-FindingsPath] [-ContextPath...] -Model, returning the review text on stdout and a non-zero exit on failure. `effort` and `repoAccess` are honoured only by wrappers that declare the matching parameter (-Effort / -RepoPath); the driver introspects each wrapper and silently omits a flag the wrapper does not support. Today only claude-review.ps1 exposes both — Copilot and Gemini CLIs do not surface a clean reasoning-effort flag, so `effort` is a no-op for them.",
+    "claude": "claude-review.ps1",
+    "copilot": "external-review.ps1",
+    "gemini": "gemini-review.ps1"
+  },
+
+  "reviewers": [
+    {
+      "id": "O",
+      "label": "Claude Opus",
+      "wrapper": "claude",
+      "model": "opus",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "id": "S",
+      "label": "Claude Sonnet",
+      "wrapper": "claude",
+      "model": "sonnet",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "id": "X",
+      "label": "GPT-5.4 (via GitHub Copilot)",
+      "wrapper": "copilot",
+      "model": "gpt-5.4",
+      "vendor": "openai",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": true
+    }
+  ],
+
+  "alternates": [
+    {
+      "_comment": "Not in the default panel. Enable to add a fourth vendor or to replace a reviewer above. Do NOT pair a Gemini reviewer with a Gemini-backed host (e.g. an Antigravity/`agy` adjudication) acting as judge over the same finding — same-vendor reviewer-and-judge re-correlates the error the panel exists to decorrelate.",
+      "id": "G",
+      "label": "Gemini",
+      "wrapper": "gemini",
+      "model": "gemini-3.1-pro-preview",
+      "vendor": "google",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": false
+    }
+  ],
+
+  "roles": {
+    "_comment": "Judgment roles the host runs after the driver's blind+cross-examine spine. Under Claude Code these may instead run as in-process Agent-tool calls; the driver and SKILL.md describe both paths. effort/repoAccess apply as above.",
+    "judge": { "wrapper": "claude", "model": "opus", "effort": "max", "repoAccess": true },
+    "verifier": { "wrapper": "claude", "model": "sonnet", "effort": "high", "repoAccess": true },
+    "synthesis": { "wrapper": "claude", "model": "opus", "effort": "high", "repoAccess": false }
+  }
+}

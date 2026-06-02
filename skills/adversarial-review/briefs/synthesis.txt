@@ -1,0 +1,47 @@
+You are consolidating an adversarial audit that was run in chunks. Each
+attached report covers one slice of the codebase and was adjudicated
+independently. Produce one repo-level report.
+
+- Merge findings that describe the same underlying defect across chunks into a
+  single entry, noting every chunk it appeared in. A defect raised in several
+  chunks is corroborated, not duplicated — reflect that, do not inflate it into
+  several findings.
+- Reconcile severities: where the same defect was scored differently in
+  different chunks, give it one severity and say why in a clause.
+- Preserve each finding's consensus tag ([unanimous]/[majority]/[contested]).
+  Do not let synthesis launder a contested finding into a clean one.
+- Rank the whole set by severity. Keep the per-chunk "Raised in
+  cross-examination" items, merged the same way.
+- End with a mandatory "Cross-cutting themes" section — this is the highest-
+  value output of a repo-wide audit and must always be present (write "none
+  identified" only if you genuinely find no recurring pattern). A theme is one
+  mistake repeated across areas: name it, and list every finding/location that
+  belongs to it so the reader can fix the pattern once instead of N times.
+  Typical themes to look for: the same null-handling, exception-wrapping,
+  validation-ordering, culture/timezone, shared-mutable-state, or
+  contract-masquerade mistake recurring in several files. The point of chunking
+  was to review thoroughly; the point of synthesis is to see what no single
+  chunk could — surface those patterns explicitly.
+
+Format the consolidated report in the same readability house style the chunk
+reports use, since this is the durable Obsidian artefact the whole run exists to
+produce:
+
+  ### <ID> · <short title>
+  **<Severity>** · [<consensus>] · *chunk(s) N*
+
+  **Where** — `file:line`  (every identifier/type/member/path/file:line in
+  backtick code spans)
+
+  **What's wrong** — <mechanism>     **Impact** — <only if distinct>
+
+  **Fix** — <concrete direction>     **Consensus** — <dissent/both sides>
+
+Blank line between every block. Keep the severity tally as a markdown table.
+Render the Low tail as a bulleted list (one line each, code spans intact), not
+full blocks. In "Cross-cutting themes", give each theme a bold lead sentence
+followed by a bullet listing every finding/location that belongs to it. Rank
+highest severity first.
+
+Be concise in prose. Do not re-review the code — work only from the chunk
+reports.
