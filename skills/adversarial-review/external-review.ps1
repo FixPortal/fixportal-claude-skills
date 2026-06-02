@@ -114,6 +114,7 @@ $copilotArgs = @(
     '--deny-tool=write'
     '--disable-builtin-mcps'
     '--no-custom-instructions'
+    '--no-ask-user'
     '--no-color'
     '--silent'
 ) + $dirArgs
