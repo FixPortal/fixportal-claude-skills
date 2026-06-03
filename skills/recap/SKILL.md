@@ -276,6 +276,11 @@ Commit list, file-change stats, caveats — the fuller record.
 
 ## Common mistakes
 
+- **Skipping the re-anchor (step 0).** Re-reading the global `CLAUDE.md` is the
+  first thing a recap does and the most likely thing to get rationalised away
+  ("it's already in context", "I know the rules"). Don't — read the file fresh
+  every time and end the digest with the one-line confirmation. The whole point
+  is to stop re-litigating settled, already-logged decisions.
 - **Over-eager tidying.** The step-2 tidy deletes only branches that are *both*
   provably merged (rebase-merge fingerprint / `git branch --merged`) *and*
   remote-gone, plus already-dead worktrees. A `gone` upstream alone is **not**
