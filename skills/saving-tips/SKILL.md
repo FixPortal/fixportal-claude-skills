@@ -11,6 +11,7 @@ Save useful explanations, commands, or workflow tips directly into a centralized
 ## Configuration
 *   **Obsidian Vault Root:** `<vault>` (Configure this to point to your local vault directory)
 *   **Note Filename:** `Tips & Tricks.md`
+*   Tips are organized in a **top-level per-agent folder** (e.g. `<vault>/Claude/`, `<vault>/Antigravity/`). Do **not** nest under a project folder such as `Acme`.
 
 ## Procedure
 
