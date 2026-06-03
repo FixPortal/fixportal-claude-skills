@@ -77,6 +77,23 @@ New projects default to NodaTime for date/time handling (see the date/time secti
 - Triage the first-run findings by silencing noisy/stylistic rules in `.editorconfig`
   (`= none`) rather than disabling the analyzer.
 
+#### Path handling (`Path.Join` vs `Path.Combine`)
+
+CodeQL `cs/path-combine` ("call to `Path.Combine` may silently drop its earlier
+arguments") fires because `Path.Combine` discards every segment before any
+argument that is **rooted** (absolute). The fix is contextual — do not blanket
+find/replace `Combine`→`Join`; they diverge exactly when a later arg is rooted,
+and `Combine` throws on `null` where `Join` quietly concatenates.
+
+- **Default to `Path.Join`** for plain concatenation of fragments you control. It
+  inserts one separator and never reinterprets a rooted later segment, so it can't
+  silently drop earlier parts — and it clears the rule.
+- **Keep `Path.Combine` deliberately** only when you either (a) *want* the
+  rooted-wins behaviour (honouring a caller-supplied absolute override), or
+  (b) guard the inputs first — `if (Path.IsPathRooted(segment)) throw new
+  ArgumentException(...)` — making the relative-path contract explicit. In both
+  cases the finding is a justified dismiss, not a fix.
+
 ### Resource Files
 
 The following files are copied into the new solution. All are source-controlled in the `.claude` repo under `~/.claude/resources/`:

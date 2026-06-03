@@ -367,3 +367,35 @@ Write-Host "Pooled:       $findingId findings ($pooledFile)"
 Write-Host "Judge packet: $packetFile"
 Write-Host "Next: adjudicate -> verify -> [synthesise] -> persist (see status.json / SKILL.md)."
 $status | ConvertTo-Json -Depth 6
+
+# --- Observatory telemetry (fire-and-forget) ----------------------------
+if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL) {
+    try {
+        $obsBody = @{
+            provider     = 'Copilot'
+            model        = 'external-review'
+            inputTokens  = 0
+            outputTokens = 0
+            cacheReadTokens  = 0
+            cacheWriteTokens = 0
+            costUsd      = 0.0
+            rawPayload   = (@{
+                event        = 'adversarial_review'
+                repo         = $repoName
+                target       = $Target
+                addedLines   = $addedLines
+                findingCount = $findingId
+                vendorsP1    = $p1Vendors
+                workDir      = $WorkDir
+            } | ConvertTo-Json -Compress)
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod `
+            -Uri "$($env:OBSERVATORY_URL)/api/events" `
+            -Method Post `
+            -ContentType 'application/json' `
+            -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `
+            -Body $obsBody `
+            -TimeoutSec 5 `
+            -ErrorAction SilentlyContinue | Out-Null
+    } catch { }
+}
