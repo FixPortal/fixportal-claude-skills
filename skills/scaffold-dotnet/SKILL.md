@@ -46,7 +46,8 @@ New projects default to NodaTime for date/time handling (see the date/time secti
 
 - Add `NodaTime` and `NodaTime.Serialization.SystemTextJson` as `PackageVersion` entries in `Directory.Packages.props` (latest .NET 10-compatible release)
 - Add a `PackageReference` only to the projects that actually handle date/time — don't blanket-reference it in `Directory.Build.props`
-- Register `IClock` (`SystemClock.Instance`) in DI; never call `DateTime.UtcNow` or `SystemClock.Instance` statically
+- Register `IClock` (`SystemClock.Instance`) in DI; never call `DateTime.UtcNow` or `SystemClock.Instance` statically. For projects that don't use NodaTime, inject .NET `TimeProvider` instead — same rule, never read the clock statically
+- Wire NodaTime JSON serialization at scaffold time so the boundary plumbing is in place from the start — `ConfigureForNodaTime(DateTimeZoneProviders.Tzdb)` on the relevant `JsonSerializerOptions` (e.g. via `ConfigureHttpJsonOptions` / `AddJsonOptions`)
 - For projects using EF Core, also wire NodaTime persistence — see the `ef-core` skill
 
 ### Code Style and Analysis
@@ -92,13 +93,14 @@ When scaffolding or normalizing a .NET project, verify:
 
 - [ ] `src/` and `tests/` folders created; projects moved accordingly
 - [ ] Solution Items folder added with `Directory.Build.props`, `Directory.Packages.props`, `.editorconfig`, `.gitignore`
-- [ ] `.github/workflows/` folder created and added to Solution Items
+- [ ] `.github/workflows/` folder created and added to Solution Items — wire CI via the `scaffold-ci` skill (ci.yml, mutation.yml, CodeQL)
 - [ ] `.github/dependabot.yml` copied into place
 - [ ] All projects target `net10.0`
 - [ ] `Nullable` and `ImplicitUsings` enabled (via `Directory.Build.props`)
 - [ ] Central package management enabled via `Directory.Packages.props`
 - [ ] `SonarAnalyzer.CSharp` added as a `GlobalPackageReference`; `S3776` (cognitive complexity) at `warning`, non-blocking
-- [ ] NodaTime packages added to `Directory.Packages.props`; `IClock` registered in DI
+- [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
+- [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
 - [ ] `.editorconfig` copied from resources
 - [ ] `.gitignore` copied from resources

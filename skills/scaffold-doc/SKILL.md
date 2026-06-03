@@ -1,6 +1,6 @@
 ---
 name: scaffold-doc
-description: Use when authoring or normalizing a structured markdown document — a README, an audit or cost report, a technical note, a runbook, or any reference doc destined for a repo or the Obsidian vault. Triggers - write a README, draft an audit report, document this estate/system, "make a proper write-up", normalize this doc. Sibling of scaffold-dotnet / scaffold-ci for prose deliverables.
+description: Use when authoring or normalizing a structured markdown document — a README, an audit or cost report, a technical note, a runbook, or any reference doc destined for a repo or the Obsidian vault. Triggers - write a README, draft an audit report, document this estate/system, "make a proper write-up", normalize this doc.
 ---
 
 # Scaffold Doc
@@ -101,7 +101,7 @@ Confirm these are present; they rarely need teaching:
 
 - **Lead with the conclusion.** The executive summary opens with the headline number/finding and the *why*, then enumerates causes. Inverted pyramid, not a slow build.
 - **Right-align numeric columns** (`---:`) and give every data row a plain-English **"what it is" / "why"** column — never make the reader decode a bare identifier.
-- **Actions-taken ledger.** A table of what changed during the work (action · target · result), with deferred/opted-out items recorded too. Use status markers (🗑️ deleted, ✅ confirmed) for scannability.
+- **Actions-taken ledger.** A table of what changed during the work (action · target · result), with deferred/opted-out items recorded too. Use plain-text status markers (`[deleted]`, `[confirmed]`, `[deferred]`) for scannability — not emoji, per the house no-emoji rule.
 - **Priority-ordered recommendations**, biggest lever first.
 
 ## Document skeleton

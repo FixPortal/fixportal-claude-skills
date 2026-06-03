@@ -116,3 +116,10 @@ When converting a project to minimal APIs, verify:
 - [ ] Required packages added (`Microsoft.AspNetCore.OpenApi`, `Scalar.AspNetCore`)
 - [ ] Packages use central package management if `Directory.Packages.props` exists
 - [ ] Project builds successfully
+
+## Common Mistakes
+
+- **Removing `app.UseAuthorization()` when other middleware still needs it.** Only remove it if it was there *solely* for controllers; keep it when any auth is configured — and mind its order in the pipeline.
+- **Forgetting to register an endpoint class.** Every `Map{Name}Endpoints()` must be called in `Program.cs`, or that group's routes silently 404.
+- **Exposing OpenAPI/Scalar in production.** Keep `MapOpenApi()` / `MapScalarApiReference()` inside the `IsDevelopment()` guard — don't lift them out.
+- **Hardcoding .NET 10.** Package versions track the project's target framework; on a `net9.0` project use the latest `net9.0`-compatible `Microsoft.AspNetCore.OpenApi`.

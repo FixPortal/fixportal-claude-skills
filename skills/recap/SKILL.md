@@ -1,6 +1,6 @@
 ---
 name: recap
-description: Use when the user runs /recap, asks for a summary of recent work and what is next, or is resuming work after a break or context switch and needs to know where things stand. Works in any git repository.
+description: Use when the user runs /recap, asks for a summary of recent work and what is next, or is resuming work after a break or context switch and needs to know where things stand — not for ending a session (use /close for that). Requires a git repository.
 ---
 
 # Recap

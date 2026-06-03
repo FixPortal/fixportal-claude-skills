@@ -92,6 +92,11 @@ cache.GetOrSet(Arg.Any<string>(), Arg.Any<Func<CancellationToken, Fruit?>>())
     .Returns(expectedFruit);
 ```
 
+NSubstitute is for **unit** tests. In integration tests use real instances, not empty
+substitutes — substitute only the genuine external boundary. For time-dependent code,
+inject NodaTime `IClock` (or .NET `TimeProvider` where NodaTime isn't in play) and supply
+a fake/fixed clock in the test rather than reading `DateTime.UtcNow` / `SystemClock.Instance`.
+
 ### Brevity
 
 - Do not write ten tests where one will do

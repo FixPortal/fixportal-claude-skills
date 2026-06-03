@@ -15,5 +15,3 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   parked in `alternates`, Gemini active); the Codex/Antigravity copy keeps Opus
   active and warns against pairing a Gemini reviewer with an Antigravity/`agy`
   adjudication (same-vendor judge). Reconciling them would break one host.
-  *(Seeded from the baseline finding — confirm this is what you want; delete this
-  line if you'd rather the file sync.)*

@@ -17,6 +17,10 @@ concurrency, stale action pins, missing actionlint, a different mutation config.
 here is the exact house deltas, not generic best practice. Don't pad the scaffold with
 non-standard extras (see "Not house standard" below).
 
+**Before non-trivial CI/deploy changes, read `~/.claude/notes/deploy-and-ci-traps.md`** —
+it catalogues the GitHub Actions / ACA / CodeQL gotchas (concurrency-cancel semantics,
+CodeQL default-setup scope, stale action pins) that this scaffold's deltas exist to avoid.
+
 ## The five artifacts
 
 | Artifact | What | When it applies |
