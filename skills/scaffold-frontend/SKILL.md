@@ -1,6 +1,6 @@
 ---
 name: scaffold-frontend
-description: Use when creating a new frontend (Vite + React + TypeScript) project, or when applying standard frontend preferences to an existing one. Triggers include creating a new web UI, setting up Vite/React, scaffolding an SPA, adding or normalizing ESLint/Vitest config, or wiring static analysis (eslint-plugin-sonarjs) into a frontend. Sibling of scaffold-dotnet for the TypeScript/React side.
+description: Use when creating a new frontend (Vite + React + TypeScript) project, or when applying standard frontend preferences to an existing one. Triggers include creating a new web UI, setting up Vite/React, scaffolding an SPA, adding or normalizing ESLint/Vitest config, or wiring static analysis (eslint-plugin-sonarjs) into a frontend.
 ---
 
 # Scaffold Frontend
@@ -115,5 +115,5 @@ When scaffolding or normalizing a frontend, verify:
 - [ ] ESLint flat config with `typescript-eslint`, react-hooks, react-refresh
 - [ ] `eslint-plugin-sonarjs` added; full recommended set at `warn`; noise rules off; `eslint .` exits 0
 - [ ] cognitive-complexity gate on, cyclomatic-complexity off
-- [ ] Vitest + Testing Library + jsdom wired with `src/test/setup.ts`
+- [ ] Vitest + Testing Library + jsdom wired with `src/test/setup.ts`; `@vitest/coverage-v8` added with coverage thresholds in `vitest.config.ts`
 - [ ] All deps on latest release versions

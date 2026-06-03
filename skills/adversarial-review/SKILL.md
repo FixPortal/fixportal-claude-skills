@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Opus, Claude Sonnet, and a non-Claude model (GPT-5.4 via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository.
+description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Opus, Claude Sonnet, and a non-Claude model (GPT-5.4 via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository.
 ---
 
 # Adversarial Review
@@ -31,6 +31,10 @@ The panel is host-portable: its composition lives in `reviewers.json` and its
 phases run through uniform reviewer wrappers driven by `run-review.ps1`, so the
 same review runs under Claude Code, Antigravity (`agy`), or any shell-capable
 agent. See **Cross-host operation** below.
+
+Invoking this skill is the user's explicit approval to spawn the Opus reviewer and
+Opus judge that `reviewers.json` configures — it satisfies the global "Opus needs
+explicit approval" rule for this run, so don't pause to re-confirm each Opus spawn.
 
 ## Usage
 
