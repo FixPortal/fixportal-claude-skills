@@ -213,7 +213,12 @@ function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool
     $caps = (Get-Command $wrapper).Parameters.Keys
     $a = @('-Instruction', $instruction, '-DiffPath', $diffFile, '-Model', $r.model)
     if ($withFindings) { $a += @('-FindingsPath', $pooledFile) }
-    foreach ($c in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $c) }
+    # Pass context paths as ONE ';'-joined token, not repeated -ContextPath flags:
+    # the wrappers run via `pwsh -File` (below), and PowerShell's -File binder
+    # rejects repeated named flags ("specified more than once"). The wrappers split
+    # the token back on ';'.
+    $ctx = @($ContextPath | Where-Object { $_ })
+    if ($ctx) { $a += @('-ContextPath', ($ctx -join ';')) }
     if ($caps -contains 'Effort' -and $r.effort) { $a += @('-Effort', $r.effort) }
     if ($caps -contains 'RepoPath' -and $r.repoAccess) { $a += @('-RepoPath', $RepoPath) }
     , $a
