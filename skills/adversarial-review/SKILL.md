@@ -232,8 +232,13 @@ really are new.
 - **Reviewer X** — the Copilot wrapper. Write the Phase 1 brief to a file in
   the working directory first; the wrapper reads it with `Get-Content -Raw`.
   Invoke via `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist:
-  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath <key-file> [-ContextPath <key-file> …]`
-  The script pins `gpt-5.4`.
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>;<file3>"`
+  The script pins `gpt-5.4`. **Pass multiple context files as ONE `;`-joined
+  token** (`-ContextPath "a.cs;b.cs"`), never as repeated `-ContextPath` flags
+  and never as a bare PowerShell array: across the `pwsh -File` boundary the
+  binder rejects repeated flags ("specified more than once") and silently leaks
+  the second element of an array to the next positional parameter (`-FindingsPath`
+  / `-Model`), which corrupts the call. The wrapper splits the token on `;`.
 
   **Reviewer X never sees the repository** — unlike O and S, it works from the
   files you hand it. That blindness is the cross-vendor reviewer's main
@@ -285,7 +290,7 @@ the diff, and the pooled findings:
   files, the pooled findings passed as `-FindingsPath`. Pass the **same**
   `-ContextPath` files you gave it in Phase 1, so it can still check the
   mechanisms the diff does not show when it attacks the pooled findings:
-  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath <same key files as Phase 1>`
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ';'-joined files as Phase 1>"`
 
 ### 3. Phase 3 — adjudication
 
@@ -813,3 +818,15 @@ whole-repo runs.
 - **Leaving the findings in temp.** The working directory is transient. A run
   that ends without copying its reports to the Obsidian vault (§6) loses the
   whole review on the next temp cleanup — persist before you finish.
+- **Passing multiple `-ContextPath` files the wrong way across `pwsh -File`.**
+  PowerShell's `-File` argument binder does not accumulate repeated
+  `-ContextPath` flags (it errors "specified more than once") and does not split
+  a comma-joined token; a bare array variable (`-ContextPath $files`) silently
+  binds only the first element and leaks the rest to the next positional
+  parameter (`-FindingsPath` / `-Model`), so the reviewer reviews a context file
+  as material, or the model name becomes a file path and the call dies. Pass the
+  files as ONE `;`-joined token: `-ContextPath "a.cs;b.cs;c.cs"`. The wrappers
+  split on `;`. (In-process callers — e.g. `run-review.ps1` via the call operator
+  — may still pass a real array; the split is a no-op for single paths.) This bit
+  a whole-repo audit run: the first two reviewer calls reviewed a context file as
+  diff material before it was caught.

@@ -39,6 +39,13 @@
     interfaces, contracts, and callers the diff refers to but does not contain.
     Inlined into the prompt, clearly labelled as not-under-review.
 
+    Pass either a real array (in-process callers: -ContextPath $files) OR, when
+    invoking across a `pwsh -File` boundary, a SINGLE ';'-joined token
+    (-ContextPath "a.cs;b.cs;c.cs"). Do NOT use repeated -ContextPath flags
+    across `-File` -- PowerShell rejects them ("specified more than once"); and a
+    bare array variable silently collapses, leaking the second path to the next
+    positional parameter. The wrapper splits on ';' so both forms behave.
+
 .PARAMETER Model
     Gemini model id. Defaults to the CLI's current top model. Override to pin a
     different Gemini model. Must remain a Google model -- the point of this
@@ -99,7 +106,13 @@ if ($FindingsPath) {
     [void]$sb.AppendLine((Read-InputFile $FindingsPath 'Findings file'))
 }
 
-$contextPaths = @($ContextPath | Where-Object { $_ })
+# Accept context paths either as a real string[] (in-process callers) OR as a
+# single ';'-joined token. The latter is required when crossing a `pwsh -File`
+# boundary, where PowerShell's argument binder does NOT accumulate repeated
+# -ContextPath flags (it errors "specified more than once") and does NOT split a
+# comma-joined token -- so the in-process array collapses or leaks to the next
+# positional parameter. Splitting every element on ';' normalises both forms.
+$contextPaths = @($ContextPath | ForEach-Object { $_ -split ';' } | Where-Object { $_ })
 if ($contextPaths) {
     [void]$sb.AppendLine()
     [void]$sb.AppendLine('--- REPO CONTEXT (read-only background, NOT under review) ---')
