@@ -21,6 +21,7 @@ placeholders.
 | `scaffold-frontend` | Vite + React + TypeScript scaffolding with ESLint (sonarjs) and Vitest. |
 | `scaffold-minimal` | Convert ASP.NET controllers to minimal APIs with OpenAPI + Scalar. |
 | `scaffold-doc` | Author structured markdown docs (READMEs, audit reports, runbooks) in a consistent house style. |
+| `review-digest` | Mine PAST adversarial-review / reviewer-findings work across a folder of repos into a dated intelligence report — coverage ledger, recurring-theme digest, forward-looking risk ranking, and a hand-off scope brief (commits since each repo's last review + a paste-ready review prompt for another agent). Read-only; runs no reviews. |
 | `recap` | "Where did we get to?" — a fast, multi-source, journalled recap of work done and what's next, per repo/branch. |
 | `reflect` | An honest, evidence-scored audit of how well a Claude Code setup is actually being used. |
 
