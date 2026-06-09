@@ -151,6 +151,7 @@ $stdin = $sb.ToString()
 # no execute). Tools stay read-only; repo access is opt-in via -RepoPath.
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('claude-review-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+[void](& git -C $scratch init 2>&1)
 $errFile = Join-Path $scratch 'stderr.txt'
 
 $claudeArgs = @(
