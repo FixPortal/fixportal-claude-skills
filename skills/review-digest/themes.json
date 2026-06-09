@@ -1,0 +1,52 @@
+{
+  "store-before-validate": {
+    "aliases": ["commit before validate", "value set before validation", "store-then-validate"],
+    "home": "scaffold-dotnet default / reviewer brief",
+    "seen": ["service-e"]
+  },
+  "check-then-set-race": {
+    "aliases": ["non-atomic check-then-set", "missing CAS", "TOCTOU", "double-checked without interlocked"],
+    "home": "reviewer brief / analyzer rule",
+    "seen": ["service-a", "service-b", "service-c", "service-d"]
+  },
+  "swallowed-exception-aborts-loop": {
+    "aliases": ["exception swallowed", "fire-and-forget task never awaited", "loop aborts on one failure", "unobserved task fault"],
+    "home": "reviewer brief",
+    "seen": ["service-b", "service-a"]
+  },
+  "culture-parse": {
+    "aliases": ["locale-sensitive parse", "missing InvariantCulture", "culture-sensitive parsing"],
+    "home": "CLAUDE.md rule / analyzer rule",
+    "seen": ["service-e"]
+  },
+  "utcnow-not-injected-clock": {
+    "aliases": ["DateTime.UtcNow", "static clock read", "SystemClock.Instance", "now from static call"],
+    "home": "CLAUDE.md (already noted) / scaffold-dotnet",
+    "seen": ["service-b", "service-d"]
+  },
+  "secret-in-log": {
+    "aliases": ["credential leak in store", "plaintext credential", "unredacted secret", "password in message store"],
+    "home": "reviewer brief / analyzer rule",
+    "seen": ["service-d", "service-b"]
+  },
+  "anon-endpoint": {
+    "aliases": ["missing authz", "anonymous endpoint", "unauthenticated route", "over-posting DTO", "anonymous write endpoint", "anonymous read endpoint", "unauthenticated"],
+    "home": "reviewer brief / scaffold-minimal",
+    "seen": ["service-f", "service-a"]
+  },
+  "retry-burned-in-one-pass": {
+    "aliases": ["re-enqueue into live dequeue loop", "retries exhausted in microseconds", "retry burn", "re-enqueued failed outbound", "re-enqueue mid-flush"],
+    "home": "reviewer brief",
+    "seen": ["service-a"]
+  },
+  "inverted-min-max": {
+    "aliases": ["inverted comparison", "min/max swapped", "range check backwards"],
+    "home": "reviewer brief",
+    "seen": ["service-e"]
+  },
+  "lease-off-by-one": {
+    "aliases": ["renew off-by-one", "split-brain window", "lease surrender boundary"],
+    "home": "reviewer brief",
+    "seen": ["service-a"]
+  }
+}
