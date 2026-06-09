@@ -15,3 +15,8 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   parked in `alternates`, Gemini active); the Codex/Antigravity copy keeps Opus
   active and warns against pairing a Gemini reviewer with an Antigravity/`agy`
   adjudication (same-vendor judge). Reconciling them would break one host.
+- `current-skills/CurrentSkills.md` — generated per-home skill inventory. Each
+  home has a different installed skill set (e.g. Claude-only `graphify`/`hone`;
+  Codex-only `repo-harmonizer`), so the doc is regenerated in each home by the
+  `current-skills` skill and must NOT be cross-copied — doing so would put one
+  host's inventory into the other.
