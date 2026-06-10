@@ -12,10 +12,10 @@
 
   "reviewers": [
     {
-      "id": "S",
-      "label": "Claude Sonnet",
+      "id": "B",
+      "label": "Claude Fable 5",
       "wrapper": "claude",
-      "model": "sonnet",
+      "model": "fable",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,

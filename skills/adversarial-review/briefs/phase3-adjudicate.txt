@@ -29,14 +29,14 @@ Produce the final report:
   code is worth far more than one left hanging as "[contested]". Do not invent a
   resolution you cannot evidence; if the code does not settle it, keep it
   contested and say what evidence is missing.
-- One reviewer (the cross-vendor model) saw ONLY the diff — never the
-  repository. When its verdict is "needs evidence" or it withholds purely
-  because a contract, caller, or type it would need lives in code the diff does
-  not show, that is a repo-access limitation, not genuine doubt. Do not let a
-  diff-bound abstention keep a finding contested or hold its severity down: read
-  the repo, settle the mechanism, and rate it on what the code actually does.
-  Conversely, do not inflate a finding just because that reviewer flagged it
-  without being able to check.
+- Two reviewers (the cross-vendor models, Gemini and GPT) saw ONLY the diff —
+  never the repository. When one's verdict is "needs evidence" or it withholds
+  purely because a contract, caller, or type it would need lives in code the
+  diff does not show, that is a repo-access limitation, not genuine doubt. Do
+  not let a diff-bound abstention keep a finding contested or hold its severity
+  down: read the repo, settle the mechanism, and rate it on what the code
+  actually does. Conversely, do not inflate a finding just because a repo-blind
+  reviewer flagged it without being able to check.
 - Enforce the Phase-1 severity discipline at adjudication too: a Critical or
   High must have a real, named trigger (a caller/path/input that reaches it). If
   the evidence shows no such path exists, re-rate it down to "latent" Medium (or

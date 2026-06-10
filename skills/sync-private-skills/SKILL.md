@@ -1,26 +1,27 @@
 ---
 name: sync-private-skills
-description: Use when reconciling authored skills between the two PRIVATE homes — ~/.claude/skills/ (Claude Code) and ~/.agents/skills/ (Codex/Antigravity) — e.g. "sync my Claude and Codex/Antigravity skills", skill drift across CLIs, or after audit-skills reports cross-home divergence. For private↔private mirroring, NOT the public sanitised mirror (that is sync-public-skills).
+description: Use when reconciling authored skills between the three PRIVATE homes — ~/.claude/skills/ (Claude Code), ~/.agents/skills/ (Codex/Copilot), and ~/.gemini/config/skills/ (Antigravity) — e.g. "sync my private skills", skill drift across CLIs, or after audit-skills reports cross-home divergence. For private↔private mirroring, NOT the public sanitised mirror (that is sync-public-skills).
 ---
 
 # Sync Private Skills
 
 ## Overview
 
-The user authors skills in **two private homes** and edits in **either**,
+The user authors skills in **three private homes** and edits in **any**,
 depending on which CLI they are in:
 
 - `~/.claude/skills/` — Claude Code
-- `~/.agents/skills/` — Codex / Antigravity
+- `~/.agents/skills/` — Codex / Copilot
+- `~/.gemini/config/skills/` — Antigravity
 
-Drift is therefore **two-directional**: a given skill's newer copy may be in
-*either* home. This skill **reconciles** the two — it does not blindly copy one
-over the other.
+Drift is therefore **multi-directional**: a given skill's newer copy may be in
+any home. This skill **reconciles** the three — it does not blindly copy one
+over the others.
 
 **Core principle: detect which side changed, then propose — never assume a
 global winner, never overwrite without showing the diff and getting a yes.**
 
-Both homes hold the same real paths, so this is a **straight copy with NO
+All three homes hold the same real paths, so this is a **straight copy with NO
 sanitisation** — unlike `sync-public-skills` (private→public, which transforms
 client names / vault paths / emails). Do not apply the sanitisation map here.
 
@@ -30,10 +31,12 @@ diverged; run this to reconcile it.
 
 ## What is mirrored
 
-The mirror set is the **intersection** of skill folders present in **both**
-homes. A skill in only one home (today: `hone`, `observe` are Claude-only) is
-**reported, not copied** — adding a skill to the other home is an explicit
-**curation decision the user makes**, not an automatic sync.
+The mirror set is the **intersection of skill folders present in at least two**
+of the three homes. When a skill is in the mirror set, it is synchronized across
+all three homes (copied to the third home if missing, and kept in sync). A skill
+in only one home (today: `hone`, `observe` are Claude-only) is **reported, not
+copied** — adding a skill to another home is an explicit **curation decision the
+user makes**, not an automatic sync.
 
 ## The Iron Law
 
@@ -56,14 +59,17 @@ looks fresh). Instead keep a manifest of the content hash of each mirrored file
 `~/.claude/skills/sync-private-skills/.last-sync-manifest.json`
 (`{ "<skill>/<relative-path>": "<sha256>" }`)
 
-For each differing file, compare both homes' current hash against the manifest:
+For each differing file, compare all three homes' current hash against the manifest:
 
-| .claude vs manifest | .agents vs manifest | Meaning | Action |
-|---|---|---|---|
-| changed | unchanged | **.claude** was edited | propose `.claude → .agents` |
-| unchanged | changed | **.agents** was edited | propose `.agents → .claude` |
-| changed | changed | **both** edited | **true conflict** — surface diff + both mtimes, do NOT auto-pick |
-| (no manifest yet / first run) | — | unknown | treat every diff as a conflict to surface |
+| .claude vs manifest | .agents vs manifest | .gemini vs manifest | Meaning | Action |
+|---|---|---|---|---|
+| changed | unchanged | unchanged | **.claude** was edited | propose `.claude → .agents, .gemini` |
+| unchanged | changed | unchanged | **.agents** was edited | propose `.agents → .claude, .gemini` |
+| unchanged | unchanged | changed | **.gemini** was edited | propose `.gemini → .claude, .agents` |
+| changed | changed | * | **conflict** | surface diffs, do NOT auto-pick |
+| * | changed | changed | **conflict** | surface diffs, do NOT auto-pick |
+| changed | * | changed | **conflict** | surface diffs, do NOT auto-pick |
+| (no manifest yet / first run) | — | — | unknown | treat every diff as a conflict to surface |
 
 mtime is shown only as a secondary *hint* next to the diff — never as the basis
 for an automatic overwrite.
@@ -80,8 +86,8 @@ deliberate.
 
 ## Procedure
 
-1. **Enumerate both homes.** Glob `~/.claude/skills/*/` and `~/.agents/skills/*/`.
-   Compute the **intersection** (mirror set) and the **single-home-only** list.
+1. **Enumerate all three homes.** Glob `~/.claude/skills/*/`, `~/.agents/skills/*/`, and `~/.gemini/config/skills/*/`.
+   Compute the **mirror set** (present in at least two homes) and the **single-home-only** list (present in only one home).
    Report the single-home list; take no action on it.
 2. **Load** `.last-sync-manifest.json` (may be absent) and `intentionally-divergent.md`.
 3. **Compare every file** in each mirrored skill (SKILL.md + all supporting
