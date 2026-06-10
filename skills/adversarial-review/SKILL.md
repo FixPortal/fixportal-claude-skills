@@ -1,18 +1,17 @@
 ---
 name: adversarial-review
-description: "Use when the user requests an adversarial review, cross-vendor review, multi-model review, or runs /adversarial-review — now or deferred. Trigger phrases: adversarial review, cross-vendor review, multi-model review. MANDATORY: invoke via Skill tool — do NOT hand-roll with generic Agent subagents (Claude-only panels defeat the purpose). Panel composition is read from reviewers.json (sibling file) — NEVER inferred from this description or from memory. Runs blind review → cross-examination → adjudication → verify pass over High/contested findings against live code. Works in a git repo on a branch, diff, PR, or module audit."
+description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Fable 5, Google Gemini, and GPT-5.4 (via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository.
 ---
 
 # Adversarial Review
 
 ## Overview
 
-`adversarial-review` runs a code review as a multi-model panel whose value
-comes from *uncorrelated* error: reviewers from different vendors review the
-same change independently, then attack each other's findings, then a judge
-reconciles. **Panel composition is defined in `reviewers.json`** (sibling
-file) — read it at the start of every run; do not infer the panel from memory
-or from hardcoded names in this document.
+`adversarial-review` runs a code review as a three-model panel whose value
+comes from *uncorrelated* error: three models across three vendors — Claude
+Fable 5, Google Gemini, and GPT-5.4 (the last reached through the user's GitHub
+Copilot subscription) — review the same change, then attack each other's
+findings, then a judge (Claude Opus) reconciles.
 
 The pipeline has four phases, and the invariants matter more than the tools:
 
@@ -34,10 +33,10 @@ phases run through uniform reviewer wrappers driven by `run-review.ps1`, so the
 same review runs under Claude Code, Antigravity (`agy`), or any shell-capable
 agent. See **Cross-host operation** below.
 
-Invoking this skill is the user's explicit approval to spawn any Opus agents that
-`reviewers.json` configures (whether as a reviewer or as judge/verifier) — it
-satisfies the global "Opus needs explicit approval" rule for this run, so don't
-pause to re-confirm each Opus spawn.
+Invoking this skill is the user's explicit approval to spawn the Opus judge and
+Opus synthesis pass that `reviewers.json` configures (plus Opus for the occasional
+subtle verifier) — it satisfies the global "Opus needs explicit approval" rule for
+this run, so don't pause to re-confirm each Opus spawn.
 
 ## Usage
 
@@ -67,17 +66,25 @@ resolves all of this in full.
 ## Prerequisites
 
 - A git repository — the change under review lives here.
-- **Read `reviewers.json`** to determine which external CLIs are required.
-  Enabled non-Claude reviewers may include Gemini (`gemini` on PATH, via
-  `gemini-review.ps1`) and/or Copilot GPT (`copilot` on PATH, via
-  `external-review.ps1`). If a wrapper exits non-zero, report that reviewer as
-  unavailable and continue with the remaining panel. A degraded panel is not
-  broken; do not abort.
-- Sibling wrappers `claude-review.ps1`, `external-review.ps1`, and
-  `gemini-review.ps1` share the same contract: `-Instruction -DiffPath
-  [-FindingsPath] [-ContextPath…] -Model [-Effort] [-RepoPath]`. The native
-  Claude Code path spawns `claude`-wrapper reviewers with the `Agent` tool;
-  the external wrappers handle non-Claude vendors regardless of host.
+- The native panel spans three vendors: **Claude Fable 5** (spawned in-process
+  via the `Agent` tool), **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4**
+  (`external-review.ps1`, via GitHub Copilot). The two non-Claude reviewers run
+  as subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
+- GitHub Copilot CLI installed and authenticated (`copilot` on PATH) — the GPT
+  reviewer rides the user's Copilot subscription — and the Gemini CLI installed
+  and authenticated (`gemini` on PATH), drawing on the user's Google quota.
+- `external-review.ps1` and `gemini-review.ps1` (beside this file) wrap those
+  two calls. If a wrapper exits non-zero — not authenticated, quota exhausted,
+  model unavailable — report that reviewer as unavailable and continue, **as
+  long as at least two vendors still ran** (e.g. Fable + Gemini, or Fable + GPT).
+  A two-vendor panel is degraded, not broken; do not abort. But only a
+  single-vendor panel is self-review — if **both** non-Claude reviewers fail,
+  say so and stop rather than pass a Claude-only run off as adversarial.
+- `claude-review.ps1` (Claude tiers via `claude -p`) shares the same contract and
+  exists for non-Claude-Code hosts that lack the `Agent` tool, and for swapping
+  the panel via `reviewers.json` (see **Cross-host operation**). The native
+  Claude Code path does not need it — it spawns the Fable reviewer with the
+  `Agent` tool directly.
 
 ## Cross-host operation (manifest + driver)
 
@@ -106,9 +113,10 @@ live beside this file:
 **Per-harness adapter:**
 
 - **Under Claude Code** — follow the native procedure (§0–§6): the `Agent` tool
-  spawns reviewers O/S, the judge, and the verifiers in-process. This is the
-  default and the richest path (the judge and verifiers explore the repo
-  interactively). The driver is optional here.
+  spawns the Fable reviewer, the judge, and the verifiers in-process, while the
+  Gemini and GPT reviewers run as subprocess wrappers (no `Agent` tool exists
+  for non-Claude vendors). This is the default and the richest path (the judge
+  and verifiers explore the repo interactively). The driver is optional here.
 - **Under any other host** — there is no `Agent` tool, so run the driver:
   `pwsh -NoProfile -File run-review.ps1 -Target <…> [-Pathspec …] [-ContextPath …]`.
   Then the host agent itself does the judgment, reading the briefs as data:
@@ -225,37 +233,58 @@ defects rather than flagging long-standing intentional design as a fresh
 regression. Omit it for PR, branch, and range reviews — there the additions
 really are new.
 
-**Read `reviewers.json`** (at `~/.claude/skills/adversarial-review/reviewers.json`) and collect every entry in `reviewers` where `"enabled": true`. Verify the enabled set spans at least `minVendors` distinct `vendor` values; if not, abort and tell the user. Spawn one reviewer per enabled entry, all in parallel, using the `wrapper`, `model`, and `repoAccess` fields:
+- **Reviewer B** — `Agent` tool, `subagent_type: general-purpose`,
+  `model: fable` (Claude Fable 5). Prompt: the Phase 1 brief, plus an
+  instruction to read the diff at `<workdir>/review-diff.txt`. The subagent may
+  also read the repository for surrounding context — it is the one reviewer with
+  repo access.
+- **Reviewer G** — the Gemini wrapper. Write the Phase 1 brief to a file in the
+  working directory first; the wrapper reads it inlined. Invoke via
+  `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist:
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>"`
+  The wrapper pins `gemini-3.1-pro-preview`.
+- **Reviewer X** — the Copilot wrapper, same pattern:
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>"`
+  The script pins `gpt-5.4`.
 
-- **`wrapper: "claude"`** — `Agent` tool, `subagent_type: general-purpose`, `model` from the manifest. Prompt: the Phase 1 brief plus an instruction to read the diff at `<workdir>/review-diff.txt`. If `repoAccess: true`, the subagent may also read the repository for surrounding context.
-- **`wrapper: "gemini"`** — write the Phase 1 brief to `<workdir>/phase1-brief.txt` and invoke:
-  `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" [-ContextPath "<file1>;<file2>"]`
-- **`wrapper: "copilot"`** — write the Phase 1 brief to `<workdir>/phase1-brief.txt` and invoke:
-  `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/external-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" [-ContextPath "<file1>;<file2>"]`
+  **Neither cross-vendor reviewer (G or X) sees the repository** — unlike B,
+  they work only from the files you hand them. That blindness is their main
+  weakness: a repo-blind reviewer withholds ("needs evidence") on any finding
+  whose mechanism — a
+  base class's `= null!` field, an interface contract, a caller's guard — lives
+  outside the diff, and those abstentions then masquerade as genuine doubt at
+  adjudication. Narrow it: before the run, pick the few repo files the chunk's
+  diff *depends on but does not contain* — the interfaces/contracts it
+  implements, the base types it extends, the one or two hot callers — and pass
+  them as **one `;`-joined `-ContextPath` token** (`-ContextPath "a.cs;b.cs"`),
+  which the wrapper splits on `;`. Do **not** repeat the `-ContextPath` flag:
+  across the `pwsh -File` boundary PowerShell rejects a parameter supplied more
+  than once ("specified more than once"), and a comma-joined value binds as a
+  single literal rather than splitting. The wrapper labels the files read-only
+  background, not material under review. Keep it tight (≈3–5 files); the point is
+  to close the specific blind spots, not to hand over the repo. If the diff is
+  self-contained (no external contract in play), omit `-ContextPath`.
 
-**Pass multiple context files as ONE `;`-joined token** (`-ContextPath "a.cs;b.cs"`), never as repeated `-ContextPath` flags and never as a bare PowerShell array: across the `pwsh -File` boundary the binder rejects repeated flags ("specified more than once") and silently leaks the second element of an array to the next positional parameter (`-FindingsPath` / `-Model`), which corrupts the call. The wrappers split the token on `;`.
-
-**Repo-blind reviewers** (`repoAccess: false`) work only from the files you hand them. Their main weakness: they withhold ("needs evidence") on any finding whose mechanism — a base class's `= null!` field, an interface contract, a caller's guard — lives outside the diff. Narrow it: before the run, pick the few repo files the chunk's diff *depends on but does not contain* — the interfaces/contracts it implements, the base types it extends, the one or two hot callers — and pass each via `-ContextPath`. Keep it tight (≈3–5 files). If the diff is self-contained, omit `-ContextPath`.
-
-**End every `Agent` prompt (all `claude`-wrapper reviewers, both phases) with a verbatim-capture
+**End the `Agent` prompt (Reviewer B, both phases) with a verbatim-capture
 line:** `Your entire final message is captured verbatim as this reviewer's
 output — return only the findings (Phase 1) / verdicts and gaps (Phase 2), no
 narration or thinking-aloud preamble.` The brief already says "no narration",
 but a subagent treats its final message as a human-facing summary unless told
 otherwise, and will prepend "Let me verify…" reasoning that pollutes the saved
-artefact. External wrappers (Gemini, Copilot) do not need this — they return only the model's
-answer.
+artefact. The Gemini and Copilot wrappers do not need this — they return only
+the model's answer.
 
 **Then strip any surviving preamble mechanically — do not rely on the
-instruction alone.** Even with the verbatim-capture line, Claude reviewers
-frequently open with a sentence or two of "I have enough context…" narration
+instruction alone.** Even with the verbatim-capture line, the Fable reviewer
+often opens with a sentence or two of "I have enough context…" narration
 before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
 Phase 1, the first line matching `F#:` in Phase 2 — and keep from there. The
-narration is never part of a finding, so this is lossless. Apply it to all
-`claude`-wrapper reviewers; external wrapper outputs rarely need it but check the same way.
+narration is never part of a finding, so this is lossless. Apply it to Reviewer
+B; the Gemini and Copilot output rarely needs it but check the same way.
 
-Collect all finding sets verbatim (post-strip). Do not merge or edit them yet.
+Collect the three finding sets verbatim (post-strip). Do not merge or edit them
+yet.
 
 ### 2. Phase 2 — cross-examination
 
@@ -264,13 +293,20 @@ attribution** — no reviewer names, no per-reviewer grouping — and give each
 finding a stable id (`F1`, `F2`, …). Anonymity is load-bearing: a reviewer must
 judge a finding on its merits, not defer to whoever raised it.
 
-Run the same enabled reviewers from `reviewers.json` again, in parallel, each given the Phase 2 brief, the diff, and the pooled findings. Use fresh calls — never reuse a Phase 1 agent:
+Run the same three reviewers again, in parallel, each given the Phase 2 brief,
+the diff, and the pooled findings:
 
-- **`wrapper: "claude"`** — fresh `Agent` calls (same model from manifest); have them read both `review-diff.txt` and `pooled-findings.txt`.
-- **`wrapper: "gemini"`** — `gemini-review.ps1` with the Phase 2 brief and **both** files, pooled findings passed as `-FindingsPath`. Pass the **same** `-ContextPath` files as Phase 1:
-  `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ';'-joined files as Phase 1>"`
-- **`wrapper: "copilot"`** — `external-review.ps1` with the Phase 2 brief and **both** files, pooled findings passed as `-FindingsPath`. Pass the **same** `-ContextPath` files as Phase 1:
-  `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/external-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ';'-joined files as Phase 1>"`
+- Reviewer B — a fresh `Agent` call (`model: fable`); have it read both
+  `review-diff.txt` and `pooled-findings.txt`.
+- Reviewer G — `gemini-review.ps1` with the Phase 2 brief and **both** files,
+  the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
+  files you gave it in Phase 1:
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+- Reviewer X — `external-review.ps1` with the Phase 2 brief and **both**
+  files, the pooled findings passed as `-FindingsPath`. Pass the **same**
+  `-ContextPath` files you gave it in Phase 1, so it can still check the
+  mechanisms the diff does not show when it attacks the pooled findings:
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
 
 ### 3. Phase 3 — adjudication
 
@@ -415,7 +451,7 @@ note, the `working/` pointer, and — when remediation followed — a
 project: fixportal-engine
 review-type: adversarial-audit
 date: 2026-05-29
-reviewers: [<label fields of enabled reviewers from reviewers.json, e.g. Claude Sonnet, Gemini, GPT-5.4 (via GitHub Copilot)>]
+reviewers: [Claude Fable 5, Gemini, GPT-5.4]
 remediation-branch: reviewer-findings-batch1        # only if a fix pass followed
 remediation-pr: 25 (rebase-merged to main as <sha>) # only if a fix pass followed
 deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was deferred
@@ -425,8 +461,8 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 # fixportal-engine — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
-chunks (reviewers per chunk per reviewers.json: <enabled reviewer labels> →
-blind review → cross-examination → adjudication), then
+chunks (three reviewers per chunk: Claude Fable 5, Gemini, GPT-5.4 via
+GitHub Copilot → blind review → cross-examination → adjudication), then
 synthesised into one repo-level report.
 
 - **Consolidated report:** [[report]]
@@ -608,14 +644,14 @@ Produce the final report:
   code is worth far more than one left hanging as "[contested]". Do not invent a
   resolution you cannot evidence; if the code does not settle it, keep it
   contested and say what evidence is missing.
-- One reviewer (the cross-vendor model) saw ONLY the diff — never the
-  repository. When its verdict is "needs evidence" or it withholds purely
-  because a contract, caller, or type it would need lives in code the diff does
-  not show, that is a repo-access limitation, not genuine doubt. Do not let a
-  diff-bound abstention keep a finding contested or hold its severity down: read
-  the repo, settle the mechanism, and rate it on what the code actually does.
-  Conversely, do not inflate a finding just because that reviewer flagged it
-  without being able to check.
+- Two reviewers (the cross-vendor models, Gemini and GPT) saw ONLY the diff —
+  never the repository. When one's verdict is "needs evidence" or it withholds
+  purely because a contract, caller, or type it would need lives in code the
+  diff does not show, that is a repo-access limitation, not genuine doubt. Do
+  not let a diff-bound abstention keep a finding contested or hold its severity
+  down: read the repo, settle the mechanism, and rate it on what the code
+  actually does. Conversely, do not inflate a finding just because a repo-blind
+  reviewer flagged it without being able to check.
 - Enforce the Phase-1 severity discipline at adjudication too: a Critical or
   High must have a real, named trigger (a caller/path/input that reaches it). If
   the evidence shows no such path exists, re-rate it down to "latent" Medium (or
@@ -736,17 +772,13 @@ the code shows. Output only the verdict and evidence — no preamble.
 
 ## Cost
 
-One run (one chunk) costs N reviewer calls × 2 phases + 1 Opus judge call,
-where N is the number of enabled reviewers in `reviewers.json`. With the
-current panel (Sonnet + Gemini + GPT-5.4): 2 Claude Agent calls + 2 Gemini
-CLI calls + 2 Copilot calls + 1 Opus judge = 7 calls per chunk. A multi-chunk
-audit multiplies the reviewer calls by the chunk count and adds one Opus
-synthesis call — e.g. a 4-chunk audit is 8 Claude Agent calls + 8 Gemini
-calls + 8 Copilot calls + 4 Opus judges + 1 Opus synthesis. If the panel
-changes, recount from the manifest.
-
-Copilot calls draw on the user's monthly Copilot premium-request allowance.
-Gemini calls draw on Google/Gemini quota (not Copilot).
+One run (one chunk) is 3 Claude subagent calls — the Fable reviewer in Phase 1
+and Phase 2, plus the Opus judge — alongside 2 Gemini calls and 2 Copilot calls
+(Phase 1 and Phase 2). The Copilot calls draw on the user's monthly Copilot
+premium-request allowance; the Gemini calls draw on the user's Google quota. A
+multi-chunk audit multiplies this by the chunk count and adds one Claude
+synthesis call — e.g. a 6-chunk audit is ~19 Claude subagent calls, 12 Gemini
+calls, and 12 Copilot *calls*.
 
 Phase 4 verification adds one more Claude subagent call **per High/contested
 finding**, run once on the published report (not per chunk) and defaulting to
@@ -777,7 +809,10 @@ whole-repo runs.
 - **Averaging away disagreement.** A contested critical finding stays in the
   report, marked contested. The disagreement is the signal the panel exists to
   produce.
-- **Aborting when an external reviewer fails.** If a wrapper exits non-zero, degrade to the remaining panel and say so; never silently collapse to a single model. A reduced panel is degraded but still valid if it spans the required vendor count (`minVendors`).
+- **Aborting when one cross-vendor reviewer fails.** Degrade to the surviving
+  reviewers and say so, as long as at least two vendors still ran (e.g. Fable +
+  Gemini). Never silently collapse to a single vendor — a Claude-only panel is
+  self-review, not adversarial; if both non-Claude reviewers fail, stop.
 - **Auditing a whole repo in one run.** A multi-thousand-line `audit` diff
   dilutes every finding and overruns the Copilot reviewer. Size the diff and
   chunk it (§0a); scope each chunk to one cohesive area with a pathspec.
@@ -794,19 +829,12 @@ whole-repo runs.
   adjudicated report without verifying every High and contested finding (§3a)
   ships a report that is partly wrong. Verify before you answer, unless the user
   explicitly opted out.
-- **Reading a repo-blind reviewer's abstentions as genuine doubt.** Reviewers with `repoAccess: false` never see the repository. A "needs evidence" raised only because a contract, caller, or base type lives outside the diff is an access limit, not a real gap — feed those files via `-ContextPath` (§1), and at adjudication settle such findings against the repo rather than leaving them contested or holding their severity down.
+- **Reading the repo-blind reviewers' caveats as genuine doubt.** Both
+  cross-vendor reviewers (Gemini and GPT) work only from the diff. A "needs
+  evidence" one raises only because a contract, caller, or base type lives
+  outside the diff is an access limit, not a real gap — feed them the key files
+  via `-ContextPath` (§1), and at adjudication settle such findings on the code
+  rather than leaving them contested or holding their severity down.
 - **Leaving the findings in temp.** The working directory is transient. A run
   that ends without copying its reports to the Obsidian vault (§6) loses the
   whole review on the next temp cleanup — persist before you finish.
-- **Passing multiple `-ContextPath` files the wrong way across `pwsh -File`.**
-  PowerShell's `-File` argument binder does not accumulate repeated
-  `-ContextPath` flags (it errors "specified more than once") and does not split
-  a comma-joined token; a bare array variable (`-ContextPath $files`) silently
-  binds only the first element and leaks the rest to the next positional
-  parameter (`-FindingsPath` / `-Model`), so the reviewer reviews a context file
-  as material, or the model name becomes a file path and the call dies. Pass the
-  files as ONE `;`-joined token: `-ContextPath "a.cs;b.cs;c.cs"`. The wrappers
-  split on `;`. (In-process callers — e.g. `run-review.ps1` via the call operator
-  — may still pass a real array; the split is a no-op for single paths.) This bit
-  a whole-repo audit run: the first two reviewer calls reviewed a context file as
-  diff material before it was caught.

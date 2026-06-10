@@ -53,8 +53,8 @@
     Inlined into the prompt, clearly labelled as not-under-review.
 
 .PARAMETER Model
-    Claude model id (e.g. opus, sonnet). The two Claude tiers in the panel
-    differ only by this value.
+    Claude model id (e.g. fable, opus, sonnet). The Claude roles in the panel
+    (reviewer, judge, verifier, synthesis) differ only by this value.
 
 .PARAMETER Effort
     Reasoning effort: low | medium | high | xhigh | max (maps to `--effort`).
@@ -129,7 +129,7 @@ if ($FindingsPath) {
     [void]$sb.AppendLine((Read-InputFile $FindingsPath 'Findings file'))
 }
 
-$contextPaths = @($ContextPath | Where-Object { $_ })
+$contextPaths = @($ContextPath | ForEach-Object { $_ -split ';' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($contextPaths) {
     [void]$sb.AppendLine()
     [void]$sb.AppendLine('--- REPO CONTEXT (read-only background, NOT under review) ---')
@@ -151,15 +151,13 @@ $stdin = $sb.ToString()
 # no execute). Tools stay read-only; repo access is opt-in via -RepoPath.
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('claude-review-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
-[void](& git -C $scratch init 2>&1)
 $errFile = Join-Path $scratch 'stderr.txt'
 
 $claudeArgs = @(
     '-p'
     '--model', $Model
-    '--effort', $Effort
     '--output-format', 'text'
-    '--permission-mode', 'plan'
+    '--permission-mode', 'dontAsk'
 )
 
 if ($RepoPath) {
