@@ -169,4 +169,67 @@ if ([string]::IsNullOrWhiteSpace($response)) {
     exit 1
 }
 
+# --- Usage telemetry (fire-and-forget, optional) ----------------------------
+# The JSON envelope's stats block carries real per-model token usage; without
+# this post, headless gemini reviews are invisible to any usage dashboard (no
+# hook covers the plain gemini CLI). Posts only when BOTH OBSERVATORY_URL and
+# OBSERVATORY_API_KEY are set; otherwise a silent no-op.
+if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $json.stats?.models) {
+    # USD per million tokens: input / output / thoughts
+    $gemPricing = @{
+        'gemini-3.5-pro'   = @(2.50, 10.0,  3.50)
+        'gemini-3.5-flash' = @(0.10,  0.40, 3.50)
+        'gemini-3.1-pro'   = @(2.50, 10.0,  3.50)
+        'gemini-3.1-flash' = @(0.10,  0.40, 3.50)
+        'gemini-2.5-pro'   = @(1.25, 10.0,  3.50)
+        'gemini-2.5-flash' = @(0.075, 0.30, 3.50)
+    }
+    $observatoryUrl = $env:OBSERVATORY_URL
+    $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()
+
+    foreach ($mProp in $json.stats.models.PSObject.Properties) {
+        try {
+            $tokens = $mProp.Value.tokens
+            if (-not $tokens) { continue }
+            $cached   = [long]($tokens.cached ?? 0)
+            $inTok    = [Math]::Max(0L, [long]($tokens.prompt ?? 0) - $cached)
+            $outTok   = [long]($tokens.candidates ?? 0)
+            $thoughts = [long]($tokens.thoughts ?? 0)
+            if ($inTok -eq 0 -and $outTok -eq 0) { continue }
+
+            $rateKey = ($gemPricing.Keys | Where-Object { $mProp.Name.StartsWith($_) } | Select-Object -First 1)
+            $rates = $rateKey ? $gemPricing[$rateKey] : @(2.50, 10.0, 3.50)
+            $costUsd = [Math]::Round((
+                ($inTok * $rates[0]) + ($outTok * $rates[1]) + ($thoughts * $rates[2])
+            ) / 1000000.0, 8)
+
+            # cacheWriteTokens carries thinking tokens (observatory hook convention).
+            $obsBody = @{
+                provider         = 'Google'
+                model            = $mProp.Name
+                inputTokens      = $inTok
+                outputTokens     = $outTok
+                cacheReadTokens  = $cached
+                cacheWriteTokens = $thoughts
+                costUsd          = $costUsd
+                eventKey         = "gemini:$sessionId`:$($mProp.Name)"
+                rawPayload       = (@{
+                    source     = 'gemini-review'
+                    session_id = $sessionId
+                    role       = 'adversarial-review external reviewer'
+                } | ConvertTo-Json -Compress)
+            } | ConvertTo-Json -Compress
+
+            Invoke-RestMethod `
+                -Uri "$observatoryUrl/api/events" `
+                -Method Post `
+                -ContentType 'application/json' `
+                -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `
+                -Body $obsBody `
+                -TimeoutSec 5 `
+                -ErrorAction SilentlyContinue | Out-Null
+        } catch { }
+    }
+}
+
 $response.TrimEnd()
