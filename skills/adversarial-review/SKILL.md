@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Fable 5, Google Gemini, and GPT-5.4 (via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository.
+description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Sonnet, Google Gemini, and GPT-5.4 (via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository. (Anthropic reviewer is Claude Sonnet since 2026-06-13; was Fable until US export restrictions removed it.)
 ---
 
 # Adversarial Review
@@ -9,9 +9,14 @@ description: Use when the user requests an adversarial review, cross-vendor / mu
 
 `adversarial-review` runs a code review as a three-model panel whose value
 comes from *uncorrelated* error: three models across three vendors — Claude
-Fable 5, Google Gemini, and GPT-5.4 (the last reached through the user's GitHub
+Sonnet, Google Gemini, and GPT-5.4 (the last reached through the user's GitHub
 Copilot subscription) — review the same change, then attack each other's
-findings, then a judge (Claude Opus) reconciles.
+findings, then a judge (Claude Opus) reconciles. NOTE: the anthropic reviewer
+was Claude Fable 5 until 2026-06-13, when US Commerce Dept access restrictions
+made Fable unreachable; it is now Claude Sonnet — kept deliberately distinct
+from the Opus judge so the anthropic Phase-1 voice and the adjudicator stay
+decorrelated (the original Fable-reviewer + Opus-judge intent). An Opus reviewer
+would collapse the anthropic axis to one model seen twice.
 
 The pipeline has four phases, and the invariants matter more than the tools:
 
@@ -66,7 +71,7 @@ resolves all of this in full.
 ## Prerequisites
 
 - A git repository — the change under review lives here.
-- The native panel spans three vendors: **Claude Fable 5** (spawned in-process
+- The native panel spans three vendors: **Claude Sonnet** (spawned in-process
   via the `Agent` tool), **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4**
   (`external-review.ps1`, via GitHub Copilot). The two non-Claude reviewers run
   as subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
@@ -76,14 +81,14 @@ resolves all of this in full.
 - `external-review.ps1` and `gemini-review.ps1` (beside this file) wrap those
   two calls. If a wrapper exits non-zero — not authenticated, quota exhausted,
   model unavailable — report that reviewer as unavailable and continue, **as
-  long as at least two vendors still ran** (e.g. Fable + Gemini, or Fable + GPT).
+  long as at least two vendors still ran** (e.g. Sonnet + Gemini, or Sonnet + GPT).
   A two-vendor panel is degraded, not broken; do not abort. But only a
   single-vendor panel is self-review — if **both** non-Claude reviewers fail,
   say so and stop rather than pass a Claude-only run off as adversarial.
 - `claude-review.ps1` (Claude tiers via `claude -p`) shares the same contract and
   exists for non-Claude-Code hosts that lack the `Agent` tool, and for swapping
   the panel via `reviewers.json` (see **Cross-host operation**). The native
-  Claude Code path does not need it — it spawns the Fable reviewer with the
+  Claude Code path does not need it — it spawns the Sonnet reviewer with the
   `Agent` tool directly.
 
 ## Cross-host operation (manifest + driver)
@@ -113,7 +118,7 @@ live beside this file:
 **Per-harness adapter:**
 
 - **Under Claude Code** — follow the native procedure (§0–§6): the `Agent` tool
-  spawns the Fable reviewer, the judge, and the verifiers in-process, while the
+  spawns the Sonnet reviewer, the judge, and the verifiers in-process, while the
   Gemini and GPT reviewers run as subprocess wrappers (no `Agent` tool exists
   for non-Claude vendors). This is the default and the richest path (the judge
   and verifiers explore the repo interactively). The driver is optional here.
@@ -234,7 +239,7 @@ regression. Omit it for PR, branch, and range reviews — there the additions
 really are new.
 
 - **Reviewer B** — `Agent` tool, `subagent_type: general-purpose`,
-  `model: fable` (Claude Fable 5). Prompt: the Phase 1 brief, plus an
+  `model: sonnet` (Claude Sonnet). Prompt: the Phase 1 brief, plus an
   instruction to read the diff at `<workdir>/review-diff.txt`. The subagent may
   also read the repository for surrounding context — it is the one reviewer with
   repo access.
@@ -275,7 +280,7 @@ artefact. The Gemini and Copilot wrappers do not need this — they return only
 the model's answer.
 
 **Then strip any surviving preamble mechanically — do not rely on the
-instruction alone.** Even with the verbatim-capture line, the Fable reviewer
+instruction alone.** Even with the verbatim-capture line, the Sonnet reviewer
 often opens with a sentence or two of "I have enough context…" narration
 before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
@@ -296,7 +301,7 @@ judge a finding on its merits, not defer to whoever raised it.
 Run the same three reviewers again, in parallel, each given the Phase 2 brief,
 the diff, and the pooled findings:
 
-- Reviewer B — a fresh `Agent` call (`model: fable`); have it read both
+- Reviewer B — a fresh `Agent` call (`model: sonnet`); have it read both
   `review-diff.txt` and `pooled-findings.txt`.
 - Reviewer G — `gemini-review.ps1` with the Phase 2 brief and **both** files,
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
@@ -451,7 +456,7 @@ note, the `working/` pointer, and — when remediation followed — a
 project: fixportal-engine
 review-type: adversarial-audit
 date: 2026-05-29
-reviewers: [Claude Fable 5, Gemini, GPT-5.4]
+reviewers: [Claude Sonnet, Gemini, GPT-5.4]
 remediation-branch: reviewer-findings-batch1        # only if a fix pass followed
 remediation-pr: 25 (rebase-merged to main as <sha>) # only if a fix pass followed
 deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was deferred
@@ -461,7 +466,7 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 # fixportal-engine — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
-chunks (three reviewers per chunk: Claude Fable 5, Gemini, GPT-5.4 via
+chunks (three reviewers per chunk: Claude Sonnet, Gemini, GPT-5.4 via
 GitHub Copilot → blind review → cross-examination → adjudication), then
 synthesised into one repo-level report.
 
@@ -772,7 +777,7 @@ the code shows. Output only the verdict and evidence — no preamble.
 
 ## Cost
 
-One run (one chunk) is 3 Claude subagent calls — the Fable reviewer in Phase 1
+One run (one chunk) is 3 Claude subagent calls — the Sonnet reviewer in Phase 1
 and Phase 2, plus the Opus judge — alongside 2 Gemini calls and 2 Copilot calls
 (Phase 1 and Phase 2). The Copilot calls draw on the user's monthly Copilot
 premium-request allowance; the Gemini calls draw on the user's Google quota. A
@@ -810,7 +815,7 @@ whole-repo runs.
   report, marked contested. The disagreement is the signal the panel exists to
   produce.
 - **Aborting when one cross-vendor reviewer fails.** Degrade to the surviving
-  reviewers and say so, as long as at least two vendors still ran (e.g. Fable +
+  reviewers and say so, as long as at least two vendors still ran (e.g. Sonnet +
   Gemini). Never silently collapse to a single vendor — a Claude-only panel is
   self-review, not adversarial; if both non-Claude reviewers fail, stop.
 - **Auditing a whole repo in one run.** A multi-thousand-line `audit` diff
