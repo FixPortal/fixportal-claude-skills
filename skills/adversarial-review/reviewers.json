@@ -12,10 +12,11 @@
 
   "reviewers": [
     {
+      "_comment": "Anthropic reviewer slot. Was Claude Fable 5 until 2026-06-13, when US Commerce Dept access restrictions made `claude-fable-5` unreachable via the CLI. Set to `sonnet` (not `opus`) deliberately: the Phase-3 judge is Opus (see `roles.judge`), so a Sonnet reviewer keeps reviewer != judge model — two distinct anthropic viewpoints (the original Fable-reviewer + Opus-judge intent), preserving the panel's decorrelation. An Opus reviewer would collapse the anthropic axis to one model seen twice. The Opus judge + Phase-4 verifiers carry the heavy reasoning.",
       "id": "B",
-      "label": "Claude Fable 5",
+      "label": "Claude Sonnet",
       "wrapper": "claude",
-      "model": "fable",
+      "model": "sonnet",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,
