@@ -87,6 +87,12 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $scriptDir = Split-Path -Parent $PSCommandPath
 $emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
+# Normalize Pathspec: when called via pwsh -File from a subprocess, multi-element arrays
+# can't be passed as separate tokens without binding errors. Callers join with ';' instead.
+if ($Pathspec.Count -eq 1 -and $Pathspec[0] -match ';') {
+    $Pathspec = $Pathspec[0] -split ';'
+}
+
 function Die([string] $msg, [int] $code = 1) {
     Write-Error $msg
     exit $code
