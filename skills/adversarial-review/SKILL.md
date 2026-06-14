@@ -372,6 +372,36 @@ deletion:
 Skip this phase only if the user explicitly opted out (e.g. "no verification
 pass"). Note the added cost when you present the chunk plan (§0a) — see Cost.
 
+**Outcome telemetry.** After folding Phase 4 verdicts back into the report, emit
+one outcome event per reviewer to the AI Observatory. This is *additive* to the
+per-call token telemetry the reviewer wrappers already post — it captures which
+reviewers contributed findings that survived, not economics. Call
+`emit-review-telemetry.ps1` (beside this file) three times in parallel (one per
+reviewer), passing:
+
+- **`-RunId`** — the workdir's UTC timestamp slug (e.g. `20260614T143022Z`).
+- **`-Reviewer`** — reviewer id → vendor: `B` → `anthropic`, `G` → `google`,
+  `X` → `openai`.
+- **`-Model`** — the model id from `reviewers.json` for that reviewer.
+- **`-IssuesRaised`** — count of `### ` blocks in that reviewer's Phase 1 output
+  (available in context for the Claude Code path; in `<workdir>/p1-<id>.txt` for
+  the driver path).
+- **`-IssuesAccepted`** — count of non-REFUTED findings in the published report
+  attributed to this reviewer: `[unanimous]` findings → credit all three
+  reviewers; `[majority]` findings → credit all except the named dissenter;
+  `[contested]` findings that survived Phase 4 as CONFIRMED or INDETERMINATE →
+  credit all three (contested attribution is ambiguous; don't penalise partial
+  credit).
+- **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`**, **`-ReviewDurationMs`**
+  — pass 0 from both the Claude Code path (token data captured per-call by the
+  wrappers; Agent tool does not expose call duration) and the driver path (same
+  reason).
+
+The script is fire-and-forget and silently skips when `$env:OBSERVATORY_API_KEY`
+or `$env:OBSERVATORY_URL` is absent. Run all three PowerShell calls in a single
+message so they execute in parallel. If Phase 4 was skipped, still emit —
+`issuesAccepted` will reflect the Phase 3 adjudicated report as-is.
+
 ### 4. Answer the user
 
 Present the post-verification report directly — a severity-ranked finding list,
