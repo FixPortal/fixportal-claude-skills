@@ -42,6 +42,12 @@
     (e.g. gpt-5.4) may differ from the canonical API model id -- verify against
     https://api.openai.com/v1/models before setting.
 
+.PARAMETER UsageSidecarPath
+    Optional. When set, the script writes a JSON sidecar with the API usage
+    (inputTokens, outputTokens, costUsd) so the host agent can pass accurate
+    metrics to emit-review-telemetry.ps1 rather than defaulting to zero.
+    Pass only for Phase 1 (the blind review call).
+
 .OUTPUTS
     The model's review text on stdout. Non-zero exit code on failure.
 
@@ -64,7 +70,12 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gpt-4o'
+    [string] $Model = 'gpt-4o',
+
+    # Optional. When set, the script writes a JSON sidecar with the API usage
+    # (inputTokens, outputTokens, costUsd) so the host agent can pass accurate
+    # metrics to emit-review-telemetry.ps1 rather than defaulting to zero.
+    [string] $UsageSidecarPath
 )
 
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -146,28 +157,50 @@ if ([string]::IsNullOrWhiteSpace($text)) {
     exit 1
 }
 
+# --- Pricing table (shared by Observatory telemetry and usage sidecar) ------
+# USD per million tokens: @(input, output).
+# Update when new models ship or pricing changes.
+$openAiPricing = @{
+    'gpt-4o'       = @( 2.50, 10.00)
+    'gpt-4o-mini'  = @( 0.15,  0.60)
+    'o1'           = @(15.00, 60.00)
+    'o1-mini'      = @( 1.10,  4.40)
+    'o3'           = @(10.00, 40.00)
+    'o3-mini'      = @( 1.10,  4.40)
+    'o4-mini'      = @( 1.10,  4.40)
+    'gpt-5.4'      = @( 2.50, 15.00)
+    'gpt-5.4-mini' = @( 0.75,  4.50)
+    'gpt-5.5'      = @( 5.00, 30.00)
+}
+
+function Get-OpenAiCost([long] $inTok, [long] $outTok) {
+    $rateKey = ($openAiPricing.Keys |
+        Where-Object { $Model.StartsWith($_) } |
+        Sort-Object Length -Descending |
+        Select-Object -First 1)
+    $rates = $rateKey ? $openAiPricing[$rateKey] : @(0.00, 0.00)
+    [Math]::Round((($inTok * $rates[0]) + ($outTok * $rates[1])) / 1000000.0, 8)
+}
+
+# --- Usage sidecar (for outcome telemetry) ----------------------------------
+# Write accurate token + cost figures so the host agent can pass real values to
+# emit-review-telemetry.ps1 instead of zeros. Bypasses the Observatory guard so
+# these figures are captured even without Observatory credentials.
+if ($UsageSidecarPath -and $response.usage) {
+    $usage   = $response.usage
+    $cached  = [long]($usage.prompt_tokens_details?.cached_tokens ?? 0)
+    $inTok   = [Math]::Max(0L, [long]($usage.prompt_tokens ?? 0) - $cached)
+    $outTok  = [long]($usage.completion_tokens ?? 0)
+    @{ inputTokens = $inTok; outputTokens = $outTok; costUsd = (Get-OpenAiCost $inTok $outTok) } |
+        ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $UsageSidecarPath -Encoding utf8 -NoNewline
+}
+
 # --- Observatory telemetry (fire-and-forget) --------------------------------
 # Usage is in the response body directly -- no post-hoc session-state sweep.
 # Reasoning tokens (o1/o3/o4) are stored in cacheWriteTokens by convention,
 # matching the Gemini wrapper's treatment of thinking tokens.
-#
-# PRICING TABLE -- USD per million tokens: @(input, output).
-# Update when new models ship. gpt-5.4 pricing is indicative; verify against
-# the OpenAI pricing page before treating costUsd as authoritative.
 if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
-    $openAiPricing = @{
-        'gpt-4o'       = @( 2.50, 10.00)
-        'gpt-4o-mini'  = @( 0.15,  0.60)
-        'o1'           = @(15.00, 60.00)
-        'o1-mini'      = @( 1.10,  4.40)
-        'o3'           = @(10.00, 40.00)
-        'o3-mini'      = @( 1.10,  4.40)
-        'o4-mini'      = @( 1.10,  4.40)
-        'gpt-5.4'      = @(  2.50, 15.00)
-        'gpt-5.4-mini' = @(  0.75,  4.50)
-        'gpt-5.5'      = @(  5.00, 30.00)
-    }
-
     $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId      = [Guid]::NewGuid().ToString()
     $usage          = $response.usage
@@ -178,14 +211,6 @@ if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
     $reasoning = [long]($usage.completion_tokens_details?.reasoning_tokens ?? 0)
 
     if ($inTok -gt 0 -or $outTok -gt 0) {
-        # Longest-prefix match so 'gpt-4o-mini' beats 'gpt-4o'.
-        $rateKey = ($openAiPricing.Keys |
-            Where-Object { $Model.StartsWith($_) } |
-            Sort-Object Length -Descending |
-            Select-Object -First 1)
-        $rates   = $rateKey ? $openAiPricing[$rateKey] : @(0.00, 0.00)
-        $costUsd = [Math]::Round((($inTok * $rates[0]) + ($outTok * $rates[1])) / 1000000.0, 8)
-
         $obsBody = @{
             provider         = 'OpenAI'
             model            = $Model
@@ -193,7 +218,7 @@ if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
             outputTokens     = $outTok
             cacheReadTokens  = $cached
             cacheWriteTokens = $reasoning
-            costUsd          = $costUsd
+            costUsd          = (Get-OpenAiCost $inTok $outTok)
             eventKey         = "openai:$sessionId`:$Model"
             rawPayload       = (@{
                 source  = 'openai-review'
