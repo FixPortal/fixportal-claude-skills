@@ -7,12 +7,12 @@
   "check-then-set-race": {
     "aliases": ["non-atomic check-then-set", "missing CAS", "TOCTOU", "double-checked without interlocked"],
     "home": "reviewer brief / analyzer rule",
-    "seen": ["service-a", "service-b", "service-c", "service-d"]
+    "seen": ["service-a", "service-b", "service-c", "service-d", "service-g"]
   },
   "swallowed-exception-aborts-loop": {
     "aliases": ["exception swallowed", "fire-and-forget task never awaited", "loop aborts on one failure", "unobserved task fault"],
     "home": "reviewer brief",
-    "seen": ["service-b", "service-a"]
+    "seen": ["service-b", "service-a", "service-c", "service-e"]
   },
   "culture-parse": {
     "aliases": ["locale-sensitive parse", "missing InvariantCulture", "culture-sensitive parsing"],
