@@ -7,7 +7,8 @@
     "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction -DiffPath [-FindingsPath] [-ContextPath...] -Model, returning the review text on stdout and a non-zero exit on failure. `effort` and `repoAccess` are honoured only by wrappers that declare the matching parameter (-Effort / -RepoPath); the driver introspects each wrapper and silently omits a flag the wrapper does not support. Today only claude-review.ps1 exposes both — Copilot and Gemini CLIs do not surface a clean reasoning-effort flag, so `effort` is a no-op for them.",
     "claude": "claude-review.ps1",
     "copilot": "external-review.ps1",
-    "gemini": "gemini-review.ps1"
+    "gemini": "gemini-review.ps1",
+    "openai": "openai-review.ps1"
   },
 
   "reviewers": [
@@ -34,8 +35,8 @@
     },
     {
       "id": "X",
-      "label": "GPT-5.4 (via GitHub Copilot)",
-      "wrapper": "copilot",
+      "label": "GPT-5.4 (via OpenAI API)",
+      "wrapper": "openai",
       "model": "gpt-5.4",
       "vendor": "openai",
       "effort": "high",
