@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Sonnet, Google Gemini, and GPT-5.4 (via the GitHub Copilot CLI), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository. (Anthropic reviewer is Claude Sonnet since 2026-06-13; was Fable until US export restrictions removed it.)
+description: Use when the user requests an adversarial review, cross-vendor / multi-model code review, or runs /adversarial-review — now or deferred ("once you are done", "after this"). MANDATORY trigger phrases — "/adversarial-review", "adversarial review", "cross-vendor review", "cross-vendor code review", "multi-model review". If the user uses any of these by name — now or for later ("once you are done", "after this", etc.) — you MUST invoke this skill via the Skill tool. Do NOT hand-roll an equivalent with general-purpose Agent subagents — that uses Claude-only reviewers and defeats the entire point of the panel (uncorrelated error across vendors). The point is the non-Claude reviewer; without it, this is just same-vendor self-review. Use for a code review of a branch, diff, pull request, or module/whole-repo audit. Runs a blind independent review by Claude Sonnet, Google Gemini, and GPT-5.4 (via the OpenAI API), then a cross-examination round, then an adjudication pass, then a verification pass over the High and contested findings against the live code. Works in a git repository. (Anthropic reviewer is Claude Sonnet since 2026-06-13; was Fable until US export restrictions removed it. GPT reviewer moved from GitHub Copilot CLI to direct OpenAI API on 2026-06-14.)
 ---
 
 # Adversarial Review
@@ -9,8 +9,8 @@ description: Use when the user requests an adversarial review, cross-vendor / mu
 
 `adversarial-review` runs a code review as a three-model panel whose value
 comes from *uncorrelated* error: three models across three vendors — Claude
-Sonnet, Google Gemini, and GPT-5.4 (the last reached through the user's GitHub
-Copilot subscription) — review the same change, then attack each other's
+Sonnet, Google Gemini, and GPT-5.4 (via the OpenAI Chat Completions API) —
+review the same change, then attack each other's
 findings, then a judge (Claude Opus) reconciles. NOTE: the anthropic reviewer
 was Claude Fable 5 until 2026-06-13, when US Commerce Dept access restrictions
 made Fable unreachable; it is now Claude Sonnet — kept deliberately distinct
@@ -73,12 +73,13 @@ resolves all of this in full.
 - A git repository — the change under review lives here.
 - The native panel spans three vendors: **Claude Sonnet** (spawned in-process
   via the `Agent` tool), **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4**
-  (`external-review.ps1`, via GitHub Copilot). The two non-Claude reviewers run
-  as subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
-- GitHub Copilot CLI installed and authenticated (`copilot` on PATH) — the GPT
-  reviewer rides the user's Copilot subscription — and the Gemini CLI installed
-  and authenticated (`gemini` on PATH), drawing on the user's Google quota.
-- `external-review.ps1` and `gemini-review.ps1` (beside this file) wrap those
+  (`openai-review.ps1`, via the OpenAI Chat Completions API). The two non-Claude
+  reviewers run as subprocess wrappers because no `Agent` tool exists for
+  non-Claude vendors.
+- `$env:OPENAI_API_KEY` set to an OpenAI key with Chat Completions access (for
+  the GPT reviewer), and the Gemini CLI installed and authenticated (`gemini` on
+  PATH), drawing on the user's Google quota.
+- `openai-review.ps1` and `gemini-review.ps1` (beside this file) wrap those
   two calls. If a wrapper exits non-zero — not authenticated, quota exhausted,
   model unavailable — report that reviewer as unavailable and continue, **as
   long as at least two vendors still ran** (e.g. Sonnet + Gemini, or Sonnet + GPT).
@@ -104,7 +105,7 @@ live beside this file:
   file: the enabled set must span at least `minVendors` (default 2) distinct
   vendors, or a run aborts — a same-vendor panel is self-review, not adversarial.
 - **Uniform reviewer wrappers** — `claude-review.ps1` (Claude tiers via
-  `claude -p`), `external-review.ps1` (GPT via Copilot), `gemini-review.ps1`
+  `claude -p`), `openai-review.ps1` (GPT via the OpenAI API), `gemini-review.ps1`
   (Gemini). All share one contract: `-Instruction -DiffPath [-FindingsPath]
   [-ContextPath…] -Model [-Effort] [-RepoPath]`, returning the review on stdout
   and a non-zero exit on failure. Each runs read-only and hermetic.
@@ -143,8 +144,8 @@ mangle the quoting.
 
 **Reasoning effort is not uniform across vendors.** `--effort`
 (low|medium|high|xhigh|max) is real on `claude -p` and the wrappers honour the
-manifest's `effort` for Claude reviewers. The Copilot and Gemini CLIs expose no
-clean reasoning-effort flag, so `effort` is a no-op for them — the driver
+manifest's `effort` for Claude reviewers. The OpenAI and Gemini wrappers expose
+no clean reasoning-effort flag, so `effort` is a no-op for them — the driver
 introspects each wrapper and silently omits a flag it does not declare. Do not
 plan to "dial the scanners down to save cost": for a panel whose whole value is
 catching what a shallow pass misses, default the reviewers to depth.
@@ -167,14 +168,14 @@ scopes *which files*. Resolve the revision part as:
   `git diff -U15 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD`. Every line
   counts as an addition, so the panel reviews the code as it stands today.
   Always pair this with a pathspec — auditing a whole repo in one run dilutes
-  every finding and overruns the Copilot reviewer; scope each run to one module.
+  every finding and overruns the GPT reviewer; scope each run to one module.
 - **No argument** — review the current branch against its base. Detect the
   default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, falling
   back to whichever of `main` / `master` exists), take
   `git merge-base <default> HEAD`, and run `git diff -U15 <merge-base>` so that
   committed and uncommitted work on the branch are both included.
 
-The generous `-U15` context matters: the Copilot reviewer sees only the diff
+The generous `-U15` context matters: the GPT reviewer sees only the diff
 file.
 
 **Pathspec.** Anything after `--` is forwarded verbatim to `git diff` as a
@@ -198,8 +199,8 @@ commit subjects (`git log --format='%h %s' <base>..HEAD`); skip this for an
 ### 0a. Size the diff and plan the chunking
 
 A reviewer reasons well over a diff it can hold whole; past roughly **2,000
-added lines** the panel degrades — findings dilute, and the Copilot/GPT-5.4
-reviewer (which sees only the diff file, no repo access) starts to lose the
+added lines** the panel degrades — findings dilute, and the GPT-5.4 reviewer
+(which sees only the diff file, no repo access) starts to lose the
 far end. So before running, count added lines
 (`git diff … | grep -c '^+'`). If the diff is under the budget, run it as a
 single review — skip the rest of this section.
@@ -248,9 +249,11 @@ really are new.
   `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist:
   `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>"`
   The wrapper pins `gemini-3.1-pro-preview`.
-- **Reviewer X** — the Copilot wrapper, same pattern:
-  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>"`
-  The script pins `gpt-5.4`.
+- **Reviewer X** — the OpenAI wrapper, same pattern:
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\openai-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-X.json"`
+  The script pins `gpt-5.4`. Pass `-UsageSidecarPath` for Phase 1 only — the
+  sidecar captures exact token counts from the API response so the host agent
+  can pass real figures to `emit-review-telemetry.ps1` rather than zeros.
 
   **Neither cross-vendor reviewer (G or X) sees the repository** — unlike B,
   they work only from the files you hand them. That blindness is their main
@@ -276,7 +279,7 @@ output — return only the findings (Phase 1) / verdicts and gaps (Phase 2), no
 narration or thinking-aloud preamble.` The brief already says "no narration",
 but a subagent treats its final message as a human-facing summary unless told
 otherwise, and will prepend "Let me verify…" reasoning that pollutes the saved
-artefact. The Gemini and Copilot wrappers do not need this — they return only
+artefact. The Gemini and OpenAI wrappers do not need this — they return only
 the model's answer.
 
 **Then strip any surviving preamble mechanically — do not rely on the
@@ -286,7 +289,7 @@ before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
 Phase 1, the first line matching `F#:` in Phase 2 — and keep from there. The
 narration is never part of a finding, so this is lossless. Apply it to Reviewer
-B; the Gemini and Copilot output rarely needs it but check the same way.
+B; the Gemini and OpenAI reviewer output rarely needs it but check the same way.
 
 Collect the three finding sets verbatim (post-strip). Do not merge or edit them
 yet.
@@ -307,11 +310,11 @@ the diff, and the pooled findings:
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
   files you gave it in Phase 1:
   `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
-- Reviewer X — `external-review.ps1` with the Phase 2 brief and **both**
+- Reviewer X — `openai-review.ps1` with the Phase 2 brief and **both**
   files, the pooled findings passed as `-FindingsPath`. Pass the **same**
   `-ContextPath` files you gave it in Phase 1, so it can still check the
   mechanisms the diff does not show when it attacks the pooled findings:
-  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\external-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\openai-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
 
 ### 3. Phase 3 — adjudication
 
@@ -392,10 +395,14 @@ reviewer), passing:
   `[contested]` findings that survived Phase 4 as CONFIRMED or INDETERMINATE →
   credit all three (contested attribution is ambiguous; don't penalise partial
   credit).
-- **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`**, **`-ReviewDurationMs`**
-  — pass 0 from both the Claude Code path (token data captured per-call by the
-  wrappers; Agent tool does not expose call duration) and the driver path (same
-  reason).
+- **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`** — for Reviewer X
+  (OpenAI), read `<workdir>/usage-X.json` written by the Phase 1 `-UsageSidecarPath`
+  call and pass the values; the direct API response gives exact figures. For
+  Reviewer B (Claude Sonnet via Agent tool) and Reviewer G (Gemini CLI), pass 0
+  — the Agent tool does not expose token counts, and the Gemini wrapper posts
+  per-call Observatory events separately.
+- **`-ReviewDurationMs`** — pass 0; neither the Agent tool nor the subprocess
+  wrappers expose wall-clock call duration in a form the host agent can capture.
 
 The script is fire-and-forget and silently skips when `$env:OBSERVATORY_API_KEY`
 or `$env:OBSERVATORY_URL` is absent. Run all three PowerShell calls in a single
@@ -496,8 +503,8 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 # fixportal-engine — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
-chunks (three reviewers per chunk: Claude Sonnet, Gemini, GPT-5.4 via
-GitHub Copilot → blind review → cross-examination → adjudication), then
+chunks (three reviewers per chunk: Claude Sonnet, Gemini, GPT-5.4 (via OpenAI
+API) → blind review → cross-examination → adjudication), then
 synthesised into one repo-level report.
 
 - **Consolidated report:** [[report]]
@@ -808,29 +815,25 @@ the code shows. Output only the verdict and evidence — no preamble.
 ## Cost
 
 One run (one chunk) is 3 Claude subagent calls — the Sonnet reviewer in Phase 1
-and Phase 2, plus the Opus judge — alongside 2 Gemini calls and 2 Copilot calls
-(Phase 1 and Phase 2). The Copilot calls draw on the user's monthly Copilot
-premium-request allowance; the Gemini calls draw on the user's Google quota. A
-multi-chunk audit multiplies this by the chunk count and adds one Claude
-synthesis call — e.g. a 6-chunk audit is ~19 Claude subagent calls, 12 Gemini
-calls, and 12 Copilot *calls*.
+and Phase 2, plus the Opus judge — alongside 2 Gemini calls and 2 OpenAI API
+calls (Phase 1 and Phase 2). Gemini calls draw on the user's Google quota; OpenAI
+calls are billed per-token at the model's rate (see the pricing table in
+`openai-review.ps1`). A multi-chunk audit multiplies this by the chunk count and
+adds one Claude synthesis call — e.g. a 6-chunk audit is ~19 Claude subagent
+calls, 12 Gemini calls, and 12 OpenAI API calls.
 
 Phase 4 verification adds one more Claude subagent call **per High/contested
 finding**, run once on the published report (not per chunk) and defaulting to
-Sonnet — usually a handful (the 6-chunk fixportal-fixatdl audit had 6 Highs).
-So budget roughly "+ one Sonnet call per High/contested finding" on top of the
-figures above; verification adds no Copilot calls. State the projected cost when
-presenting the chunk plan (§0a), and mention it too if the skill is being run
-repeatedly in quick succession.
+Sonnet — usually a handful. So budget roughly "+ one Sonnet call per
+High/contested finding" on top of the figures above; verification adds no OpenAI
+calls. State the projected cost when presenting the chunk plan (§0a), and mention
+it too if the skill is being run repeatedly in quick succession.
 
-A Copilot *call* is not one premium request. Each request is billed at the
-model's multiplier, so the pinned `gpt-5.4` may consume more than one premium
-request per call — count Copilot calls × the model multiplier against the
-plan's monthly allowance (Copilot Pro ≈ 300 premium requests/month, Pro+ ≈
-1,500; both the allowance and per-model multipliers change over time and are
-authoritative at github.com/settings/copilot). Even so, an audit's call count
-is small relative to the allowance; the allowance only bites under repeated
-whole-repo runs.
+OpenAI API costs are billed directly per-token; exact per-run costs appear in
+the AI Observatory (posted inline by `openai-review.ps1` from the API response
+usage object). The `openai-review.ps1` pricing table covers the common GPT-4/5
+model family; verify rates at platform.openai.com/docs before treating Observatory
+figures as authoritative for billing purposes.
 
 ## Common mistakes
 
@@ -849,7 +852,7 @@ whole-repo runs.
   Gemini). Never silently collapse to a single vendor — a Claude-only panel is
   self-review, not adversarial; if both non-Claude reviewers fail, stop.
 - **Auditing a whole repo in one run.** A multi-thousand-line `audit` diff
-  dilutes every finding and overruns the Copilot reviewer. Size the diff and
+  dilutes every finding and overruns the GPT reviewer. Size the diff and
   chunk it (§0a); scope each chunk to one cohesive area with a pathspec.
 - **Answering chunk-by-chunk.** A multi-chunk audit produces one consolidated
   report after every chunk has run (§5), not a separate verdict per chunk —
