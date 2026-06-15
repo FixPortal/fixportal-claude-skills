@@ -20,16 +20,18 @@ Apply standard .NET project and solution preferences when creating new projects 
 
 ### Solution Structure
 
+- Use `.slnx` format (XML-based, SDK 9+) for new solutions. Migrate existing `.sln` files with `dotnet solution <file>.sln migrate`.
 - `src/` folder for production projects
 - `tests/` folder for test projects
 - Existing projects must be moved into the appropriate folder
 - A **Solution Items** solution folder containing:
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
-  - `.editorconfig` (copied from `~/.claude\resources\.editorconfig`)
-  - `.gitignore` (copied from `~/.claude\resources\.gitignore`)
+  - `.editorconfig` — thin **formatter-only** stub (from the `<YourOrg.CodeStyle>` package's `assets/consumer.editorconfig`); all analyzer/style **rules** come from the package, not this file
+  - `.gitignore` (copied from `~/.claude/resources/.gitignore`)
+  - `nuget.config` (maps the <your-org> GitHub Packages feed — see Code Style and Analysis)
   - `.github/workflows/` folder
-- A `.github/dependabot.yml` file (copied from `~/.claude\resources\dependabot.yml`)
+- A `.github/dependabot.yml` file (copied from `~/.claude/resources/dependabot.yml`)
 
 ### Project Defaults
 
@@ -52,30 +54,70 @@ New projects default to NodaTime for date/time handling (see the date/time secti
 
 ### Code Style and Analysis
 
-- `.editorconfig` at solution root (source: `~/.claude\resources\.editorconfig` — source-controlled in the `.claude` repo)
-- File-scoped namespaces enforced via editorconfig
-- Do not rename existing projects
+Code style and analyzers are delivered by a shared **`<YourOrg.CodeStyle>`** NuGet
+package (repo: `<your-org>/<your-codestyle-repo>`), **not** by copying an `.editorconfig`.
+The package ships a global AnalyzerConfig (every rule + severity), sets
+`EnforceCodeStyleInBuild=true`, and bundles `SonarAnalyzer.CSharp` (pinned). One
+reference makes the whole house style build-enforced, and a rule change ships as a
+package version bump instead of N hand-edits to drift-prone copies.
 
-#### Static analysis (SonarAnalyzer)
-
-- Add `SonarAnalyzer.CSharp` as a **`GlobalPackageReference`** in `Directory.Packages.props`
-  (latest release) so it applies to every project automatically — CPM treats a
-  `GlobalPackageReference` as a private analyzer asset, no per-`csproj` edits needed:
+- Add to `Directory.Build.props` so it applies to every project:
 
   ```xml
   <ItemGroup>
-    <GlobalPackageReference Include="SonarAnalyzer.CSharp" Version="<latest>" />
+    <PackageReference Include="<YourOrg.CodeStyle>" Version="<latest>" PrivateAssets="all" />
   </ItemGroup>
   ```
 
-- The full Sonar recommended set runs at its default severities (warnings, **non-blocking** —
-  do not set `TreatWarningsAsErrors`). Tune individual rules in `.editorconfig` via
-  `dotnet_diagnostic.S####.severity`.
-- **Cognitive complexity (`S3776`) is the complexity gate** — already pinned to `warning`
-  in the resource `.editorconfig`. Prefer it over cyclomatic complexity, which over-counts
-  flat `switch`/ternary dispatch and produces false alarms on idiomatic code.
-- Triage the first-run findings by silencing noisy/stylistic rules in `.editorconfig`
-  (`= none`) rather than disabling the analyzer.
+- Keep only a **thin formatter-only `.editorconfig`** at the solution root (indent,
+  charset, newline/spacing, file-type sections) — copy the package's
+  `assets/consumer.editorconfig`. Do **not** copy the rule set back into it; a local copy
+  re-drifts, which is exactly what the package eliminates. Add a local rule override only
+  for a genuine project-specific need, with a comment why (e.g. re-enabling culture rules
+  CA1304/1307/1308/1309/1311 in a service that serves localized text).
+- **Do not** add `SonarAnalyzer.CSharp` separately — the package bundles it. The `S3776`
+  cognitive-complexity gate (prefer cognitive over cyclomatic, which over-counts flat
+  `switch`/ternary dispatch) and the full CA/IDE/Sonar suppression set all live in the
+  package's global config.
+- File-scoped namespaces, always-brace (IDE0011), no-redundant-parens (IDE0047), etc. are
+  enforced at `error` severity — they fail the build via `EnforceCodeStyleInBuild`,
+  independent of `TreatWarningsAsErrors`. Sonar S-rules stay advisory (warning,
+  non-blocking). Do not rename existing projects.
+- After adding the package to an **existing** project, run `dotnet format` once to apply
+  the rules mechanically, then build + test before committing.
+
+#### GitHub Packages auth (required to restore)
+
+The package is **private** on the <your-org> GitHub Packages feed, so a token is
+needed even to *restore* it — not only to publish. Add a `nuget.config` at the solution
+root mapping the feed, with a `read:packages` PAT (or `GITHUB_TOKEN` in CI) supplied via
+an env var — never a committed literal:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+    <add key="YourOrg" value="https://nuget.pkg.github.com/YourOrg/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <YourOrg>
+      <add key="Username" value="YourOrg" />
+      <add key="ClearTextPassword" value="%GITHUB_PACKAGES_TOKEN%" />
+    </YourOrg>
+  </packageSourceCredentials>
+  <packageSourceMapping>
+    <packageSource key="YourOrg"><package pattern="YourOrg.*" /></packageSource>
+    <packageSource key="nuget.org"><package pattern="*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+```
+
+Use `YourOrg.*` in the source mapping, not an exact package name like `YourOrg.CodeStyle`.
+Exact matches break as soon as a second package is added (e.g. `YourOrg.CodeStyle.ArchRules`
+falls through to nuget.org and fails). The wildcard covers all current and future packages from
+the private feed.
 
 #### Path handling (`Path.Join` vs `Path.Combine`)
 
@@ -96,29 +138,38 @@ and `Combine` throws on `null` where `Join` quietly concatenates.
 
 ### Resource Files
 
-The following files are copied into the new solution. All are source-controlled in the `.claude` repo under `~/.claude/resources/`:
+The following files are copied into the new solution. The `.gitignore` and
+`dependabot.yml` are source-controlled in the `.claude` repo under `~/.claude/resources/`;
+the `.editorconfig` is a **formatter-only stub** sourced from the `<YourOrg.CodeStyle>`
+package (the rules live in the package, not the resource `.editorconfig`):
 
 | File | Source | Destination |
 |------|--------|-------------|
-| `.editorconfig` | `~/.claude\resources\.editorconfig` | Solution root |
-| `.gitignore` | `~/.claude\resources\.gitignore` | Solution root |
-| `dependabot.yml` | `~/.claude\resources\dependabot.yml` | `.github/dependabot.yml` |
+| `.editorconfig` (formatter-only stub) | `<YourOrg.CodeStyle>` package → `assets/consumer.editorconfig` | Solution root |
+| `.gitignore` | `~/.claude/resources/.gitignore` | Solution root |
+| `dependabot.yml` | `~/.claude/resources/dependabot.yml` | `.github/dependabot.yml` |
+
+> The resource `.editorconfig` (`~/.claude/resources/.editorconfig`) remains the **master
+> rule set** — it is the source the package's global config is generated from. When the
+> house style changes, edit the master, regenerate the package's global config, and release
+> a new package version.
 
 ## Checklist
 
 When scaffolding or normalizing a .NET project, verify:
 
 - [ ] `src/` and `tests/` folders created; projects moved accordingly
-- [ ] Solution Items folder added with `Directory.Build.props`, `Directory.Packages.props`, `.editorconfig`, `.gitignore`
+- [ ] Solution Items folder added with `Directory.Build.props`, `Directory.Packages.props`, `.editorconfig`, `.gitignore`, `nuget.config`
 - [ ] `.github/workflows/` folder created and added to Solution Items — wire CI via the `scaffold-ci` skill (ci.yml, mutation.yml, CodeQL)
 - [ ] `.github/dependabot.yml` copied into place
 - [ ] All projects target `net10.0`
 - [ ] `Nullable` and `ImplicitUsings` enabled (via `Directory.Build.props`)
 - [ ] Central package management enabled via `Directory.Packages.props`
-- [ ] `SonarAnalyzer.CSharp` added as a `GlobalPackageReference`; `S3776` (cognitive complexity) at `warning`, non-blocking
+- [ ] `<YourOrg.CodeStyle>` added as a `PackageReference` (`PrivateAssets="all"`) in `Directory.Build.props` — brings the global config, `EnforceCodeStyleInBuild`, and bundled `SonarAnalyzer.CSharp`; do **not** add Sonar separately
+- [ ] `nuget.config` maps the <your-org> GitHub Packages feed; `read:packages` token wired via env var (not committed)
 - [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
-- [ ] `.editorconfig` copied from resources
+- [ ] `.editorconfig` formatter-only stub in place (from the `<YourOrg.CodeStyle>` package); rules NOT duplicated locally
 - [ ] `.gitignore` copied from resources
 - [ ] No projects renamed
