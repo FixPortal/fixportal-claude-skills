@@ -144,9 +144,15 @@ $diffFile = Join-Path $WorkDir 'review-diff.txt'
 $pooledFile = Join-Path $WorkDir 'pooled-findings.txt'
 
 # --- Resolve the diff (§0) ----------------------------------------------
+# Context depth: audit and PR reviews use -U15 for rich surrounding context.
+# Drift and range reviews default to -U6 — the change is forward-only and
+# does not need deep context; heavy context inflates total diff size 2–3×
+# and pushes into the cross-vendor reviewers' transport limits (§0a).
 $isAudit = $false
-$diffArgs = $null
+$isPR    = $false
+$baseDiffArgs = $null   # ref + context args WITHOUT pathspec; stored for compact-diff regeneration
 if ($Target -match '^\d+$') {
+    $isPR = $true
     Write-Host "Resolving PR #$Target via gh..."
     $raw = (& gh pr diff $Target 2>&1)
     if ($LASTEXITCODE -ne 0) { Die "gh pr diff $Target failed:`n$raw" }
@@ -158,10 +164,10 @@ else {
         if (-not $Pathspec) {
             Write-Warning 'audit with no -Pathspec reviews the WHOLE repo as one diff — this dilutes findings and overruns the cross-vendor reviewer. Scope it to one cohesive area.'
         }
-        $diffArgs = @('-U15', $emptyTree, 'HEAD')
+        $baseDiffArgs = @('-U15', $emptyTree, 'HEAD')
     }
     elseif ($Target) {
-        $diffArgs = @('-U15', $Target)
+        $baseDiffArgs = @('-U6', $Target)
     }
     else {
         $defaultBranch = (& git -C $RepoPath symbolic-ref --short refs/remotes/origin/HEAD 2>$null)
@@ -174,10 +180,10 @@ else {
         $defaultBranch = ($defaultBranch -replace '^origin/', '').Trim()
         $base = (& git -C $RepoPath merge-base $defaultBranch HEAD 2>$null).Trim()
         if (-not $base) { Die "Could not find merge-base of $defaultBranch and HEAD." }
-        $diffArgs = @('-U15', $base)
+        $baseDiffArgs = @('-U6', $base)
     }
 
-    if ($Pathspec) { $diffArgs += @('--') + $Pathspec }
+    $diffArgs = if ($Pathspec) { $baseDiffArgs + @('--') + $Pathspec } else { $baseDiffArgs }
     $raw = (& git -C $RepoPath diff @diffArgs 2>&1)
     if ($LASTEXITCODE -ne 0) { Die "git diff failed:`n$raw" }
     Set-Content -LiteralPath $diffFile -Value $raw -Encoding utf8
@@ -186,11 +192,39 @@ else {
 $diffText = Get-Content -LiteralPath $diffFile -Raw
 if ([string]::IsNullOrWhiteSpace($diffText)) { Die 'The resolved diff is empty — nothing to review.' 3 }
 
-# --- Size check (§0a) — advisory only; chunking is host judgment ---------
-$addedLines = @(Get-Content -LiteralPath $diffFile | Where-Object { $_.StartsWith('+') -and -not $_.StartsWith('+++') }).Count
+# --- Size check and compact-diff generation (§0a) -----------------------
+$diffLines  = Get-Content -LiteralPath $diffFile
+$addedLines = @($diffLines | Where-Object { $_.StartsWith('+') -and -not $_.StartsWith('+++') }).Count
+$totalLines = $diffLines.Count
+$estTokens  = [int]($totalLines * 12)   # ≈12 tokens/line for code diffs
+
 if ($addedLines -gt 2000) {
     Write-Warning ("Diff has $addedLines added lines (> 2000). The panel degrades past ~2,000 lines. " +
         'Consider splitting into cohesive chunks and running this driver once per chunk, then synthesising.')
+}
+
+# Transport gate: OpenAI has a ~30k tokens-per-request cap; Gemini CLI hangs
+# on oversized input. Keep 25k as a headroom margin. When over the gate,
+# generate a compact (-U4) diff for the repo-blind cross-vendor reviewers;
+# Reviewer B (Claude, repo access) keeps the full diff.
+$tokenGate      = 25000
+$compactDiffFile = $null
+if ($estTokens -gt $tokenGate) {
+    if ($isPR) {
+        Write-Warning ("PR diff ~$estTokens est. tokens exceeds the $tokenGate-token gate. Cannot regenerate " +
+            'at lower context. Cross-vendor reviewers will receive the full diff; monitor for 429 / Gemini hang.')
+    }
+    elseif ($baseDiffArgs) {
+        $compactArgs = @('-U4') + $baseDiffArgs[1..($baseDiffArgs.Count - 1)]
+        if ($Pathspec) { $compactArgs += @('--') + $Pathspec }
+        $compactRaw = (& git -C $RepoPath diff @compactArgs 2>&1)
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($compactRaw)) {
+            $compactDiffFile = Join-Path $WorkDir 'review-diff-compact.txt'
+            Set-Content -LiteralPath $compactDiffFile -Value $compactRaw -Encoding utf8
+            Write-Warning ("Diff ~$estTokens est. tokens exceeds $tokenGate-token gate. " +
+                'Compact diff (-U4) written to review-diff-compact.txt — G and X will use it; B keeps the full diff.')
+        }
+    }
 }
 
 # --- Compose the Phase 1 brief ------------------------------------------
@@ -217,7 +251,10 @@ Copy-Item (Join-Path $briefDir 'phase3-adjudicate.txt') (Join-Path $WorkDir 'pha
 # actually declare them (Copilot/Gemini do not expose a reasoning-effort flag).
 function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool] $withFindings) {
     $caps = (Get-Command $wrapper).Parameters.Keys
-    $a = @('-Instruction', $instruction, '-DiffPath', $diffFile, '-Model', $r.model)
+    # Repo-blind reviewers (G and X) get the compact diff when one was generated;
+    # Reviewer B (repo access) always gets the full diff so it can cross-reference the repo.
+    $thisDiff = if ($compactDiffFile -and -not $r.repoAccess) { $compactDiffFile } else { $diffFile }
+    $a = @('-Instruction', $instruction, '-DiffPath', $thisDiff, '-Model', $r.model)
     if ($withFindings) { $a += @('-FindingsPath', $pooledFile) }
     foreach ($c in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $c) }
     if ($caps -contains 'Effort' -and $r.effort) { $a += @('-Effort', $r.effort) }
@@ -314,7 +351,8 @@ $p2ok = Invoke-Round 'p2' '^(F\d+:|### )' $true
 $packet = [System.Text.StringBuilder]::new()
 [void]$packet.AppendLine("# Judge packet — $repoName")
 [void]$packet.AppendLine()
-[void]$packet.AppendLine("Target: ``$($Target ? $Target : '(branch vs base)')`` · added lines: $addedLines · audit: $isAudit")
+$compactNote = if ($compactDiffFile) { ' · compact diff: G+X' } else { '' }
+[void]$packet.AppendLine("Target: ``$($Target ? $Target : '(branch vs base)')`` · added lines: $addedLines · total lines: $totalLines · est. tokens: $estTokens$compactNote · audit: $isAudit")
 [void]$packet.AppendLine("Reviewers (Phase 1): $(($p1ok.Label) -join ', ')")
 [void]$packet.AppendLine()
 [void]$packet.AppendLine('Adjudicate with `briefs/phase3-adjudicate.txt` (copied here as `phase3-brief.txt`).')
@@ -353,6 +391,9 @@ $status = [ordered]@{
     target          = $Target
     audit           = $isAudit
     addedLines      = $addedLines
+    totalLines      = $totalLines
+    estTokens       = $estTokens
+    compactDiff     = $compactDiffFile
     workDir         = $WorkDir
     diffFile        = $diffFile
     pooledFile      = $pooledFile
@@ -374,7 +415,7 @@ Write-Host "Judge packet: $packetFile"
 Write-Host "Next: adjudicate -> verify -> [synthesise] -> persist (see status.json / SKILL.md)."
 $status | ConvertTo-Json -Depth 6
 
-# Usage telemetry: real usage is captured per reviewer instead of a
+# Observatory telemetry: real usage is captured per reviewer instead of a
 # zero-token marker here -- gemini-review.ps1 posts its own stats, and Copilot
-# headless sessions leave full modelMetrics in ~/.copilot/session-state for any
-# local sweeper to collect.
+# headless sessions are swept from ~/.copilot/session-state by
+# ~/.claude/hooks/observe-sweep.ps1.
