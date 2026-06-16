@@ -205,6 +205,60 @@ far end. So before running, count added lines
 (`git diff … | grep -c '^+'`). If the diff is under the budget, run it as a
 single review — skip the rest of this section.
 
+**Two budgets, whichever trips first.** The ~2,000-added-lines figure is a
+*comprehension* budget — how much a reviewer can reason over coherently. There
+is a second, harder limit the cross-vendor reviewers hit on **total diff size**
+(added + deleted + context + headers), not added lines: a per-request
+**transport gate**. Both reviewers send the whole diff file as one payload, so a
+small-`+` diff with heavy context can still blow this gate. Compute total lines
+too (`git diff … | wc -l`), estimate tokens (≈ total lines × 11–13, English code
+diffs), and size the payload to keep headroom under whatever per-request cap
+your tier and tooling enforce. If either the comprehension budget *or* the
+transport gate trips, split (or compact, below) before running.
+
+**Why context inflates total size 2–3×.** The skill resolves diffs at `-U15`
+for the diff-only reviewers' benefit, but high context multiplies total lines
+far above added lines — one drift chunk went `552` added → `13,582` total lines
+at `-U6` purely because the change was many small scattered hunks, each carrying
+15 (or 6) lines of surrounding context. So the **context setting, not the
+added-line count, is what blows the transport budget.** A 1,516-added-line drift
+diff was `2,756` total lines at `-U15`; the *same* diff at `-U4` was `2,348`
+total lines — a large fraction of which is pure context, not changed code.
+
+**Transport failure modes to design around** (both bite on total size, neither
+is fixed by retrying):
+
+- **The OpenAI reviewer — hard per-request token cap.** An OpenAI tier can
+  enforce a hard per-request tokens-per-minute cap. A single request over that
+  ceiling returns `HTTP 429 "Request too large …"` and **cannot succeed by
+  retrying** — it is the per-request size measured against the TPM window, not a
+  transient rate-limit that clears. The exact ceiling is account/tier-specific,
+  so size the payload with headroom under it rather than assuming a fixed
+  number.
+- **The Gemini reviewer — large-input CLI hang.** The Gemini CLI can **hang
+  indefinitely** (0 bytes out, no error, no timeout honoured) on oversized
+  stdin/prompt input. This is not a token cap — trivial prompts still answer
+  quickly — but a CLI-robustness limit. The same oversized diff that 429'd the
+  OpenAI reviewer hung the Gemini reviewer twice.
+
+**Mitigation — a compact diff for the cross-vendor reviewers.** When the full
+`-U15` diff exceeds the transport gate but is still within the comprehension
+budget (few added lines, just context-heavy), do **not** force a chunk split.
+Instead generate a **compact lower-context diff** (`-U4` or `-U6`) *specifically
+for the two cross-vendor reviewers* — they are diff-only, so less surrounding
+context is already their normal working condition — while Reviewer B (Claude,
+repo access) keeps the fuller `-U15` diff. The pooled findings stay comparable:
+all three reviewed the same changed lines, only the context window differed.
+Write both as separate files (`review-diff.txt` at `-U15`,
+`review-diff-compact.txt` at `-U4`/`-U6`) and point G and X at the compact one.
+
+**Drift and range reviews: default to lower context.** A drift/range review
+(`<base>..HEAD`) is forward-only and does not need `-U15` — its hunks are
+already the change. Default these to **`-U6`** (resolve the diff with `git diff
+-U6 <range>` in §0) to keep total size near the added-line count from the start,
+rather than generating at `-U15` and compacting after. Reserve `-U15` for
+`audit` and PR reviews where the extra context earns its keep.
+
 If it is over budget — which a whole-repo `audit` almost always is — **do not
 run it as one review.** Split it into chunks and run the full three-phase
 pipeline once per chunk, then synthesise (§5). Plan the split like this:
