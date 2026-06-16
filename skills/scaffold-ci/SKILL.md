@@ -43,11 +43,20 @@ before defaulting Stryker to `mtp`, confirm the test project really runs on MTP 
 
 These are the deltas an unaided agent gets wrong. Get them right:
 
-1. **Non-cancelling concurrency.** `cancel-in-progress: false`, always. A second push while
-   a deploy is mid-flight must NOT kill the deploy. Never `cancel-in-progress: true`, even
-   for feature branches — the house accepts redundant runs to protect deploy integrity.
+1. **Concurrency depends on whether the repo deploys.**
+   - **Repo WITH a deploy job:** `cancel-in-progress: false`, always. A second push while a
+     deploy is mid-flight must NOT kill the deploy — the house accepts redundant runs to
+     protect deploy integrity.
+   - **Library / tool / no-deploy repo:** there is nothing to protect, so a superseded
+     feature-branch run is just wasted minutes. Use `cancel-in-progress: ${{ github.ref !=
+     'refs/heads/main' }}` — cancel redundant branch runs, never cancel on `main` or tags.
+     (Reviewers flagged a flat `false` here across the library repos in the sweep; matching
+     the concurrency policy to the repo's actual risk is the fix.)
 2. **Triggers:** `push` to `['**']` (all branches) + tags `v*`, `pull_request` to mainline,
-   and `workflow_dispatch` with an `environment` choice input. Not just `push: [main]`.
+   and a bare `workflow_dispatch:`. Not just `push: [main]`. Add an `environment` choice
+   input to `workflow_dispatch` **only when the repo has a real deploy job** that reads
+   `${{ inputs.environment }}` — otherwise the dropdown is dead and misleads a manual trigger
+   (a footgun that recurred across library repos in the sweep). See the Deploy section.
 3. **actionlint is the first step of every job** (`raven-actions/actionlint@v2`,
    `shellcheck: true`).
 4. **Current action pins** (see table). An unaided agent defaults to stale `@v4`.
@@ -78,21 +87,17 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]          # <- mainline branch of THIS repo
+  # Bare manual trigger. Add an `environment` choice input ONLY if this repo has a
+  # deploy job that reads ${{ inputs.environment }} (see the Deploy section); a
+  # dropdown no step consumes is a dead footgun.
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Which environment to manually deploy to'
-        type: choice
-        required: true
-        default: acme-dev
-        options:
-          - acme-dev
-          - fixportal-prod
 
-# INTENTIONALLY non-cancelling: a push during a mid-flight deploy must not kill it.
+# Concurrency: this no-deploy skeleton cancels superseded branch runs but never
+# cancels main/tags. A repo WITH a deploy job must instead pin `cancel-in-progress:
+# false` to protect mid-flight deploys (see house rule 1).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   backend:
@@ -103,7 +108,6 @@ jobs:
       - name: Lint workflows (actionlint)
         uses: raven-actions/actionlint@v2
         with:
-          version: latest
           shellcheck: true
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
@@ -134,7 +138,6 @@ jobs:
       - name: Lint workflows (actionlint)
         uses: raven-actions/actionlint@v2
         with:
-          version: latest
           shellcheck: true
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -154,9 +157,11 @@ jobs:
         run: npm run build
 ```
 
-**No deploy target?** Drop the `workflow_dispatch` `environment` choice input down to a bare
-`workflow_dispatch:` (don't list environments that don't exist) and omit the deploy jobs
-entirely. Add the environment input back only when a real deploy target lands.
+**Has a deploy target?** This skeleton is the no-deploy default (bare `workflow_dispatch:`,
+ref-gated `cancel-in-progress`). When a real deploy target lands: add the `environment`
+choice input to `workflow_dispatch` (see Deploy section), wire deploy jobs that read
+`${{ inputs.environment }}`, and switch `cancel-in-progress` to a flat `false` to protect
+mid-flight deploys. Never list environments that no step consumes.
 
 **Conditional backend extras** — add only where the repo actually has them: Bicep lint
 (`az bicep build`), an EF idempotent-migration generate + apply-to-fresh-DB precondition
@@ -165,7 +170,24 @@ empty placeholders.
 
 ### Deploy (optional, documented pattern — not boilerplate)
 
-Where a repo has a deploy target, `ci.yml` calls a reusable `_deploy.yml` / `_deploy-ui.yml`
+Where a repo has a deploy target, add the `environment` choice input back to
+`workflow_dispatch` (the skeleton omits it) so a manual deploy can pick a target:
+
+```yaml
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which environment to manually deploy to'
+        type: choice
+        required: true
+        default: <repo-dev-env>
+        options:
+          - <repo-dev-env>
+          - <repo-prod-env>
+```
+
+and switch `cancel-in-progress` to a flat `false` (house rule 1). Then `ci.yml` calls a
+reusable `_deploy.yml` / `_deploy-ui.yml`
 via `uses: ./.github/workflows/_deploy.yml` with `secrets: inherit` and
 `permissions: { id-token: write, contents: read }`. Deploy jobs are **ref-gated**:
 `workflow_dispatch` is `main`-only (the env-scoped OIDC federated cred is branch-agnostic at
@@ -392,13 +414,17 @@ if explicitly asked:
 - A separate `tsc --noEmit` step (the `build` script already type-checks via `tsc -b`).
 - `--collect:"XPlat Code Coverage"` / coverage gating in `ci.yml`.
 - Node setup or a publish-verify step in the backend job.
-- `cancel-in-progress: true` "to save minutes."
+- An unconditional `cancel-in-progress: true` (it cancels `main`/tags too) — gate it on
+  `github.ref != 'refs/heads/main'`, and use flat `false` only on a deploy repo.
 
 ## Common mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| `cancel-in-progress: true` | Always `false` — protect mid-flight deploys. |
+| Flat `cancel-in-progress: false` on a no-deploy repo | `${{ github.ref != 'refs/heads/main' }}`; flat `false` only when a deploy job needs protecting. |
+| `cancel-in-progress: true` unconditionally | Cancels main/tags too. Gate on `github.ref != 'refs/heads/main'`. |
+| Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
+| `version: latest` on `raven-actions/actionlint@v2` | Not a valid input — omit it; the `@v2` pin already selects the version. |
 | `push: [main]` only | `['**']` + tags `v*` + `pull_request` + `workflow_dispatch`. |
 | Stale `@v4` pins | checkout@v6, setup-dotnet@v5, setup-node@v6, upload-artifact@v7. |
 | No actionlint step | First step of every job. |

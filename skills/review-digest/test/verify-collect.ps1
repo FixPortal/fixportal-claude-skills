@@ -1,7 +1,18 @@
 $ErrorActionPreference = 'Stop'
 $script = Join-Path $PSScriptRoot '..\collect.ps1'
 $out = Join-Path $env:TEMP 'review-digest-data.test.json'
-& pwsh -NoProfile -File $script -Path '<repos-root>' -OutFile $out
+
+# Repos-root to exercise collect.ps1 against. This is a placeholder skeleton —
+# set it to a real repos-root path before running. The guard below fails with a
+# clear message on the un-substituted `<...>` token; without it, collect.ps1 just
+# exits non-zero on the bogus path and the later "bad path exits non-zero"
+# assertion becomes a tautology of that same failure rather than a real test.
+$reposRoot = '<repos-root>'
+if ($reposRoot -match '[<>]') {
+    throw "verify-collect.ps1: `$reposRoot is still the placeholder '$reposRoot'. Set it to a real repos-root path before running this test."
+}
+
+& pwsh -NoProfile -File $script -Path $reposRoot -OutFile $out
 if ($LASTEXITCODE -ne 0) { throw "collect.ps1 exited $LASTEXITCODE" }
 $data = Get-Content $out -Raw | ConvertFrom-Json
 

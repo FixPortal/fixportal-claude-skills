@@ -88,10 +88,14 @@ the layout that actually exists. Treat a feature-first migration as its own task
   rules downgraded to `warn`, noise rules off (see below). Per-area override
   blocks (generated code, demo mocks, scripts, tests) are included as commented
   examples — keep each with a WHY.
-- `templates/vitest.config.ts` — jsdom + `src/test/setup.ts` + `include`, **plus
-  a `coverage` block with thresholds** (provider `v8`). `globals: true` is
-  deliberately omitted (tests import from `vitest`; this also keeps ArchUnitTS's
-  root import from throwing).
+- `templates/vitest.config.ts` — jsdom + `src/test/setup.ts` + test `include`,
+  **plus a `coverage` block with `include: ['src/**']` and thresholds** (provider
+  `v8`). The `coverage.include` is load-bearing: without it v8 counts only the
+  files a test imported, so untested src files fall outside the denominator and
+  the thresholds pass vacuously. Set the threshold floors from a real
+  `--coverage` run over all of src, not the smaller test-touched-only figure.
+  `globals: true` is deliberately omitted (tests import from `vitest`; this also
+  keeps ArchUnitTS's root import from throwing).
 - `templates/tsconfig.json` + `tsconfig.app.json` + `tsconfig.node.json` —
   bundler mode, strict, `target`/`lib` es2023.
 - `templates/src/test/setup.ts` — jest-dom matchers + explicit RTL cleanup
