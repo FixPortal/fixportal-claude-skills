@@ -32,8 +32,11 @@ import { projectFiles } from './architecture.archunit'
 // relative to the test runner's cwd (= package root under Vitest).
 const TS_CONFIG = 'tsconfig.app.json'
 
-// Test files reach across layers by design; exclude them from layering rules.
-const EXCEPT_TESTS = { except: { withName: '*.test.*' } }
+// Test files (and the architecture specs themselves) reach across layers by
+// design; exclude them from layering AND cycle rules. Matches the
+// `*.{test,spec}.*` set vitest.config.ts uses — `*.spec.*` must be here too, or
+// this spec file and its `.archunit` wrapper become nodes in their own analysis.
+const EXCEPT_TESTS = { except: { withName: '*.{test,spec}.*' } }
 
 // TODO 3 -- replace with this project's FORBIDDEN_EDGES. Each row asserts:
 // nothing in `from` may import from `to`. Derive from the layer diagram: for each
@@ -87,7 +90,7 @@ describe('architecture / layer isolation', () => {
 describe('architecture / cycles', () => {
   it('the whole src tree is free of import cycles', async () => {
     const violations = await projectFiles(TS_CONFIG)
-      .inFolder('**/src/**')
+      .inFolder('**/src/**', EXCEPT_TESTS)
       .should()
       .haveNoCycles()
       .check()
