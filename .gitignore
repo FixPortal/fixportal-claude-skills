@@ -3,3 +3,7 @@ _leakscan.txt
 *.local
 .DS_Store
 Thumbs.db
+
+# Knowledge-graph tool output (graphify / understand-anything)
+graphify-out/
+.understand-anything/
