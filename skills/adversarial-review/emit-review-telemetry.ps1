@@ -93,8 +93,14 @@ $body = @{
 } | ConvertTo-Json -Compress
 
 try {
+    # Adversarial-review OUTCOME events go to the dedicated runs endpoint, NOT
+    # /api/events. /api/events parses a UsageEventRequest (provider/model/tokens);
+    # this payload (eventType/reviewer/issuesRaised/...) has no provider, so it
+    # 400s there and the catch swallows it -- which is why the dashboard's
+    # adversarial-review section stayed empty. The body already matches
+    # AdversarialReviewRunRequest exactly.
     Invoke-RestMethod `
-        -Uri "$($env:OBSERVATORY_URL)/api/events" `
+        -Uri "$($env:OBSERVATORY_URL)/api/adversarial-review/runs" `
         -Method Post `
         -ContentType 'application/json' `
         -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `

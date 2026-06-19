@@ -66,11 +66,18 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gemini-3.1-pro-preview'
+    [string] $Model = 'gemini-2.5-pro'
 )
 
 # Pipe UTF-8 to the child process so non-ASCII in diffs survives.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# Bootstrap GEMINI_API_KEY from the Windows user-scope env store if the current
+# process (e.g. Claude Code) predates the key being set in the registry.
+if (-not $env:GEMINI_API_KEY) {
+    $storedKey = [System.Environment]::GetEnvironmentVariable('GEMINI_API_KEY', 'User')
+    if ($storedKey) { $env:GEMINI_API_KEY = $storedKey }
+}
 
 if (-not (Get-Command gemini -ErrorAction SilentlyContinue)) {
     Write-Error 'Gemini CLI not found on PATH. Install with: npm install -g @google/gemini-cli'
@@ -137,6 +144,18 @@ $geminiArgs = @(
     '-o', 'json'
 )
 
+# Shadow OAuth creds so the CLI uses GEMINI_API_KEY (PAYG) instead of free-tier OAuth.
+# When both exist the CLI prefers OAuth, which hits the free-tier daily quota rather
+# than the PAYG API key. Rename-and-restore is safe: the CLI reads the file at startup,
+# so concurrent interactive sessions are unaffected once already running.
+$oauthCreds  = Join-Path $HOME '.gemini\oauth_creds.json'
+$hiddenCreds = Join-Path $HOME '.gemini\oauth_creds.json.paused'
+$movedOAuth  = $false
+if ($env:GEMINI_API_KEY -and (Test-Path $oauthCreds)) {
+    Rename-Item $oauthCreds $hiddenCreds
+    $movedOAuth = $true
+}
+
 Push-Location -LiteralPath $scratch
 try {
     $stdout = ($stdin | & gemini @geminiArgs 2>$errFile) | Out-String
@@ -146,6 +165,7 @@ try {
 finally {
     Pop-Location
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    if ($movedOAuth) { Rename-Item $hiddenCreds $oauthCreds -ErrorAction SilentlyContinue }
 }
 
 if ($exitCode -ne 0) {
@@ -169,20 +189,22 @@ if ([string]::IsNullOrWhiteSpace($response)) {
     exit 1
 }
 
-# --- Usage telemetry (fire-and-forget, optional) ----------------------------
+# --- Observatory telemetry (fire-and-forget) -------------------------------
 # The JSON envelope's stats block carries real per-model token usage; without
-# this post, headless gemini reviews are invisible to any usage dashboard (no
-# hook covers the plain gemini CLI). Posts only when BOTH OBSERVATORY_URL and
-# OBSERVATORY_API_KEY are set; otherwise a silent no-op.
+# this post, headless gemini reviews are invisible to the AI Observatory (no
+# hook covers the plain gemini CLI).
 if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $json.stats?.models) {
-    # USD per million tokens: input / output / thoughts
+    # USD per million tokens: input / output / thoughts (0.00 = no thinking tier)
+    # Rates from https://ai.google.dev/gemini-api/docs/pricing (2025-06-19)
+    # Tiered models use the ≤200k rate; thought tokens billed at rates[2].
     $gemPricing = @{
-        'gemini-3.5-pro'   = @(2.50, 10.0,  3.50)
-        'gemini-3.5-flash' = @(0.10,  0.40, 3.50)
-        'gemini-3.1-pro'   = @(2.50, 10.0,  3.50)
-        'gemini-3.1-flash' = @(0.10,  0.40, 3.50)
-        'gemini-2.5-pro'   = @(1.25, 10.0,  3.50)
-        'gemini-2.5-flash' = @(0.075, 0.30, 3.50)
+        'gemini-3.5-flash'       = @( 1.50,  9.00, 0.00)
+        'gemini-3.1-pro-preview' = @( 2.00, 12.00, 0.00)
+        'gemini-3.1-flash-lite'  = @( 0.25,  1.50, 0.00)
+        'gemini-3-flash-preview' = @( 0.50,  3.00, 0.00)
+        'gemini-2.5-pro'         = @( 1.25, 10.00, 3.50)
+        'gemini-2.5-flash-lite'  = @( 0.10,  0.40, 0.00)
+        'gemini-2.5-flash'       = @( 0.30,  2.50, 3.50)
     }
     $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()

@@ -170,6 +170,9 @@ never an error.
   if `gh` is absent, unauthenticated, or there is no PR.
 - **`[memory]`** — relevant `project` and `feedback` memories already in your
   context. No file read needed.
+- **`[icm]`** — if `mcp__icm__icm_memory_recall` is available, call it with
+  the repo name as topic to surface cross-session context not in the file-based
+  memory. Skip silently if unavailable or empty.
 
 **Then classify every candidate into one of three buckets.** This split is the
 whole point of the digest — do it deliberately, item by item. The bucket is
@@ -181,7 +184,7 @@ about *actionability*, independent of which source the item came from:
   action (address comments, merge). If you could literally start it now, it
   goes here.
 - **Deferred** — real, intended work that is **parked or blocked**: waiting on
-  someone else (handed off to another agent, awaiting the user's review/red-pen),
+  someone else (handed off to Copilot, awaiting the user's review/red-pen),
   gated behind another task, scheduled for a later phase, or explicitly
   postponed. Not noise — just not startable yet.
 - **Information Only** — state and context that carries **no action**: a
@@ -236,6 +239,13 @@ remark, no commit.
   write nothing. The marker advances only to a real commit, never to volatile
   working-tree state. Your step-6 answer still describes any uncommitted work;
   it is simply not journalled until committed.
+
+### 8. Store recap digest to ICM — silently
+
+After writing the journal (step 7), if `mcp__icm__icm_memory_store` is available,
+store the recap digest to ICM: topic `context-<repo-basename>`, importance `high`,
+body = the **Done since last recap** bullets plus the three forward sections. Skip
+silently if unavailable or if step 7 wrote nothing (no new commits).
 
 ## Entry format
 
