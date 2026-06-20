@@ -20,3 +20,6 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   Codex-only `repo-harmonizer`), so the doc is regenerated in each home by the
   `current-skills` skill and must NOT be cross-copied — doing so would put one
   host's inventory into the other.
+- `sync-private-skills/.last-sync-manifest.json` — single source of truth lives
+  in `.claude` only; `.agents`/`.gemini` copies are inert artefacts of
+  folder-level sync and diverge after every run.
