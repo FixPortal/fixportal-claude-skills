@@ -16,7 +16,8 @@ Save useful explanations, commands, or workflow tips directly into a centralized
 ## Procedure
 
 ### 1. Identify the Active Agent
-Determine the active agent name (e.g. `Claude`, `Codex`, `Antigravity`) from your system prompt.
+Determine the active agent name (e.g. `Antigravity`, `Claude`, `Codex`) from your system prompt.
+If multiple agent names match, list the candidates and ask the user to confirm which one before proceeding.
 
 ### 2. Locate or Create the Target File
 *   Construct the target path: `<vault>/<AgentName>/Tips & Tricks.md`
@@ -42,7 +43,8 @@ Append the new tip to the file. Format it as follows:
 ```
 
 ### 4. Confirm to User
-Confirm to the user that the tip has been appended, providing a markdown link to [Tips & Tricks.md](file:///<vault>/<AgentName>/Tips%20&%20Tricks.md) (with `<vault>` and `<AgentName>` replaced by their actual values).
+Confirm to the user that the tip has been appended, providing the path to the file. Substitute the actual agent name detected in §1 into both the vault path and the URL — for example, if the agent is `Claude`, the link is:
+[Tips & Tricks.md](file:///<vault>/Claude/Tips%20&%20Tricks.md)
 
 ## Common Mistakes
 *   **Saving to workspace root:** Do not create a `tips.md` in the current coding directory.

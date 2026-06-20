@@ -458,8 +458,9 @@ reviewer), passing:
 - **`-ReviewDurationMs`** — pass 0; neither the Agent tool nor the subprocess
   wrappers expose wall-clock call duration in a form the host agent can capture.
 
-The script is fire-and-forget and silently skips when `$env:OBSERVATORY_API_KEY`
-is absent. Run all three PowerShell calls in a single message so they execute in
+The script is fire-and-forget and silently skips when either
+`$env:OBSERVATORY_API_KEY` or `$env:OBSERVATORY_URL` is absent (both are
+required). Run all three PowerShell calls in a single message so they execute in
 parallel. If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the
 Phase 3 adjudicated report as-is.
 

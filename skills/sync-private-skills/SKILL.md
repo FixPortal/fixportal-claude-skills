@@ -7,7 +7,8 @@ description: Use when reconciling authored skills between the three PRIVATE home
 
 ## Overview
 
-The user authors skills in **three private homes** and edits in **any**,
+The user authors skills in **three private homes** — `~/.claude/skills/`,
+`~/.agents/skills/`, and `~/.gemini/config/skills/` — and edits in **any**,
 depending on which CLI they are in:
 
 - `~/.claude/skills/` — Claude Code

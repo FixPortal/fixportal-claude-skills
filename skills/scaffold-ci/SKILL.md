@@ -68,7 +68,7 @@ These are the deltas an unaided agent gets wrong. Get them right:
 
 | Action | Pin |
 |--------|-----|
-| `actions/checkout` | `v6` |
+| `actions/checkout` | `v7` |
 | `actions/setup-dotnet` | `v5` |
 | `actions/setup-node` | `v6` |
 | `actions/upload-artifact` | `v7` |
@@ -104,7 +104,7 @@ jobs:
     name: Backend (.NET)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Lint workflows (actionlint)
         uses: raven-actions/actionlint@v2
         with:
@@ -134,7 +134,7 @@ jobs:
       run:
         working-directory: src/your-ui   # <- the UI subfolder, if not repo root
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Lint workflows (actionlint)
         uses: raven-actions/actionlint@v2
         with:
@@ -216,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-dotnet@v5
@@ -426,7 +426,7 @@ if explicitly asked:
 | Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
 | `version: latest` on `raven-actions/actionlint@v2` | Not a valid input — omit it; the `@v2` pin already selects the version. |
 | `push: [main]` only | `['**']` + tags `v*` + `pull_request` + `workflow_dispatch`. |
-| Stale `@v4` pins | checkout@v6, setup-dotnet@v5, setup-node@v6, upload-artifact@v7. |
+| Stale `@v4` pins | checkout@v7, setup-dotnet@v5, setup-node@v6, upload-artifact@v7. |
 | No actionlint step | First step of every job. |
 | Node added to backend job | Backend CI is npm-free; frontend build is publish-only. |
 | Stryker as a `ci.yml` job / per-PR gate | Separate `mutation.yml`, push-to-main + dispatch, `continue-on-error`. |
