@@ -27,7 +27,7 @@ Apply standard .NET project and solution preferences when creating new projects 
 - A **Solution Items** solution folder containing:
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
-  - `.editorconfig` — thin **formatter-only** stub (from the `<YourOrg.CodeStyle>` package's `assets/consumer.editorconfig`); all analyzer/style **rules** come from the package, not this file
+  - `.editorconfig` — thin **formatter-only** stub (copied from `~/.claude/resources/.editorconfig`); all analyzer/style **rules** come from the `<YourOrg.CodeStyle>` package, not this file
   - `.gitignore` (copied from `~/.claude/resources/.gitignore`)
   - `nuget.config` (maps the <your-org> GitHub Packages feed — see Code Style and Analysis)
   - `.github/workflows/` folder
@@ -65,16 +65,25 @@ package version bump instead of N hand-edits to drift-prone copies.
 
   ```xml
   <ItemGroup>
-    <PackageReference Include="<YourOrg.CodeStyle>" Version="<latest>" PrivateAssets="all" />
+    <PackageReference Include="<YourOrg.CodeStyle>" PrivateAssets="all" />
   </ItemGroup>
   ```
 
+  Do not specify a literal `Version="<latest>"` — `<latest>` is not a valid NuGet version
+  string and will fail restore. Instead, add the package without a version attribute (central
+  package management via `Directory.Packages.props` controls the version), or look up the
+  current release on NuGet.org and pin a concrete version (e.g. `Version="1.2.3"`). To pick
+  up the newest release automatically during development, run:
+  `dotnet add package <YourOrg.CodeStyle>` — this resolves and pins the latest.
+
 - Keep only a **thin formatter-only `.editorconfig`** at the solution root (indent,
-  charset, newline/spacing, file-type sections) — copy the package's
-  `assets/consumer.editorconfig`. Do **not** copy the rule set back into it; a local copy
-  re-drifts, which is exactly what the package eliminates. Add a local rule override only
-  for a genuine project-specific need, with a comment why (e.g. re-enabling culture rules
-  CA1304/1307/1308/1309/1311 in a service that serves localized text).
+  charset, newline/spacing, file-type sections) — copy `~/.claude/resources/.editorconfig`
+  to the project root as `.editorconfig`. This is the authoritative source; do **not** use
+  `<YourOrg.CodeStyle>`'s `assets/consumer.editorconfig` instead — if the two ever differ,
+  `~/.claude/resources/.editorconfig` wins. Do **not** copy the rule set back into it; a
+  local copy re-drifts, which is exactly what the package eliminates. Add a local rule
+  override only for a genuine project-specific need, with a comment why (e.g. re-enabling
+  culture rules CA1304/1307/1308/1309/1311 in a service that serves localized text).
 - **Do not** add `SonarAnalyzer.CSharp` separately — the package bundles it. The `S3776`
   cognitive-complexity gate (prefer cognitive over cyclomatic, which over-counts flat
   `switch`/ternary dispatch) and the full CA/IDE/Sonar suppression set all live in the
@@ -140,19 +149,19 @@ and `Combine` throws on `null` where `Join` quietly concatenates.
 
 The following files are copied into the new solution. The `.gitignore` and
 `dependabot.yml` are source-controlled in the `.claude` repo under `~/.claude/resources/`;
-the `.editorconfig` is a **formatter-only stub** sourced from the `<YourOrg.CodeStyle>`
-package (the rules live in the package, not the resource `.editorconfig`):
+the `.editorconfig` is a **formatter-only stub** (the rules live in the package, not this file):
 
 | File | Source | Destination |
 |------|--------|-------------|
-| `.editorconfig` (formatter-only stub) | `<YourOrg.CodeStyle>` package → `assets/consumer.editorconfig` | Solution root |
+| `.editorconfig` (formatter-only stub) | `~/.claude/resources/.editorconfig` | Solution root |
 | `.gitignore` | `~/.claude/resources/.gitignore` | Solution root |
 | `dependabot.yml` | `~/.claude/resources/dependabot.yml` | `.github/dependabot.yml` |
 
-> The resource `.editorconfig` (`~/.claude/resources/.editorconfig`) remains the **master
-> rule set** — it is the source the package's global config is generated from. When the
-> house style changes, edit the master, regenerate the package's global config, and release
-> a new package version.
+> `~/.claude/resources/.editorconfig` is the **authoritative source** — copy it directly to
+> the project root. It is also the source the package's global config is generated from; if
+> `<YourOrg.CodeStyle>`'s `assets/consumer.editorconfig` ever differs, the
+> `~/.claude/resources/` version wins. When the house style changes, edit the master there,
+> regenerate the package's global config, and release a new package version.
 
 ## Checklist
 
@@ -170,6 +179,6 @@ When scaffolding or normalizing a .NET project, verify:
 - [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
-- [ ] `.editorconfig` formatter-only stub in place (from the `<YourOrg.CodeStyle>` package); rules NOT duplicated locally
+- [ ] `.editorconfig` formatter-only stub in place (copied from `~/.claude/resources/.editorconfig`); rules NOT duplicated locally
 - [ ] `.gitignore` copied from resources
 - [ ] No projects renamed
