@@ -78,9 +78,9 @@ Azure bills many resources on **existence, not use**:
 
 | Resource | Charges while idle? | Why |
 |---|---|---|
-| Container Registry | ✅ flat per-day | Storage-tier fee regardless of pulls |
-| Managed disks (deallocated VM) | ✅ | Disk capacity bills even when the VM is off |
-| SQL serverless | ⚠️ storage only | Auto-pause zeroes compute after the idle delay |
+| Container Registry | Yes (flat per-day) | Storage-tier fee regardless of pulls |
+| Managed disks (deallocated VM) | Yes | Disk capacity bills even when the VM is off |
+| SQL serverless | partial (storage only) | Auto-pause zeroes compute after the idle delay |
 ```
 
 ### 5. Appendix of raw references — reproducible, untruncated
