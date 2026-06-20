@@ -47,7 +47,10 @@ Convert traditional ASP.NET controller-based projects to minimal API style with 
 
 ### Package Requirements
 
-- `Microsoft.AspNetCore.OpenApi` — latest version compatible with .NET 10
+- `Microsoft.AspNetCore.OpenApi` — the major version **must match the target
+  framework major version**: use the `9.x` series for `net9.0` projects and the
+  `10.x` series for `net10.0` projects. Do not use "latest" blindly — `10.x`
+  targets `net10.0` only and will not resolve on a `net9.0` project.
 - `Scalar.AspNetCore` — latest version
 - If the project uses central package management (`Directory.Packages.props`), add `PackageVersion` entries there and use versionless `PackageReference` in the project file
 - If not using central package management, add versioned `PackageReference` entries directly in the project file

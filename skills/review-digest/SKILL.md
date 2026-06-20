@@ -36,7 +36,8 @@ Run once:
 `pwsh -NoProfile -File ~/.claude/skills/review-digest/collect.ps1 -Path <path>`
 (defaults `-OutFile` to `%TEMP%\review-digest-data.json`). It exits non-zero on a
 bad path or a folder with no git repos — STOP and report if so. Read the JSON;
-each repo carries `git` (reviewCommits, fixerModel, lastReviewDate, batchMarkers
+each repo carries `git` (reviewCommits — each entry has `{ sha, date, subject,
+fixerModel }`, lastReviewDate, batchMarkers
 — the raw review-batch identifier strings lifted from commit subjects, e.g.
 `reviewer-findings batch 1`, `batch 14`, `B5`),
 `vault` (exists, reviewers = panel models, judge, date, reviewType, tally = found

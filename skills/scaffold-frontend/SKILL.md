@@ -47,7 +47,7 @@ of 2026-06; bump to current latest when scaffolding, but do not go below it.
 |---|---|---|---|
 | `vite` | ^8.0.16 | `eslint` | ^10.4.1 |
 | `react` / `react-dom` | ^19.2.7 | `@eslint/js` | ^10.0.1 |
-| `react-router` | ^7.17.0 | `typescript-eslint` | ^8.61.0 |
+| `react-router` | ^8.0.1 | `typescript-eslint` | ^8.61.0 |
 | `typescript` | ~6.0.3 | `eslint-plugin-react-hooks` | ^7.1.1 |
 | `@vitejs/plugin-react` | ^6.0.2 | `eslint-plugin-react-refresh` | ^0.5.2 |
 | `vitest` | ^4.1.6 | `eslint-plugin-sonarjs` | ^4.0.3 |
@@ -55,7 +55,7 @@ of 2026-06; bump to current latest when scaffolding, but do not go below it.
 | `@testing-library/react` | ^16.3.2 | `@tailwindcss/vite` | ^4.3.0 |
 | `@testing-library/jest-dom` | ^6.9.1 | `tailwindcss` | ^4.2.2 |
 | `@testing-library/user-event` | ^14.6.1 | `jsdom` | ^29.1.1 |
-| **`archunit`** | **`2.3.0` (exact, no caret)** | `@types/node` | ^25.9.2 |
+| **`archunit`** | **`2.3.0` (exact, no caret)** | `@types/node` | ^26 |
 
 `archunit` is pinned **exactly** — see *Architecture tests* below for why.
 

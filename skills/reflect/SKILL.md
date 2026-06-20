@@ -63,7 +63,7 @@ released since your cutoff and wrongly mark the user as behind.
   skills under `~/.claude/plugins/cache/`). If a fresh `CurrentSkills.md` exists,
   read it instead of re-walking.
 - **Plugins** — `~/.claude/plugins/installed_plugins.json` and marketplaces.
-- **Hooks** — list `~/.claude/hooks/`; note anything parked in `hooks-disabled/`.
+- **Hooks** — list `~/.claude/hooks/`.
 - **`keybindings.json`** — present (customized) or absent (defaults).
 - **MCP servers** — `.mcp.json` / settings; note MCP tools offered this session.
 
@@ -134,17 +134,20 @@ user; name the value and the reason. When unsure of a key's default or value
 domain, consult the settings schema (the `update-config` skill carries it)
 rather than guessing — and never assume a key is a boolean.
 
-### 6. Compare to the previous reflection
+### 6. Ensure the reflections directory exists, then compare to the previous reflection
 
-`Glob` `VAULT_DIR\Reflection-*.md`. If a prior report exists, read its scorecard
+Run `New-Item -ItemType Directory -Path "<vault>/Claude/Reflections" -Force | Out-Null`
+to create `VAULT_DIR` if it is absent (idempotent — safe to run even when it already exists).
+
+Then `Glob` `VAULT_DIR\Reflection-*.md`. If a prior report exists, read its scorecard
 and recommendations. Note the deltas: dimensions that rose or fell, and which of
 last time's "next moves" were actioned versus ignored. If no prior report
 exists, skip this — it is the first reflection.
 
 ### 7. Write the report
 
-Render the template below to `REPORT`, creating `VAULT_DIR` if needed. Normalize
-to CRLF line endings. Omit the "Trend" section entirely on a first run.
+Render the template below to `REPORT`. `VAULT_DIR` was already created in step 6.
+Normalize to CRLF line endings. Omit the "Trend" section entirely on a first run.
 
 ### 8. Deliver and offer to act
 
@@ -195,7 +198,7 @@ Levels: 🟥 **Ad hoc** · 🟧 **Developing** · 🟩 **Proficient** · 🟦 **
    vague descriptions that never self-trigger.
 
 5. **Model & cost discipline** — model choice matched to task (Opus / Sonnet /
-   Haiku), fast mode, cache efficiency, delegating cheap or parallel work to
+   Haiku), cache efficiency, delegating cheap or parallel work to
    subagents.
    *Advanced looks like:* heavy reasoning on Opus, routine work on Sonnet/Haiku,
    high cache-read ratios, subagents for parallel grunt work.
