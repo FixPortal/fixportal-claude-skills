@@ -97,6 +97,8 @@ function Read-InputFile([string] $path, [string] $label) {
 $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine($Instruction)
 [void]$sb.AppendLine()
+[void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate from the diff.')
+[void]$sb.AppendLine()
 [void]$sb.AppendLine('--- DIFF UNDER REVIEW ---')
 [void]$sb.AppendLine((Read-InputFile $DiffPath 'Diff file'))
 

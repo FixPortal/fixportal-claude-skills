@@ -305,7 +305,7 @@ really are new.
   The wrapper pins `gemini-2.5-pro`.
 - **Reviewer X** — the OpenAI wrapper, same pattern:
   `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\openai-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-X.json"`
-  The script pins `gpt-5.4`. Pass `-UsageSidecarPath` for Phase 1 only — the
+  The model is `gpt-5.4` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
   sidecar captures exact token counts from the API response so the host agent
   can pass real figures to `emit-review-telemetry.ps1` rather than zeros.
 
