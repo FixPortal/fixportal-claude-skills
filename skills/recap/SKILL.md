@@ -174,7 +174,7 @@ never an error.
   the repo name as topic to surface cross-session context not in the file-based
   memory. Skip silently if unavailable or empty.
 
-**Then classify every candidate into one of three buckets.** This split is the
+**Then classify every candidate into one of five buckets.** This split is the
 whole point of the digest — do it deliberately, item by item. The bucket is
 about *actionability*, independent of which source the item came from:
 
@@ -183,32 +183,63 @@ about *actionability*, independent of which source the item came from:
   feedback to act on, the next phase of a plan, an open PR that needs *your*
   action (address comments, merge). If you could literally start it now, it
   goes here.
-- **Deferred** — real, intended work that is **parked or blocked**: waiting on
-  someone else (handed off to Copilot, awaiting the user's review/red-pen),
-  gated behind another task, scheduled for a later phase, or explicitly
-  postponed. Not noise — just not startable yet.
+- **Deferred** — real, intended work **in this repository** that is parked or
+  blocked: waiting on a prerequisite in this repo, gated behind another local
+  task, scheduled for a later phase, or explicitly postponed. Strictly
+  this-repo scope — nothing cross-repo or operator-gated belongs here.
+- **Unverifiable** — items that require work in **another repository** (a
+  different checkout, a consuming frontend, an upstream package) and whose
+  status has not been confirmed by reading that repo's state. Before placing
+  an item here, attempt to verify it: if the sibling repo's path is known or
+  discoverable on disk, read it (git log, grep for the relevant symbol/path)
+  to determine whether the work is still pending. If it is still pending,
+  move it to Actionable Now (if it can be done here) or keep it here with a
+  note of what was found. If it is already done, drop it entirely or move it
+  to Information Only. If the path cannot be found, leave it here.
+- **Operator Gated** — items that are blocked on a **human action outside the
+  codebase**: a credentialed CLI run (`az`, `gh`, cloud console), a manual
+  deploy, an approval, a smoke test that requires a live environment. Cannot
+  be unblocked by any tool call in this session.
 - **Information Only** — state and context that carries **no action**: a
   clean/in-sync working tree, no open PR, a decision already recorded as closed
   ("don't reopen"), background facts about where things stand. This is the
   bucket that keeps status out of the action list.
 
 When torn between Actionable Now and Deferred, ask "could I literally start this
-right now?" — if no, it is **Deferred**. A blocked item is never Actionable Now;
-a pure status fact is never an action.
+right now in this repo?" — if no, it is **Deferred**. If it requires another
+repo, attempt to verify first; if unresolved, it is **Unverifiable**. If it
+requires a human/credentialed action, it is **Operator Gated**. A pure status
+fact is always **Information Only**.
+
+**Memory-only verification gate.** After initial classification, revisit every
+candidate whose only evidence is a prior journal entry or `[memory]` (no `[code]`
+TODO/FIXME, no open `[pr]`, no `[doc]` that corroborates it). For each, ask: is
+there a local signal in *this* repo right now that confirms the work is still
+open? If not, it cannot be Actionable Now — place it in Deferred (this-repo,
+blocked), Unverifiable (cross-repo, attempt verification first), or Operator
+Gated (human-action required). Memory can be stale and must never promote an
+item to Actionable Now on its own.
+
+**Cross-repo: verify before filing as Unverifiable.** If an item requires work
+in another repository and that repo's path is known or discoverable on disk,
+read it to check status before placing it in Unverifiable. A verified-done item
+belongs in Information Only, not Unverifiable. Deferred is strictly for
+this-repo work; Operator Gated is for human-action blockers.
 
 ### 6. Answer the user
 
 Give the digest: the heading line (format below), then **Done since last
-recap**, then the three forward-looking sections — **Actionable Now**,
-**Deferred**, **Information Only** — nothing from inside `<details>`. This is
-what the user asked for: lead with it, keep it tight, and do not narrate the
-steps you took.
+recap**, then the five forward-looking sections — **Actionable Now**,
+**Deferred**, **Unverifiable**, **Operator Gated**, **Information Only** —
+nothing from inside `<details>`. This is what the user asked for: lead with it,
+keep it tight, and do not narrate the steps you took.
 
 - **Actionable Now** is a **numbered** list in recommended order: put whatever
   unblocks or is a prerequisite for other items first, then order by leverage.
   This is the section the user acts on — it leads the forward-looking part.
-- **Deferred** and **Information Only** are bulleted (`-`).
-- **Render all three headings every time.** If a bucket is empty, show it with a
+- **Deferred**, **Unverifiable**, **Operator Gated**, and **Information Only**
+  are bulleted (`-`).
+- **Render all five headings every time.** If a bucket is empty, show it with a
   single `- none` bullet rather than dropping the heading — the `- none`
   placeholder uses a dash even under the otherwise-numbered Actionable Now.
 - Keep every forward-looking entry tagged with its source: `[code] [doc] [pr]
@@ -244,7 +275,7 @@ remark, no commit.
 
 After writing the journal (step 7), if `mcp__icm__icm_memory_store` is available,
 store the recap digest to ICM: topic `context-<repo-basename>`, importance `high`,
-body = the **Done since last recap** bullets plus the three forward sections. Skip
+body = the **Done since last recap** bullets plus the five forward sections. Skip
 silently if unavailable or if step 7 wrote nothing (no new commits).
 
 ## Entry format
@@ -259,7 +290,13 @@ silently if unavailable or if step 7 wrote nothing (no new commits).
 1. numbered, recommended order; each tagged [code] [doc] [pr] [memory]
 
 **Deferred**
-- parked or blocked work; each tagged [code] [doc] [pr] [memory]
+- parked or blocked work in this repo; each tagged [code] [doc] [pr] [memory]
+
+**Unverifiable**
+- cross-repo items whose status could not be confirmed; each tagged [code] [doc] [pr] [memory]
+
+**Operator Gated**
+- blocked on a human/credentialed action; each tagged [code] [doc] [pr] [memory]
 
 **Information Only**
 - state/context, no action; each tagged [code] [doc] [pr] [memory]
@@ -278,9 +315,10 @@ Commit list, file-change stats, caveats — the fuller record.
   recap time and becomes the next run's marker.
 - Timestamp the heading with local system time.
 - Cap each digest section at 7 bullets; everything else goes inside `<details>`.
-- Always write all three forward sections (**Actionable Now**, **Deferred**,
-  **Information Only**); an empty bucket gets a single `- none` bullet, never a
-  dropped heading. Actionable Now is numbered; the other two are bulleted.
+- Always write all five forward sections (**Actionable Now**, **Deferred**,
+  **Unverifiable**, **Operator Gated**, **Information Only**); an empty bucket
+  gets a single `- none` bullet, never a dropped heading. Actionable Now is
+  numbered; the other four are bulleted.
 - When an entry is written and uncommitted work also exists, flag it
   `(uncommitted)` in the digest and note the files in `<details>`.
 
@@ -314,9 +352,30 @@ Commit list, file-change stats, caveats — the fuller record.
   Work that is blocked or handed off is **Deferred**, never Actionable Now. If
   you cannot literally start it this session, it does not belong in Actionable
   Now. Misfiling here is exactly the noise the split exists to remove.
-- **Collapsing the split back to one list, or dropping empty buckets.** Always
-  render all three forward headings; an empty one shows `- none`. Do not revert
-  to a single "Up next".
+- **Promoting stale memory to Actionable Now.** An item carried forward from a
+  prior journal entry or sourced only from `[memory]` must pass the
+  memory-only verification gate (step 5) before landing in Actionable Now.
+  If no local signal (`[code]` TODO/FIXME, open `[pr]`, corroborating `[doc]`)
+  confirms it is still open, it goes to **Deferred** (this-repo) or
+  **Unverifiable** (cross-repo). This is the most common source of phantom
+  Actionable Now items — items completed in another repo, or weeks ago, that
+  linger because memory was never updated.
+- **Cross-repo items in Actionable Now or Deferred.** Work that requires a
+  different repository belongs in **Unverifiable** (attempt to verify first) or
+  **Information Only** (if already confirmed done). Deferred is strictly
+  this-repo scope. Operator Gated is for human/credentialed blockers, not
+  cross-repo work.
+- **Skipping cross-repo verification.** Before filing a cross-repo item as
+  Unverifiable, try to read the sibling repo if its path is known or
+  discoverable. A verified-done item is Information Only, not Unverifiable.
+  Only file as Unverifiable if the path can't be found or the check is
+  inconclusive.
+- **Mixing Unverifiable and Operator Gated.** These are distinct: Unverifiable
+  = work in another repo, status unknown. Operator Gated = human action
+  required (credentialed CLI, live environment, approval). Keep them separate.
+- **Collapsing the split or dropping empty buckets.** Always render all five
+  forward headings; an empty one shows `- none`. Do not revert to fewer
+  buckets or a single "Up next".
 - **Bare "nothing new" answer.** When `<marker>..HEAD` is empty, re-render the
   last entry's digest — the user is asking where things stand, not whether the
   marker has advanced.
