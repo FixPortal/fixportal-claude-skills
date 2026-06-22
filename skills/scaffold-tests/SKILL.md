@@ -97,6 +97,36 @@ substitutes — substitute only the genuine external boundary. For time-dependen
 inject NodaTime `IClock` (or .NET `TimeProvider` where NodaTime isn't in play) and supply
 a fake/fixed clock in the test rather than reading `DateTime.UtcNow` / `SystemClock.Instance`.
 
+### Async and timing
+
+Tests that exercise async or concurrent behaviour (a fill landing, a race
+resolving, a pipeline disposing, a message arriving) must be **event-driven**.
+Await a real completion signal or poll a condition with a generous timeout —
+never `Thread.Sleep`/`Task.Delay` "long enough" and then assert immediately,
+and never assert a duration is `BeLessThan(tightThreshold)`.
+
+A fixed sleep races the system under test: locally the machine is idle so it
+passes, but on a contended CI runner the work either hasn't finished (the
+assertion sees an empty or short collection) or an extra emission slips in (it
+sees too many), or a tight duration ceiling is exceeded. The result is a test
+that is green locally and flaky in CI — a structural defect, not bad luck.
+Re-running masks it; converting it to event-driven fixes it.
+
+```csharp
+// Preferred: gate the assertion on an awaited signal / polled condition
+await WaitForAsync(() => sink.Fills.Count == 1, timeout: TimeSpan.FromSeconds(5));
+sink.Fills.Should().ContainSingle();
+
+// Avoid: sleep-then-assert (races the runner) and tight duration ceilings
+await Task.Delay(200);
+sink.Fills.Should().ContainSingle();
+elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(50));
+```
+
+Expose a completion hook the test can await (e.g. a `TaskCompletionSource` the
+sink signals) rather than guessing a delay. Combine with the injected clock
+above so the *passage* of time is controlled, not slept through.
+
 ### Brevity
 
 - Do not write ten tests where one will do
@@ -130,4 +160,5 @@ When scaffolding test projects, verify:
 - [ ] No redundant tests — brevity maintained with meaningful coverage
 - [ ] AwesomeAssertions used for all assertions (no `Assert.*`)
 - [ ] NSubstitute used for all mocking
+- [ ] Async/timing tests are event-driven (await a signal or poll-with-timeout) — no `Thread.Sleep`/`Task.Delay`-then-assert, no tight `BeLessThan(TimeSpan)` ceilings
 - [ ] Tests build and pass
