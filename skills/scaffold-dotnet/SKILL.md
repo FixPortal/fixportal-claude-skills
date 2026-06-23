@@ -145,6 +145,34 @@ and `Combine` throws on `null` where `Join` quietly concatenates.
   ArgumentException(...)` — making the relative-path contract explicit. In both
   cases the finding is a justified dismiss, not a fix.
 
+#### Argument validation (BCL throw-helpers)
+
+Use the **BCL throw-helpers** for argument validation — they ship in the runtime
+(net6+) and capture the argument name via `[CallerArgumentExpression]`, so they
+need no dependency and stay nullable-flow- and analyzer-aware:
+
+- `ArgumentNullException.ThrowIfNull(x)` (net6)
+- `ArgumentException.ThrowIfNullOrEmpty(s)` (net7) / `ThrowIfNullOrWhiteSpace(s)` (net8)
+- `ArgumentOutOfRangeException.ThrowIfNegative/ThrowIfZero/ThrowIfNegativeOrZero/ThrowIfGreaterThan/ThrowIfLessThan` (net8)
+- `ObjectDisposedException.ThrowIf(condition, this)` (net8)
+
+For a predicate the BCL doesn't cover, write the one-liner inline — don't reach
+for a library:
+
+```csharp
+if (!IsValid(value)) throw new ArgumentException("must be valid", nameof(value));
+```
+
+**Do not add `Ardalis.GuardClauses`.** The BCL helpers cover its common surface on
+net8+; the rest is one-liners. A guard-clause library only earns its place on a
+pre-net6 TFM, which the house default (`net10.0`) never is.
+
+The conversion is analyzer-enforced, not `.editorconfig`-enforced: the SDK rules
+**CA1510–CA1513** flag the verbose `if (…) throw new ArgumentNullException(…)`
+form and offer a code-fix to the helper. Their severity is set in the
+`<YourOrg.CodeStyle>` global config (advisory `warning`, matching the Sonar-S
+stance) — not in the formatter-only `.editorconfig`.
+
 ### Resource Files
 
 The following files are copied into the new solution. The `.gitignore` and
@@ -175,6 +203,7 @@ When scaffolding or normalizing a .NET project, verify:
 - [ ] `Nullable` and `ImplicitUsings` enabled (via `Directory.Build.props`)
 - [ ] Central package management enabled via `Directory.Packages.props`
 - [ ] `<YourOrg.CodeStyle>` added as a `PackageReference` (`PrivateAssets="all"`) in `Directory.Build.props` — brings the global config, `EnforceCodeStyleInBuild`, and bundled `SonarAnalyzer.CSharp`; do **not** add Sonar separately
+- [ ] Argument validation uses BCL throw-helpers (`ArgumentNullException.ThrowIfNull` etc.); no `Ardalis.GuardClauses` reference
 - [ ] `nuget.config` maps the <your-org> GitHub Packages feed; `read:packages` token wired via env var (not committed)
 - [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
