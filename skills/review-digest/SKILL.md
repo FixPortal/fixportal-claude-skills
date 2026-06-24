@@ -46,8 +46,18 @@ C/H/M/L), `hasGraphify` (a `graphify-out/` dir is present in the repo), and
 
 `git` also carries the **forward-looking scope fields** that drive the risk rank
 and the hand-off report:
-- `boundarySha` — sha of the newest review/remediation commit (the last review
-  point). Null when the repo was never reviewed.
+- `boundarySha` — sha of the last point a genuine ADVERSARIAL review saw the tree.
+  Null when the repo was never reviewed.
+- `boundarySource` — how the boundary was chosen: `vault-date` (last commit on/before
+  the vault adversarial-review date — the tree a panel actually reviewed; preferred),
+  `vault-predates-history` (the vault review is older than the repo's earliest commit,
+  e.g. an OSS re-init squash — boundary anchored at the root commit, so the WHOLE current
+  tree is adversarially unreviewed; flag it as a full-repo sweep), `git-marker` (no vault
+  report — fell back to the newest non-web-quality reviewer-findings commit), `none`
+  (never reviewed), or `outside-scan-path`. Web-quality sweeps (react-doctor / optimise-web
+  / a11y `reviewer-findings-batch1` commits) are deliberately excluded from boundary
+  candidacy — they are NOT adversarial reviews and previously faked `sinceReview=0`.
+- `vaultPredatesHistory` — true for the OSS-re-init case above.
 - `neverReviewed` — true when there is no `boundarySha`.
 - `sinceReview` — commits **since the last review** (`boundarySha..HEAD`), each
   `{ sha, date, subject }`. Empty for a never-reviewed repo (history is not
