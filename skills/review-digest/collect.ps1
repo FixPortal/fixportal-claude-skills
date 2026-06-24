@@ -13,6 +13,11 @@ if (-not (Test-Path $Path -PathType Container)) {
 # Markers that identify a review/remediation commit (case-insensitive).
 $markerRegex = 'adversarial|reviewer-findings|reviewer findings|adversarial-audit|fix\(review\)|cross-vendor'
 
+# Web-quality sweeps (react-doctor / optimise-web / a11y) are committed with the same
+# reviewer-findings marker but are NOT adversarial reviews. They must never anchor the
+# review boundary, or a repo with real unreviewed feature work reports a false sinceReview=0.
+$webQualityRegex = 'react-doctor|optimi[sz]e-web|web-quality|a11y|accessibilit|lighthouse|perf micro'
+
 # Enumerate top-level git repos under $Path.
 $repos = Get-ChildItem $Path -Directory | Where-Object {
   Test-Path (Join-Path $_.FullName '.git')
@@ -62,6 +67,8 @@ function Get-VaultData {
 
 $results = foreach ($r in $repos) {
   $repoPath = $r.FullName
+  # Vault first — its adversarial-review date is the preferred boundary (the tree a panel saw).
+  $vault = Get-VaultData -RepoName $r.Name -VaultRoot $VaultRoot
   # One git call: full log with body, ISO date, and author trailers, NUL-delimited records.
   $fmt = '%H%x1f%cI%x1f%s%x1f%b%x1e'
   $raw = & git -C $repoPath log --all "--format=$fmt" 2>$null
@@ -86,10 +93,28 @@ $results = foreach ($r in $repos) {
     if ($bm.Success) { $bm.Value }
   } | Group-Object { ($_ -replace '\s+','').ToLowerInvariant() } | ForEach-Object { $_.Group[0] })
 
-  # Boundary = the newest review/remediation commit (the last review point).
-  $lastReviewCommit = if ($reviewCommits) { $reviewCommits | Sort-Object date -Descending | Select-Object -First 1 } else { $null }
-  $boundarySha   = if ($lastReviewCommit) { $lastReviewCommit.sha } else { $null }
-  $lastReviewDate = if ($lastReviewCommit) { $lastReviewCommit.date } else { $null }
+  # Boundary selection — the last point a genuine ADVERSARIAL review saw this tree.
+  # Priority: (1) the vault adversarial-review date; (2) the newest non-web-quality git
+  # review/remediation commit. A web-quality reviewer-findings commit never anchors the boundary.
+  $boundarySha = $null; $lastReviewDate = $null; $boundarySource = 'none'; $vaultPredatesHistory = $false
+  if ($vault.exists -and $vault.date) {
+    # Tree the panel reviewed = last commit on/before the vault review date.
+    $bs = & git -C $repoPath log --until="$($vault.date) 23:59:59" -1 --format='%H' 2>$null
+    if ($LASTEXITCODE -eq 0 -and $bs -and "$bs".Trim()) {
+      $boundarySha = "$bs".Trim(); $lastReviewDate = $vault.date; $boundarySource = 'vault-date'
+    } else {
+      # Vault review predates the repo's earliest commit (e.g. an OSS re-init history squash):
+      # the whole current tree is adversarially unreviewed. Anchor at the root commit.
+      $rootSha = & git -C $repoPath rev-list --max-parents=0 HEAD 2>$null | Select-Object -First 1
+      if ($rootSha) { $boundarySha = "$rootSha".Trim() }
+      $lastReviewDate = $vault.date; $boundarySource = 'vault-predates-history'; $vaultPredatesHistory = $true
+    }
+  } else {
+    # No vault report: fall back to git markers, excluding web-quality sweeps from boundary candidacy.
+    $adversarialCommits = @($reviewCommits | Where-Object { $_.subject -notmatch $webQualityRegex })
+    $lastReviewCommit = if ($adversarialCommits) { $adversarialCommits | Sort-Object date -Descending | Select-Object -First 1 } else { $null }
+    if ($lastReviewCommit) { $boundarySha = $lastReviewCommit.sha; $lastReviewDate = $lastReviewCommit.date; $boundarySource = 'git-marker' }
+  }
   $neverReviewed = [bool](-not $boundarySha)
 
   # Forward-looking scope: commits since the last review (the next review's candidate scope).
@@ -137,6 +162,8 @@ $results = foreach ($r in $repos) {
       lastReviewDate  = $lastReviewDate
       batchMarkers    = $batchMarkers
       boundarySha     = $boundarySha
+      boundarySource  = $boundarySource
+      vaultPredatesHistory = $vaultPredatesHistory
       neverReviewed   = $neverReviewed
       sinceReview     = $sinceReview
       sinceReviewCount = $sinceCount
@@ -145,13 +172,13 @@ $results = foreach ($r in $repos) {
       sinceReviewDel  = $sinceDel
       daysSinceReview = $daysSinceReview
     }
-    vault = (Get-VaultData -RepoName $r.Name -VaultRoot $VaultRoot)
+    vault = $vault
     hasGraphify = $hasGraphify
     outsideScanPath = $false
   }
 }
 
-# Repos with a vault review folder but NOT under $Path (reviewed in another folder).
+# Repos with a vault review folder but NOT under $Path (reviewed elsewhere — e.g. qfservice, ci-dashboard).
 $scanned = @($results | ForEach-Object { $_.repo })
 if (Test-Path $VaultRoot) {
   $vaultOnly = Get-ChildItem $VaultRoot -Directory | Where-Object { $scanned -notcontains $_.Name }
@@ -162,7 +189,8 @@ if (Test-Path $VaultRoot) {
       repo = $v.Name
       git  = [pscustomobject]@{
         reviewCommits = @(); lastReviewDate = $null; batchMarkers = @()
-        boundarySha = $null; neverReviewed = $false; sinceReview = @()
+        boundarySha = $null; boundarySource = 'outside-scan-path'; vaultPredatesHistory = $false
+        neverReviewed = $false; sinceReview = @()
         sinceReviewCount = 0; sinceReviewFiles = 0; sinceReviewIns = 0; sinceReviewDel = 0
         daysSinceReview = $null
       }

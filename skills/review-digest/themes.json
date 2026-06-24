@@ -22,7 +22,7 @@
   "utcnow-not-injected-clock": {
     "aliases": ["DateTime.UtcNow", "static clock read", "SystemClock.Instance", "now from static call"],
     "home": "CLAUDE.md (already noted) / scaffold-dotnet",
-    "seen": ["service-d", "service-a", "service-b"]
+    "seen": ["service-d", "service-a", "service-b", "service-h"]
   },
   "secret-in-log": {
     "aliases": ["credential leak in store", "plaintext credential", "unredacted secret", "password in message store"],
@@ -32,7 +32,7 @@
   "anon-endpoint": {
     "aliases": ["missing authz", "anonymous endpoint", "unauthenticated route", "over-posting DTO", "anonymous write endpoint", "anonymous read endpoint", "unauthenticated"],
     "home": "reviewer brief / scaffold-minimal",
-    "seen": ["service-i", "service-f", "service-a", "service-j", "service-b"]
+    "seen": ["service-i", "service-f", "service-a", "service-j", "service-b", "service-l", "service-m"]
   },
   "retry-burned-in-one-pass": {
     "aliases": ["re-enqueue into live dequeue loop", "retries exhausted in microseconds", "retry burn", "re-enqueued failed outbound", "re-enqueue mid-flush"],
@@ -53,5 +53,20 @@
     "aliases": ["httpclient per request", "new HttpClient per call", "missing PooledConnectionLifetime", "HttpClient not reused", "disposed HttpClient"],
     "home": "scaffold-dotnet / reviewer brief",
     "seen": ["service-i", "service-c"]
+  },
+  "path-concat-not-pathjoin": {
+    "aliases": ["string path concatenation", "use Path.Join", "use Path.Combine", "path built with string interpolation", "codeql path concat"],
+    "home": "scaffold-dotnet / CodeQL triage note",
+    "seen": ["service-a", "service-b"]
+  },
+  "sleep-based-timing-test": {
+    "aliases": ["Thread.Sleep in test", "Task.Delay in test", "sleep-based timing test", "tight-timeout race test", "flaky timing test"],
+    "home": "CLAUDE.md (already noted) / reviewer brief",
+    "seen": ["service-a", "service-b"]
+  },
+  "missing-robots-txt": {
+    "aliases": ["robots.txt", "robots-txt"],
+    "home": "scaffold-frontend",
+    "seen": ["service-i", "service-k", "service-j"]
   }
 }
