@@ -270,8 +270,8 @@ projects use `OutputType=Exe` alone). Keep `Microsoft.NET.Test.Sdk` +
 `xunit.runner.visualstudio` alongside it so `dotnet test` (VSTest) still drives CI — the two
 runners coexist. Confirm before defaulting to `mtp`: if the test project has no
 `OutputType=Exe` (i.e. it runs purely as a VSTest library), either add it or fall back to
-`test-runner: vstest`. *(Verified on fixportal-ci-dashboard 2026-05-29: adding `OutputType=Exe`
-flipped Stryker to mtp with `dotnet test` still green.)*
+`test-runner: vstest`. *(Verified: adding `OutputType=Exe`
+flips Stryker to mtp with `dotnet test` still green.)*
 
 ## `dependabot.yml`
 

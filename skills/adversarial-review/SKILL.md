@@ -397,10 +397,10 @@ runs *after* §5 synthesis and *before* §4 answer / §6 persist.
 Why this phase exists: a blind panel systematically over-rates severity, so a
 non-trivial share of Highs do not survive contact with the live code. Leaving
 that to manual follow-up means publishing a report that is partly wrong. Verify
-before you publish. (Canonical example: the `fixportal-fixatdl` run's contested
-High `H6` — a verification pass found the sole call site already guards the null
-return, so it was by-design and downgraded to cosmetic. That is exactly the work
-this phase formalises.)
+before you publish. (Canonical example: a contested High where a verification
+pass found the sole call site already guards the null return, so it was
+by-design and downgraded to cosmetic. That is exactly the work this phase
+formalises.)
 
 Verify **every finding rated Critical or High, and every `[contested]` finding**
 (any severity). For each, spawn a fresh `Agent` (`subagent_type:
@@ -510,7 +510,7 @@ or the review is lost on the next temp sweep.
 - **Vault root:** `<vault>`.
 - **Destination:** `<vault>\Claude\Adversarial Review\<repo>\<run-folder>\`.
 - **`<repo>`** is the repository name — the basename of the repo root
-  (`git rev-parse --show-toplevel`), e.g. `fixportal-fixatdl`. All of a repo's
+  (`git rev-parse --show-toplevel`), e.g. `your-repo`. All of a repo's
   audits group under this one folder.
 - **`<run-folder>`** is the working directory's own name (its UTC timestamp, or
   the audit's name), nested under `<repo>` so successive runs of the same repo
@@ -533,7 +533,7 @@ vault content. Report the vault path to the user in §4.
 
 YAML frontmatter uses **inline arrays** for `reviewers` and `tags` (not
 block-list syntax). `project` is the repo name — the same basename used for the
-run folder (`git rev-parse --show-toplevel`, e.g. `fixportal-engine`); use it
+run folder (`git rev-parse --show-toplevel`, e.g. `your-repo`); use it
 verbatim in the H1 too. Add the
 `remediation-*` / `deferred` keys only when a fix pass actually followed; omit
 them otherwise. The body is: an H1 `# <Project> — Adversarial Audit (<date>)`,
@@ -545,7 +545,7 @@ note, the `working/` pointer, and — when remediation followed — a
 
 ```markdown
 ---
-project: fixportal-engine
+project: your-repo
 review-type: adversarial-audit
 date: 2026-05-29
 reviewers: [Claude Sonnet, Gemini, GPT-5.4]
@@ -555,7 +555,7 @@ deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was d
 tags: [fix, adversarial-review, code-audit, <repo>]
 ---
 
-# fixportal-engine — Adversarial Audit (2026-05-29)
+# your-repo — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
 chunks (three reviewers per chunk: Claude Sonnet, Gemini, GPT-5.4 (via OpenAI
@@ -879,7 +879,7 @@ calls, 12 Gemini calls, and 12 OpenAI API calls.
 
 Phase 4 verification adds one more Claude subagent call **per High/contested
 finding**, run once on the published report (not per chunk) and defaulting to
-Sonnet — usually a handful (the 6-chunk fixportal-fixatdl audit had 6 Highs).
+Sonnet — usually a handful (e.g. a 6-chunk audit surfacing ~6 Highs).
 So budget roughly "+ one Sonnet call per High/contested finding" on top of the
 figures above; verification adds no OpenAI calls. State the projected cost when
 presenting the chunk plan (§0a), and mention it too if the skill is being run
