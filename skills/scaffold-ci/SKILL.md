@@ -195,6 +195,34 @@ the token layer, so without a ref check anyone could deploy a feature branch), a
 pushes (`refs/tags/v*`) fire prod. The infra/targets are repo-specific — point at this
 pattern, don't fabricate Bicep or environments that don't exist.
 
+### Job naming — CI dashboard lane contract
+
+The house CI dashboard sorts workflow **jobs** into board lanes — **Deploys**
+and **Packages** — by a case-insensitive substring match on the **job `name:`**.
+Names that break this contract mis-lane (a deploy rendered as a package) or
+vanish from the board entirely (a job whose name matches no pattern, e.g.
+`build-and-push` → neither lane). Always set an explicit job `name:` — never rely
+on the job id — and follow:
+
+- **Deploy job** → `Deploy (<target>)` — e.g. `Deploy (production)`,
+  `Deploy (staging-ui)`, `Deploy (Azure Container Apps)`. Must contain `deploy`;
+  `<target>` must NOT contain a package term (below).
+- **Publish/package job** → `Publish <Artifact> (<location>)` — e.g.
+  `Publish Image (GHCR)`, `Publish Image (ACR)`, `Publish Package (NuGet)`,
+  `Publish Package (npm)`. Must contain a package term; must NOT contain `deploy`.
+- **One job = one lane.** A job that builds/pushes an image **and** deploys must
+  be **split** into a `Publish Image (...)` job and a `Deploy (...)` job — a
+  single job cannot carry both lane identities, and naming it for one silently
+  drops the other from the board.
+
+The runtime half of this contract is `JobLanes` in the dashboard's
+`appsettings.json`:
+- deploys patterns: `["deploy"]`
+- packages patterns: `["publish","package","docker","image","release","ghcr"]`
+
+Keep job names matching these. If you change a lane or pattern there, update this
+section so scaffold and classifier stay in sync.
+
 ## `mutation.yml` (Stryker.NET) — a SEPARATE workflow
 
 Not part of `ci.yml`. Runs on push-to-main + manual dispatch, `continue-on-error: true`
