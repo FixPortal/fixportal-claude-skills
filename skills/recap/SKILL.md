@@ -170,9 +170,11 @@ never an error.
   if `gh` is absent, unauthenticated, or there is no PR.
 - **`[memory]`** — relevant `project` and `feedback` memories already in your
   context. No file read needed.
-- **`[icm]`** — if `mcp__icm__icm_memory_recall` is available, call it with
-  the repo name as topic to surface cross-session context not in the file-based
-  memory. Skip silently if unavailable or empty.
+- **`[icm]`** — if `mcp__icm__icm_memory_recall` is available, call it for
+  `context-{repo-basename}` (query: "project state status next steps") and
+  `decisions-{repo-basename}` (query: "architecture decision rationale") to
+  surface cross-session context not in the file-based memory. Skip silently if
+  unavailable or empty.
 
 **Then classify every candidate into one of five buckets.** This split is the
 whole point of the digest — do it deliberately, item by item. The bucket is
@@ -274,7 +276,7 @@ remark, no commit.
 ### 8. Store recap digest to ICM — silently
 
 After writing the journal (step 7), if `mcp__icm__icm_memory_store` is available,
-store the recap digest to ICM: topic `context-<repo-basename>`, importance `high`,
+store the recap digest to ICM: topic `context-<repo-basename>`, importance `medium`,
 body = the **Done since last recap** bullets plus the five forward sections. Skip
 silently if unavailable or if step 7 wrote nothing (no new commits).
 
