@@ -310,8 +310,10 @@ really are new.
 - **Reviewer G** — the Gemini wrapper. Write the Phase 1 brief to a file in the
   working directory first; the wrapper reads it inlined. Invoke via
   `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist:
-  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>"`
-  The wrapper pins `gemini-2.5-pro`.
+  `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-G.json"`
+  The wrapper pins `gemini-2.5-pro`. `-UsageSidecarPath` writes Gemini's exact
+  summed `{inputTokens,outputTokens,costUsd}` for the §3a outcome event (Phase 1
+  only, same as Reviewer X).
 - **Reviewer X** — the OpenAI wrapper, same pattern:
   `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\openai-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-X.json"`
   The model is `gpt-5.4` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
@@ -482,12 +484,24 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   do NOT use cross-vendor consensus crediting (which can exceed a reviewer's own
   raised count and 400s the event). Findings that surfaced only as Phase-2 gaps
   do not count toward Phase-1 raised/accepted. The judge → `0`.
-- **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`** — for Reviewer X
-  (OpenAI), read `<workdir>/usage-X.json` written by the Phase 1 `-UsageSidecarPath`
-  call and pass the values; the direct API response gives exact figures. For
-  Reviewer B and the judge (Claude via Agent tool) and Reviewer G (Gemini CLI),
-  pass 0 — the Agent tool does not expose token counts, and the Gemini wrapper
-  posts per-call Observatory events separately.
+- **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`** — populate cost for
+  every vendor so the dashboard shows a per-participant spend (subscription
+  vendors get a *putative* cost, the same way the Overview does):
+  - **Reviewer X (OpenAI)** — read `<workdir>/usage-X.json` (Phase 1
+    `-UsageSidecarPath`); exact `inputTokens`/`outputTokens`/`costUsd` from the
+    API response.
+  - **Reviewer G (Gemini)** — read `<workdir>/usage-G.json` (Phase 1
+    `-UsageSidecarPath`); the wrapper writes the exact summed
+    `inputTokens`/`outputTokens`/`costUsd` it already computes from its rate card.
+  - **Reviewer B and the judge (Claude via Agent tool)** — the Agent result's
+    `<usage>` block carries `subagent_tokens` (a single COMBINED in+out count).
+    Sum it across the phases that reviewer ran (B: Phase 1 + Phase 2; judge:
+    Phase 3), pass that total as `-InputTokens` (leave `-OutputTokens 0`; the
+    split is not exposed), and compute a **putative** `-CostUsd` with a blended
+    rate: **Sonnet reviewer `$6/M`, Opus judge `$30/M`** (a 75% input / 25%
+    output blend of the published Anthropic rates — Sonnet $3/$15, Opus $15/$75).
+    So `costUsd = subagent_tokens_total * rate_per_million / 1e6`. This is an
+    estimate; revisit the blend if the per-million rates change.
 - **`-ReviewDurationMs`** — the participant's Phase-1 (judge: Phase-3) wall-clock
   in ms. The Agent tool **does** expose this: each `Agent` result ends with a
   `<usage>` block containing `duration_ms` — use it for Reviewer B and the judge.
