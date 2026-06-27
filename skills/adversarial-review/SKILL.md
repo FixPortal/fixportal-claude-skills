@@ -430,37 +430,58 @@ Skip this phase only if the user explicitly opted out (e.g. "no verification
 pass"). Note the added cost when you present the chunk plan (§0a) — see Cost.
 
 **Outcome telemetry.** After folding Phase 4 verdicts back into the report, emit
-one outcome event per reviewer to the AI Observatory. This is *additive* to the
-per-call token telemetry the reviewer wrappers already post — it captures which
-reviewers contributed findings that survived, not economics. Call
-`emit-review-telemetry.ps1` (beside this file) three times in parallel (one per
-reviewer), passing:
+one outcome event per *participant* to the AI Observatory. This is *additive* to
+the per-call token telemetry the reviewer wrappers already post — it captures
+which reviewers contributed findings that survived, not economics. Call
+`emit-review-telemetry.ps1` (beside this file) **four times in parallel — the
+three Phase-1 reviewers AND the Phase-3 judge** (omit the judge only if the
+panel ran without adjudication). All four MUST share the same `-RunId` so the
+dashboard groups them as one run; a run missing the judge row shows as
+"no judge", and a run whose participants carry different `runId`s fragments into
+several one-reviewer "incomplete" runs (the canonical failure that left the
+dashboard showing every run as `1 of 3 reviewers`). Pass:
 
 - **`-RunId`** — the workdir's UTC timestamp slug (e.g. `20260614T143022Z`).
-- **`-Reviewer`** — reviewer id → vendor: `B` → `anthropic`, `G` → `google`,
-  `X` → `openai`.
-- **`-Model`** — the model id from `reviewers.json` for that reviewer.
+  **Identical for all four calls.**
+- **`-Reviewer`** — vendor: reviewers `B` → `anthropic`, `G` → `google`,
+  `X` → `openai`; the judge → the judge's vendor (`anthropic` for the Opus
+  judge in the default roster).
+- **`-Role`** — `reviewer` for the three Phase-1 reviewers, `judge` for the
+  adjudicator. **REQUIRED** — the API rejects (HTTP 400) any event without a
+  valid role and the failure is swallowed silently, so an omitted role means the
+  whole run vanishes. (This is exactly what broke capture once the API made role
+  mandatory.)
+- **`-Repo`** — the repository name (basename of `git rev-parse --show-toplevel`,
+  e.g. `your-repo`), same value for all four.
+- **`-Model`** — the model id from `reviewers.json` for each participant
+  (canonical id, e.g. `claude-sonnet-4-6`, `gpt-5.4`, `claude-opus-4-8` — never
+  a bare alias like `sonnet`, which lands as a separate row in the stats table).
 - **`-IssuesRaised`** — count of `### ` blocks in that reviewer's Phase 1 output
   (available in context for the Claude Code path; in `<workdir>/p1-<id>.txt` for
-  the driver path).
-- **`-IssuesAccepted`** — count of non-REFUTED findings in the published report
-  attributed to this reviewer: `[unanimous]` findings → credit all three
-  reviewers; `[majority]` findings → credit all except the named dissenter;
-  `[contested]` findings that survived Phase 4 as CONFIRMED or INDETERMINATE →
-  credit all three (contested attribution is ambiguous; don't penalise partial
-  credit).
+  the driver path). The judge raises none → `0`.
+- **`-IssuesAccepted`** — count of **this reviewer's OWN Phase-1 findings** that
+  survived non-REFUTED into the published report (match by content; a finding
+  this reviewer raised that another also raised still counts for this reviewer).
+  This is **always ≤ `-IssuesRaised`** — the API enforces `accepted ≤ raised`, so
+  do NOT use cross-vendor consensus crediting (which can exceed a reviewer's own
+  raised count and 400s the event). Findings that surfaced only as Phase-2 gaps
+  do not count toward Phase-1 raised/accepted. The judge → `0`.
 - **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`** — for Reviewer X
   (OpenAI), read `<workdir>/usage-X.json` written by the Phase 1 `-UsageSidecarPath`
   call and pass the values; the direct API response gives exact figures. For
-  Reviewer B (Claude Sonnet via Agent tool) and Reviewer G (Gemini CLI), pass 0
-  — the Agent tool does not expose token counts, and the Gemini wrapper posts
-  per-call Observatory events separately.
-- **`-ReviewDurationMs`** — pass 0; neither the Agent tool nor the subprocess
-  wrappers expose wall-clock call duration in a form the host agent can capture.
+  Reviewer B and the judge (Claude via Agent tool) and Reviewer G (Gemini CLI),
+  pass 0 — the Agent tool does not expose token counts, and the Gemini wrapper
+  posts per-call Observatory events separately.
+- **`-ReviewDurationMs`** — the participant's Phase-1 (judge: Phase-3) wall-clock
+  in ms. The Agent tool **does** expose this: each `Agent` result ends with a
+  `<usage>` block containing `duration_ms` — use it for Reviewer B and the judge.
+  For the Gemini and OpenAI wrappers, wrap the Phase-1 `pwsh` call in
+  `Measure-Command` (or capture start/end) and pass the elapsed ms. Pass `0` only
+  if a value genuinely was not captured.
 
 The script is fire-and-forget and silently skips when either
 `$env:OBSERVATORY_API_KEY` or `$env:OBSERVATORY_URL` is absent (both are
-required). Run all three PowerShell calls in a single message so they execute in
+required). Run all four PowerShell calls in a single message so they execute in
 parallel. If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the
 Phase 3 adjudicated report as-is.
 

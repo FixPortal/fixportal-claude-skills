@@ -21,6 +21,16 @@
 .PARAMETER Reviewer
     Vendor id of the reviewer: anthropic | google | openai.
 
+.PARAMETER Role
+    The participant's role in the panel: reviewer | judge. REQUIRED -- the API
+    rejects (HTTP 400) any run without a valid role, so omitting it means the
+    event is silently dropped. Emit the three Phase-1 reviewers as 'reviewer'
+    and the Phase-3 adjudicator as 'judge'.
+
+.PARAMETER Repo
+    Repository name under review (basename of the repo root, e.g.
+    your-repo). Optional; groups runs by repo in the dashboard.
+
 .PARAMETER Model
     Model id as it appears in reviewers.json (e.g. claude-sonnet-4-6, gpt-5.4).
 
@@ -63,6 +73,12 @@ param(
     [string] $Reviewer,
 
     [Parameter(Mandatory)]
+    [ValidateSet('reviewer', 'judge')]
+    [string] $Role,
+
+    [string] $Repo = $null,
+
+    [Parameter(Mandatory)]
     [string] $Model,
 
     [long]   $InputTokens      = 0,
@@ -90,6 +106,8 @@ $body = @{
     issuesRaised     = $IssuesRaised
     issuesAccepted   = $IssuesAccepted
     runId            = $RunId
+    role             = $Role
+    repo             = $Repo
 } | ConvertTo-Json -Compress
 
 try {
