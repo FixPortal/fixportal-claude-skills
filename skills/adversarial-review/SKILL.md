@@ -592,9 +592,12 @@ vault content. Report the vault path to the user in §4.
 YAML frontmatter uses **inline arrays** for `reviewers` and `tags` (not
 block-list syntax). `project` is the repo name — the same basename used for the
 run folder (`git rev-parse --show-toplevel`, e.g. `your-repo`); use it
-verbatim in the H1 too. Add the
-`remediation-*` / `deferred` keys only when a fix pass actually followed; omit
-them otherwise. The body is: an H1 `# <Project> — Adversarial Audit (<date>)`,
+verbatim in the H1 too. **If the run was given an operator name (the `-Summary`
+from §0), record it as a `run-name:` key** — the telemetry row is the only other
+place it lives, so persisting it here makes the run reconstructable from the
+vault alone if that row is ever lost. Omit `run-name` when the run was unnamed.
+Add the `remediation-*` / `deferred` keys only when a fix pass actually followed;
+omit them otherwise. The body is: an H1 `# <Project> — Adversarial Audit (<date>)`,
 a one-paragraph summary of the run, the consolidated-report wikilink, a
 per-chunk wikilink list (`[[report-chunkNN]] — <area>`), a tally line, a
 one-line Phase-4 verification summary, a one-or-two-sentence "headline highs"
@@ -604,6 +607,7 @@ note, the `working/` pointer, and — when remediation followed — a
 ```markdown
 ---
 project: your-repo
+run-name: Auth refactor (login, sessions)  # only if the run was named (the -Summary)
 review-type: adversarial-audit
 date: 2026-05-29
 reviewers: [Claude Sonnet, Gemini, GPT-5.4]
