@@ -31,6 +31,12 @@
     Repository name under review (basename of the repo root, e.g.
     your-repo). Optional; groups runs by repo in the dashboard.
 
+.PARAMETER Summary
+    Operator-assigned run name shown as the dashboard card title. Optional --
+    only set when the invocation gave a naming directive (e.g. "...name it
+    'Verifying adjusted formatting'"). Same value on all four calls of a run.
+    Capped at 80 chars server-side.
+
 .PARAMETER Model
     Model id as it appears in reviewers.json (e.g. claude-sonnet-4-6, gpt-5.4).
 
@@ -78,6 +84,8 @@ param(
 
     [string] $Repo = $null,
 
+    [string] $Summary = $null,
+
     [Parameter(Mandatory)]
     [string] $Model,
 
@@ -108,6 +116,7 @@ $body = @{
     runId            = $RunId
     role             = $Role
     repo             = $Repo
+    summary          = $Summary
 } | ConvertTo-Json -Compress
 
 try {
