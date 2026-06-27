@@ -157,6 +157,15 @@ catching what a shallow pass misses, default the reviewers to depth.
 Confirm a git repo with `git rev-parse --is-inside-work-tree`. If it is not,
 tell the user adversarial-review needs a git repository and stop.
 
+**Run name (ask once, up front).** If the invocation already carried a naming
+directive ("…name it 'X'", "…summarise it as X"), use that and don't ask. Else
+ask the operator a single question before running — e.g. *"Would you like to name
+this review for the Observatory dashboard? (optional — it becomes the run's card
+title; press enter / say skip for none)"* — and capture their answer as the run
+name. A blank/declined answer means no name (unchanged behaviour). Carry the
+captured name to the §3a telemetry step as `-Summary` on all four emit calls.
+Ask only once; never block the review on it.
+
 The skill argument has the form `[<target>] [-- <pathspec>…]`: the part before
 `--` selects *what revision* to review, and an optional pathspec after `--`
 scopes *which files*. Resolve the revision part as:
