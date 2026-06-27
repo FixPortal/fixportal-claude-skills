@@ -66,7 +66,12 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gemini-2.5-pro'
+    [string] $Model = 'gemini-2.5-pro',
+
+    # When set, write this reviewer's summed token usage + cost as JSON
+    # ({inputTokens,outputTokens,costUsd}) so the host can pass exact figures to
+    # emit-review-telemetry.ps1 (the adversarial-review outcome event).
+    [string] $UsageSidecarPath
 )
 
 # Pipe UTF-8 to the child process so non-ASCII in diffs survives.
@@ -127,7 +132,7 @@ $stdin = $sb.ToString()
 
 # A short final directive (appended after stdin by the CLI). The brief at the
 # top already says "output only the findings"; this just triggers the review.
-$directive = 'The text above is your input. Follow the instruction at the very top and review the DIFF UNDER REVIEW. Output only your findings in the requested format -- no preamble, no narration.'
+$directive = 'The text above is your input. Follow the instruction at the very top and review the DIFF UNDER REVIEW. Terse output only — findings in the requested format, no preamble, no narration, no summary.'
 
 # Run from a throwaway working directory so the repo's own GEMINI.md / project
 # context cannot bias the review. --approval-mode plan = read-only.
@@ -195,7 +200,7 @@ if ([string]::IsNullOrWhiteSpace($response)) {
 # The JSON envelope's stats block carries real per-model token usage; without
 # this post, headless gemini reviews are invisible to the AI Observatory (no
 # hook covers the plain gemini CLI).
-if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $json.stats?.models) {
+if ($json.stats?.models) {
     # USD per million tokens: input / output / thoughts (0.00 = no thinking tier)
     # Rates from https://ai.google.dev/gemini-api/docs/pricing (2025-06-19)
     # Tiered models use the ≤200k rate; thought tokens billed at rates[2].
@@ -208,8 +213,11 @@ if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $json.stats?.models)
         'gemini-2.5-flash-lite'  = @( 0.10,  0.40, 0.00)
         'gemini-2.5-flash'       = @( 0.30,  2.50, 3.50)
     }
-    $observatoryUrl = $env:OBSERVATORY_URL
+    $observatoryUrl = $env:OBSERVATORY_URL ?? 'https://fpaiobs-api.azurewebsites.net'
     $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()
+    # Accumulate this call's usage so it can be written to the sidecar (host reads
+    # it for the adversarial-review outcome event) regardless of Observatory posting.
+    $sumIn = 0L; $sumOut = 0L; $sumCost = 0.0
 
     foreach ($mProp in $json.stats.models.PSObject.Properties) {
         try {
@@ -227,31 +235,44 @@ if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $json.stats?.models)
                 ($inTok * $rates[0]) + ($outTok * $rates[1]) + ($thoughts * $rates[2])
             ) / 1000000.0, 8)
 
-            # cacheWriteTokens carries thinking tokens (observatory hook convention).
-            $obsBody = @{
-                provider         = 'Google'
-                model            = $mProp.Name
-                inputTokens      = $inTok
-                outputTokens     = $outTok
-                cacheReadTokens  = $cached
-                cacheWriteTokens = $thoughts
-                costUsd          = $costUsd
-                eventKey         = "gemini:$sessionId`:$($mProp.Name)"
-                rawPayload       = (@{
-                    source     = 'gemini-review'
-                    session_id = $sessionId
-                    role       = 'adversarial-review external reviewer'
-                } | ConvertTo-Json -Compress)
-            } | ConvertTo-Json -Compress
+            $sumIn += $inTok; $sumOut += $outTok; $sumCost += $costUsd
 
-            Invoke-RestMethod `
-                -Uri "$observatoryUrl/api/events" `
-                -Method Post `
-                -ContentType 'application/json' `
-                -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `
-                -Body $obsBody `
-                -TimeoutSec 5 `
-                -ErrorAction SilentlyContinue | Out-Null
+            # Post to the general usage pipeline (Overview) only when configured;
+            # the sidecar below is written independently for the adv-review event.
+            if ($env:OBSERVATORY_API_KEY) {
+                # cacheWriteTokens carries thinking tokens (observatory hook convention).
+                $obsBody = @{
+                    provider         = 'Google'
+                    model            = $mProp.Name
+                    inputTokens      = $inTok
+                    outputTokens     = $outTok
+                    cacheReadTokens  = $cached
+                    cacheWriteTokens = $thoughts
+                    costUsd          = $costUsd
+                    eventKey         = "gemini:$sessionId`:$($mProp.Name)"
+                    rawPayload       = (@{
+                        source     = 'gemini-review'
+                        session_id = $sessionId
+                        role       = 'adversarial-review external reviewer'
+                    } | ConvertTo-Json -Compress)
+                } | ConvertTo-Json -Compress
+
+                Invoke-RestMethod `
+                    -Uri "$observatoryUrl/api/events" `
+                    -Method Post `
+                    -ContentType 'application/json' `
+                    -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `
+                    -Body $obsBody `
+                    -TimeoutSec 5 `
+                    -ErrorAction SilentlyContinue | Out-Null
+            }
+        } catch { }
+    }
+
+    if ($UsageSidecarPath) {
+        try {
+            @{ inputTokens = $sumIn; outputTokens = $sumOut; costUsd = [Math]::Round($sumCost, 8) } |
+                ConvertTo-Json -Compress | Set-Content -LiteralPath $UsageSidecarPath -Encoding UTF8
         } catch { }
     }
 }
