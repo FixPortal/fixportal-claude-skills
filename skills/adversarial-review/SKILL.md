@@ -453,6 +453,13 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   mandatory.)
 - **`-Repo`** — the repository name (basename of `git rev-parse --show-toplevel`,
   e.g. `your-repo`), same value for all four.
+- **`-Summary`** — OPTIONAL operator-assigned run name → becomes the dashboard
+  card title. Set it ONLY when the invocation carried a naming/summarise
+  directive (e.g. "…name it 'Verifying adjusted formatting'", "…summarise it as
+  X", "…call this run X"); pass the **same** literal string on all four calls.
+  No such directive → omit the flag entirely and the card title stays the run
+  timestamp (unchanged behaviour). Capped at 80 chars server-side; keep it short
+  so it fits the card title bar.
 - **`-Model`** — the model id from `reviewers.json` for each participant
   (canonical id, e.g. `claude-sonnet-4-6`, `gpt-5.4`, `claude-opus-4-8` — never
   a bare alias like `sonnet`, which lands as a separate row in the stats table).
@@ -484,6 +491,13 @@ The script is fire-and-forget and silently skips when either
 required). Run all four PowerShell calls in a single message so they execute in
 parallel. If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the
 Phase 3 adjudicated report as-is.
+
+**Run naming (optional).** If the operator's invocation assigned the run a name
+— a naming/summarise directive such as "run a review over X and name it
+'Verifying adjusted formatting'" — capture that literal string at invocation
+time and thread it through as `-Summary` on all four emit calls above. A plain
+invocation with no such directive assigns no name and changes nothing. The name
+is the dashboard card title, so keep it pithy.
 
 ### 4. Answer the user
 
