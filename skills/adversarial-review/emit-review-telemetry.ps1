@@ -4,15 +4,18 @@
     Emits one adversarial-review outcome event to the AI Observatory.
 
 .DESCRIPTION
-    Fire-and-forget helper called once per reviewer after Phase 4 verification
-    completes. Captures review OUTCOMES (findings raised and accepted) rather
-    than token economics -- those are already emitted per-call by the individual
-    reviewer wrappers (gemini-review.ps1, openai-review.ps1).
+    Emits one adversarial-review outcome event per panel participant after Phase 4
+    verification completes. Captures review OUTCOMES (findings raised and accepted)
+    rather than token economics -- those are already emitted per-call by the
+    individual reviewer wrappers (gemini-review.ps1, openai-review.ps1).
 
-    Called by the host agent (Claude Code or any other host) at the end of
-    Phase 4 in the adversarial-review skill procedure -- three calls in parallel,
-    one per reviewer. Silently no-ops when OBSERVATORY_API_KEY or OBSERVATORY_URL
-    is absent.
+    Called by the host agent (Claude Code or any other host) at the end of Phase 4
+    in the adversarial-review skill procedure -- four calls in parallel, one per
+    participant (three reviewers + one judge).
+
+    Silently no-ops when OBSERVATORY_API_KEY or OBSERVATORY_URL is absent.
+    When both vars are set, HTTP failures surface via Write-Error and exit 1 --
+    callers must check $LASTEXITCODE and report failures to the operator.
 
 .PARAMETER RunId
     UTC timestamp slug that ties all three reviewer events for one run together,
