@@ -525,7 +525,7 @@ pwsh -NoProfile -Command "
     -Uri \"\$env:OBSERVATORY_URL/api/adversarial-review/runs?runId=<RunId>\" \`
     -Headers @{ 'X-Observatory-Key' = \$env:OBSERVATORY_API_KEY } \`
     -ErrorAction Stop |
-  Select-Object -ExpandProperty reviewer
+  Select-Object reviewer, role
 "
 ```
 
@@ -554,7 +554,7 @@ and the durable Obsidian vault copy (§6).
 **Always end with an Observatory capture line**, even when all rows landed:
 
 - Success: `Observatory: 4/4 captured (RunId: 20260628T000000Z)`
-- Partial: `Observatory: 1/4 captured — missing B (reviewer/anthropic), G (reviewer/google), X (reviewer/openai). Re-emit with:` followed by the three backfill commands.
+- Partial: `Observatory: N/4 captured — missing <reviewer>/<role> pairs. Re-emit with:` followed by the backfill command for each missing `(Reviewer, Role)` tuple — e.g. if only the judge landed: missing B (anthropic/reviewer), G (google/reviewer), X (openai/reviewer). If the judge is the missing row: missing judge (anthropic/judge).
 - Skipped (env vars absent): `Observatory: skipped (OBSERVATORY_API_KEY / OBSERVATORY_URL not set)`
 
 For a multi-chunk audit, do **not** answer after each chunk — run every chunk,
