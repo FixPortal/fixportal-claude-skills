@@ -509,11 +509,30 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   `Measure-Command` (or capture start/end) and pass the elapsed ms. Pass `0` only
   if a value genuinely was not captured.
 
-The script is fire-and-forget and silently skips when either
-`$env:OBSERVATORY_API_KEY` or `$env:OBSERVATORY_URL` is absent (both are
-required). Run all four PowerShell calls in a single message so they execute in
-parallel. If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the
-Phase 3 adjudicated report as-is.
+The script silently skips when either `$env:OBSERVATORY_API_KEY` or
+`$env:OBSERVATORY_URL` is absent. When both are present it surfaces HTTP errors
+via `Write-Error` and exits non-zero — check `$LASTEXITCODE` after each call.
+Run all four PowerShell calls in a single message so they execute in parallel.
+If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the Phase 3
+adjudicated report as-is.
+
+**Verify after emitting.** Once all four calls complete, confirm the rows landed
+by fetching the run from the Observatory:
+
+```powershell
+pwsh -NoProfile -Command "
+  Invoke-RestMethod \`
+    -Uri \"\$env:OBSERVATORY_URL/api/adversarial-review/runs?runId=<RunId>\" \`
+    -Headers @{ 'X-Observatory-Key' = \$env:OBSERVATORY_API_KEY } \`
+    -ErrorAction Stop |
+  Select-Object -ExpandProperty reviewer
+"
+```
+
+Count the returned rows — expect 4 (three `reviewer` rows + one `judge` row). If
+any are missing, note which reviewer/role was absent and include the backfill
+`emit-review-telemetry.ps1` command in the §4 answer so the operator can re-run
+it. Report the capture status in §4 regardless of outcome (see §4 below).
 
 **Run naming (optional).** If the operator's invocation assigned the run a name
 — a naming/summarise directive such as "run a review over X and name it
@@ -531,6 +550,12 @@ both sides, and each High/contested finding now carrying its Phase-4 verdict
 reviewer was unavailable. Lead with the report; do not narrate the phases you
 ran. Mention where the report was saved — both the temporary working directory
 and the durable Obsidian vault copy (§6).
+
+**Always end with an Observatory capture line**, even when all rows landed:
+
+- Success: `Observatory: 4/4 captured (RunId: 20260628T000000Z)`
+- Partial: `Observatory: 1/4 captured — missing B (reviewer/anthropic), G (reviewer/google), X (reviewer/openai). Re-emit with:` followed by the three backfill commands.
+- Skipped (env vars absent): `Observatory: skipped (OBSERVATORY_API_KEY / OBSERVATORY_URL not set)`
 
 For a multi-chunk audit, do **not** answer after each chunk — run every chunk,
 synthesise (§5), verify (§3a), then present the one consolidated report.
