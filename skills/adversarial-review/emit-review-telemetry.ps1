@@ -133,5 +133,8 @@ try {
         -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } `
         -Body $body `
         -TimeoutSec 5 `
-        -ErrorAction SilentlyContinue | Out-Null
-} catch { }
+        -ErrorAction Stop | Out-Null
+} catch {
+    Write-Error "Observatory emit failed [$Reviewer/$Role]: $_"
+    exit 1
+}
