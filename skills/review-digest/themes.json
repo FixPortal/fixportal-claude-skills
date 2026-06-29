@@ -7,17 +7,17 @@
   "check-then-set-race": {
     "aliases": ["non-atomic check-then-set", "missing CAS", "TOCTOU", "double-checked without interlocked"],
     "home": "reviewer brief / analyzer rule",
-    "seen": ["service-d", "service-c", "service-g", "service-a", "service-b", "service-h"]
+    "seen": ["service-d", "service-c", "service-g", "service-a", "service-b", "service-h", "service-n", "service-o"]
   },
   "swallowed-exception-aborts-loop": {
     "aliases": ["exception swallowed", "fire-and-forget task never awaited", "loop aborts on one failure", "unobserved task fault"],
     "home": "reviewer brief",
-    "seen": ["service-d", "service-c", "service-a", "service-e"]
+    "seen": ["service-d", "service-c", "service-a", "service-e", "service-n", "service-o"]
   },
   "culture-parse": {
     "aliases": ["locale-sensitive parse", "missing InvariantCulture", "culture-sensitive parsing"],
     "home": "CLAUDE.md rule / analyzer rule",
-    "seen": ["service-e"]
+    "seen": ["service-e", "service-o"]
   },
   "utcnow-not-injected-clock": {
     "aliases": ["DateTime.UtcNow", "static clock read", "SystemClock.Instance", "now from static call"],
@@ -27,7 +27,7 @@
   "secret-in-log": {
     "aliases": ["credential leak in store", "plaintext credential", "unredacted secret", "password in message store"],
     "home": "reviewer brief / analyzer rule",
-    "seen": ["service-d", "service-b"]
+    "seen": ["service-d", "service-b", "service-n"]
   },
   "anon-endpoint": {
     "aliases": ["missing authz", "anonymous endpoint", "unauthenticated route", "over-posting DTO", "anonymous write endpoint", "anonymous read endpoint", "unauthenticated"],
@@ -52,7 +52,7 @@
   "httpclient-lifetime-misuse": {
     "aliases": ["httpclient per request", "new HttpClient per call", "missing PooledConnectionLifetime", "HttpClient not reused", "disposed HttpClient"],
     "home": "scaffold-dotnet / reviewer brief",
-    "seen": ["service-i", "service-c"]
+    "seen": ["service-i", "service-c", "service-n"]
   },
   "path-concat-not-pathjoin": {
     "aliases": ["string path concatenation", "use Path.Join", "use Path.Combine", "path built with string interpolation", "codeql path concat"],
