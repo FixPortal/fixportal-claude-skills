@@ -77,7 +77,20 @@ if (-not $metricFiles) {
     Write-Error "No metrics.json found under $RunRoot. Each chunk's run-review.ps1 writes one; nothing to aggregate."
     exit 3
 }
-$chunkCount = $metricFiles.Count
+
+# Chunk count = ALL chunks in the batch, including any that failed and left no
+# metrics.json. batch-review.ps1 records every chunk in batch-summary.json, so
+# prefer it as the source of truth; fall back to the metrics.json count only for
+# an ad-hoc batch run that did not go through batch-review.ps1.
+$batchSummary = Join-Path $RunRoot 'batch-summary.json'
+if (Test-Path -LiteralPath $batchSummary) {
+    $chunkCount = @(Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json).Count
+    if ($chunkCount -gt $metricFiles.Count) {
+        Write-Warning "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics."
+    }
+} else {
+    $chunkCount = $metricFiles.Count
+}
 
 # Sum per reviewer vendor across chunks.
 $byReviewer = @{}

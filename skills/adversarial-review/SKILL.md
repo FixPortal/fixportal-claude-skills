@@ -595,12 +595,23 @@ lands as all-zeros. Instead:
 1. **Drive the chunks with `batch-review.ps1`** (don't hand-roll the fan-out).
    It runs the spine once per chunk under one shared `RunRoot`/`RunId`, so every
    chunk leaves a `metrics.json` holding that chunk's three reviewers'
-   deterministic outcome — `issuesRaised` + cost + duration (G/X exact from their
-   usage sidecars, B a blended-rate estimate marked `costEstimated`). Pass the
-   chunk plan from §0a as the JSON manifest:
+   deterministic outcome (G/X exact from their usage sidecars, B a blended-rate
+   estimate marked `costEstimated`). Pass the chunk plan from §0a as the JSON
+   manifest:
    `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/batch-review.ps1 -ChunkManifest <chunks.json> -Target audit`
-   (If a batch was already run another way, the only requirement downstream is
-   that each chunk dir contains a `metrics.json` of this shape.)
+   If a batch was already run another way, the only requirement downstream is
+   that each chunk dir contains a `metrics.json` of this exact shape — the
+   aggregator reads every field below, so a manual reconstruction must carry all
+   of them, not just `issuesRaised`:
+   ```json
+   { "chunkId": "L1", "repo": "your-repo", "writtenBy": "run-review.ps1",
+     "participants": [
+       { "reviewer": "openai", "role": "reviewer", "model": "gpt-5.4",
+         "inputTokens": 12000, "outputTokens": 800, "costUsd": 0.04,
+         "costEstimated": false, "reviewDurationMs": 5000, "issuesRaised": 7 },
+       { "reviewer": "google", "...": "..." },
+       { "reviewer": "anthropic", "...": "..." } ] }
+   ```
 
 2. **At §5 synthesis, write `<RunRoot>/aggregate-verdict.json`** — the two things
    that are host judgment, not deterministic: `issuesAccepted` per reviewer (each

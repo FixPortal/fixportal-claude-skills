@@ -394,7 +394,12 @@ try {
             $inTok  = [long]($sidecars | Measure-Object -Property inputTokens  -Sum).Sum
             $outTok = [long]($sidecars | Measure-Object -Property outputTokens -Sum).Sum
             $cost   = [double]($sidecars | Measure-Object -Property costUsd     -Sum).Sum
-            $estimated = $false
+            # Exact only when every phase the reviewer ran produced a sidecar. A
+            # partial set (a phase failed, or its wrapper wrote none) still sums
+            # the real figures it has but is flagged putative rather than exact,
+            # so the missing phase's cost is not silently presented as complete.
+            $phasesRun = @($p1res, $p2res | Where-Object { $_ }).Count
+            $estimated = ($sidecars.Count -lt $phasesRun)
         } else {
             # No sidecar (Claude wrapper) — estimate from proxies and the blended
             # rate. Input ≈ the diff twice (P1 full + P2 with pooled findings);
