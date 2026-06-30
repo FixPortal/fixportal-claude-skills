@@ -249,7 +249,7 @@ Copy-Item (Join-Path $briefDir 'phase3-adjudicate.txt') (Join-Path $WorkDir 'pha
 # --- Build a per-reviewer job spec --------------------------------------
 # Introspect each wrapper so we only pass -Effort / -RepoPath to wrappers that
 # actually declare them (Copilot/Gemini do not expose a reasoning-effort flag).
-function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool] $withFindings) {
+function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool] $withFindings, [string] $phaseLabel) {
     $caps = (Get-Command $wrapper).Parameters.Keys
     # Repo-blind reviewers (G and X) get the compact diff when one was generated;
     # Reviewer B (repo access) always gets the full diff so it can cross-reference the repo.
@@ -259,6 +259,13 @@ function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool
     foreach ($c in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $c) }
     if ($caps -contains 'Effort' -and $r.effort) { $a += @('-Effort', $r.effort) }
     if ($caps -contains 'RepoPath' -and $r.repoAccess) { $a += @('-RepoPath', $RepoPath) }
+    # Wrappers that expose -UsageSidecarPath (G, X) write exact {inputTokens,
+    # outputTokens,costUsd} per call; one sidecar per reviewer per phase so the
+    # metrics writer can sum P1+P2. Claude (B) has no sidecar — its cost is
+    # estimated downstream from the blended rate.
+    if ($caps -contains 'UsageSidecarPath') {
+        $a += @('-UsageSidecarPath', (Join-Path $WorkDir ("usage-{0}-{1}.json" -f $r.id, $phaseLabel)))
+    }
     , $a
 }
 
@@ -278,7 +285,7 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
             Label   = $r.label
             Vendor  = $r.vendor
             Wrapper = $wrapper
-            Args    = (Build-Args $r $wrapper $instruction $withFindings)
+            Args    = (Build-Args $r $wrapper $instruction $withFindings $phaseLabel)
             OutFile = Join-Path $WorkDir ("{0}-{1}.txt" -f $phaseLabel, $r.id)
         }
     }
@@ -287,8 +294,11 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
     $results = $jobs | ForEach-Object -ThrottleLimit $MaxParallel -Parallel {
         $j = $_
         $a = $j.Args
+        # Per-reviewer wall-clock for the metrics sidecar (telemetry duration).
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $out = (& pwsh -NoProfile -File $j.Wrapper @a 2>&1 | Out-String)
-        [pscustomobject]@{ Id = $j.Id; Label = $j.Label; Vendor = $j.Vendor; OutFile = $j.OutFile; Out = $out; Exit = $LASTEXITCODE }
+        $sw.Stop()
+        [pscustomobject]@{ Id = $j.Id; Label = $j.Label; Vendor = $j.Vendor; OutFile = $j.OutFile; Out = $out; Exit = $LASTEXITCODE; ElapsedMs = $sw.ElapsedMilliseconds }
     }
 
     $ok = @()
@@ -346,6 +356,82 @@ Write-Host "Pooled $findingId findings into $(Split-Path -Leaf $pooledFile)"
 
 # --- Phase 2 -------------------------------------------------------------
 $p2ok = Invoke-Round 'p2' '^(F\d+:|### )' $true
+
+# --- Per-chunk reviewer metrics (telemetry) -----------------------------
+# Write metrics.json so a batched run can be aggregated per participant across
+# chunks (aggregate-and-emit.ps1). Covers the THREE reviewers' deterministic
+# outcome: issuesRaised (### count) + cost/duration. The judge (synthesis) and
+# issuesAccepted are products of adjudication and are recorded separately in
+# aggregate-verdict.json at synthesis time. Best-effort: a failure here must
+# never fail the review, so the whole block is guarded.
+function Get-BlendedRatePerMillion([string] $model) {
+    # Putative blend of published Anthropic rates (Sonnet $3/$15, Opus $15/$75),
+    # 75% input / 25% output — the same convention emit telemetry uses.
+    if ($model -match 'opus') { return 30.0 }
+    return 6.0
+}
+function Read-UsageSidecar([string] $path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { $null }
+}
+try {
+    $participants = foreach ($r in $reviewers) {
+        $p1res = $p1ok | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
+        $p2res = $p2ok | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
+        $durationMs = [long](($p1res.ElapsedMs ?? 0) + ($p2res.ElapsedMs ?? 0))
+
+        $p1File = Join-Path $WorkDir ("p1-{0}.txt" -f $r.id)
+        $raised = if (Test-Path -LiteralPath $p1File) {
+            @(Get-Content -LiteralPath $p1File | Where-Object { $_ -match '^### ' }).Count
+        } else { 0 }
+
+        $sidecars = @(
+            (Read-UsageSidecar (Join-Path $WorkDir ("usage-{0}-p1.json" -f $r.id)))
+            (Read-UsageSidecar (Join-Path $WorkDir ("usage-{0}-p2.json" -f $r.id)))
+        ) | Where-Object { $_ }
+
+        if ($sidecars) {
+            $inTok  = [long]($sidecars | Measure-Object -Property inputTokens  -Sum).Sum
+            $outTok = [long]($sidecars | Measure-Object -Property outputTokens -Sum).Sum
+            $cost   = [double]($sidecars | Measure-Object -Property costUsd     -Sum).Sum
+            $estimated = $false
+        } else {
+            # No sidecar (Claude wrapper) — estimate from proxies and the blended
+            # rate. Input ≈ the diff twice (P1 full + P2 with pooled findings);
+            # output ≈ chars in this reviewer's P1+P2 text / 4.
+            $inTok  = [long]($estTokens * 2)
+            $outChars = 0
+            foreach ($f in @($p1res.OutFile, $p2res.OutFile)) {
+                if ($f -and (Test-Path -LiteralPath $f)) { $outChars += (Get-Content -LiteralPath $f -Raw).Length }
+            }
+            $outTok = [long][Math]::Ceiling($outChars / 4.0)
+            $cost   = ($inTok + $outTok) * (Get-BlendedRatePerMillion $r.model) / 1e6
+            $estimated = $true
+        }
+
+        [ordered]@{
+            reviewer         = $r.vendor
+            role             = 'reviewer'
+            model            = $r.model
+            inputTokens      = $inTok
+            outputTokens     = $outTok
+            costUsd          = [Math]::Round($cost, 6)
+            costEstimated    = $estimated
+            reviewDurationMs = $durationMs
+            issuesRaised     = $raised
+        }
+    }
+    $metrics = [ordered]@{
+        chunkId      = (Split-Path -Leaf $WorkDir)
+        repo         = $repoName
+        writtenBy    = 'run-review.ps1'
+        participants = @($participants)
+    }
+    $metrics | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $WorkDir 'metrics.json') -Encoding utf8
+}
+catch {
+    Write-Warning "metrics.json not written ($_). Telemetry aggregation will fall back to estimates for this chunk."
+}
 
 # --- Assemble the judge packet ------------------------------------------
 $packet = [System.Text.StringBuilder]::new()

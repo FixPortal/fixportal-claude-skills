@@ -1,0 +1,138 @@
+#Requires -Version 7
+<#
+.SYNOPSIS
+    Drive a chunked/batched adversarial review: run the deterministic spine
+    (run-review.ps1) once per chunk under one shared run id, at a fixed chunk
+    concurrency, so every chunk leaves a metrics.json for aggregation.
+
+.DESCRIPTION
+    A large diff cannot be reviewed as one panel run (it overruns the
+    cross-vendor reviewers and dilutes findings — see the skill, §0a). The fix is
+    to tile the surface into cohesive chunks and run the full three-phase pipeline
+    once per chunk, then synthesise (§5). This script standardises that fan-out
+    that was previously hand-rolled per audit:
+
+      - one shared RunRoot (<temp>/adversarial-review/<stamp>) and RunId for all
+        chunks, so aggregate-and-emit.ps1 groups them as ONE dashboard run;
+      - each chunk gets its own subdirectory <RunRoot>/<chunkId> and runs the
+        spine with the chunk's pathspec;
+      - chunks run -BatchSize at a time (each spine itself runs three reviewers in
+        parallel, so wall concurrency ≈ BatchSize × 3);
+      - it STOPS at the judge boundary, exactly like the spine. Adjudication,
+        per-chunk reports, §5 synthesis, and the aggregate-verdict.json that feeds
+        accepted/judge into aggregate-and-emit.ps1 remain host judgment.
+
+.PARAMETER ChunkManifest
+    Path to a JSON array of chunks:
+      [ { "id": "L1", "label": "Library: Orders",
+          "pathspec": ["src/Orders", ":!**/*.Designer.cs"] }, ... ]
+    `id` must be a filesystem-safe slug (becomes the chunk subdir). `pathspec` is
+    forwarded to the spine after `--`.
+
+.PARAMETER RepoPath
+    Repository root. Defaults to the git toplevel of the current directory.
+
+.PARAMETER RunRoot
+    Shared run working directory. Defaults to <temp>/adversarial-review/<UTC stamp>.
+
+.PARAMETER Target
+    Spine target for every chunk (default 'audit' — empty tree vs HEAD, the usual
+    whole-surface audit). Any spine target is accepted.
+
+.PARAMETER ContextPath
+    Repo context file(s) forwarded to every chunk's reviewers (read-only
+    background). Keep tight.
+
+.PARAMETER BatchSize
+    Chunks run concurrently (default 3).
+
+.OUTPUTS
+    Writes <RunRoot>/<chunkId>/* per chunk (including metrics.json), a
+    <RunRoot>/batch-summary.json roll-up, and prints the RunRoot + next steps.
+
+.EXAMPLE
+    pwsh -NoProfile -File batch-review.ps1 -ChunkManifest chunks.json -Target audit
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [string] $ChunkManifest,
+    [string] $RepoPath,
+    [string] $RunRoot,
+    [string] $Target = 'audit',
+    [string[]] $ContextPath,
+    [int] $BatchSize = 3
+)
+
+$ErrorActionPreference = 'Stop'
+$scriptDir = Split-Path -Parent $PSCommandPath
+$spine = Join-Path $scriptDir 'run-review.ps1'
+if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script."; exit 2 }
+
+if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest"; exit 2 }
+$chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
+if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
+
+if (-not $RepoPath) {
+    $top = (& git rev-parse --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.'; exit 2 }
+    $RepoPath = $top.Trim()
+}
+$RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
+
+if (-not $RunRoot) {
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $RunRoot = Join-Path ([IO.Path]::GetTempPath()) (Join-Path 'adversarial-review' $stamp)
+}
+New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
+$RunId = Split-Path -Leaf $RunRoot
+
+Write-Host "Batch review: $($chunks.Count) chunks, batch-size $BatchSize"
+Write-Host "RunRoot: $RunRoot"
+
+$results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
+    $c = $_
+    $spine      = $using:spine
+    $RunRoot    = $using:RunRoot
+    $RepoPath   = $using:RepoPath
+    $Target     = $using:Target
+    $ContextPath = $using:ContextPath
+
+    $chunkDir = Join-Path $RunRoot $c.id
+    New-Item -ItemType Directory -Path $chunkDir -Force | Out-Null
+
+    $a = @('-NoProfile', '-File', $spine, '-Target', $Target, '-RepoPath', $RepoPath, '-WorkDir', $chunkDir)
+    if ($c.pathspec) { $a += @('-Pathspec', ((@($c.pathspec)) -join ';')) }
+    foreach ($cp in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $cp) }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $out = (& pwsh @a 2>&1 | Out-String)
+    $sw.Stop()
+    $exit = $LASTEXITCODE
+    Set-Content -LiteralPath (Join-Path $chunkDir 'run-output.txt') -Value $out -Encoding utf8
+
+    [pscustomobject]@{
+        chunkId = $c.id; label = $c.label; exitCode = $exit
+        elapsedSec = [int]($sw.Elapsed.TotalSeconds); workDir = $chunkDir
+        hasMetrics = (Test-Path -LiteralPath (Join-Path $chunkDir 'metrics.json'))
+    }
+}
+
+$results = @($results) | Sort-Object chunkId
+$results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $RunRoot 'batch-summary.json') -Encoding utf8
+
+$failed  = @($results | Where-Object { $_.exitCode -ne 0 })
+$noMetrics = @($results | Where-Object { $_.exitCode -eq 0 -and -not $_.hasMetrics })
+
+Write-Host ""
+Write-Host "==== batch complete: $RunId ===="
+$results | Format-Table chunkId, label, exitCode, elapsedSec, hasMetrics -AutoSize | Out-String | Write-Host
+if ($failed)    { Write-Warning "$($failed.Count) chunk(s) failed: $($failed.chunkId -join ', ') — they contribute no metrics." }
+if ($noMetrics) { Write-Warning "$($noMetrics.Count) chunk(s) left no metrics.json: $($noMetrics.chunkId -join ', ')." }
+Write-Host ""
+Write-Host "Next (host judgment, per the skill):"
+Write-Host "  1. Adjudicate + verify each chunk -> report-<id>.md."
+Write-Host "  2. §5 synthesise across chunks -> report.md; write $RunRoot\aggregate-verdict.json"
+Write-Host "     (accepted per reviewer + judge participant)."
+Write-Host "  3. pwsh -NoProfile -File `"$scriptDir\aggregate-and-emit.ps1`" -RunRoot `"$RunRoot`" -Repo <repo> [-Summary <name>]"
+[pscustomobject]@{ runRoot = $RunRoot; runId = $RunId; chunks = $results.Count; failed = $failed.Count } | ConvertTo-Json -Compress

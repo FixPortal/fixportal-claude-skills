@@ -440,7 +440,9 @@ deletion:
 Skip this phase only if the user explicitly opted out (e.g. "no verification
 pass"). Note the added cost when you present the chunk plan (§0a) — see Cost.
 
-**Outcome telemetry.** After folding Phase 4 verdicts back into the report, emit
+**Outcome telemetry.** (Single-chunk runs — for a multi-chunk audit do NOT emit
+here; the run is summed across chunks and emitted once via §5a.) After folding
+Phase 4 verdicts back into the report, emit
 one outcome event per *participant* to the AI Observatory. This is *additive* to
 the per-call token telemetry the reviewer wrappers already post — it captures
 which reviewers contributed findings that survived, not economics. Call
@@ -582,6 +584,44 @@ brief (below). Write its output to `report.md`. This consolidated report is then
 the input to the Phase 4 verification pass (§3a); verify it before presenting —
 a single ranked report for the whole audited surface, noting which chunk(s) each
 finding came from. This is the artefact the run exists to produce.
+
+### 5a. Telemetry for batched runs (multi-chunk only)
+
+A multi-chunk audit is **one** dashboard run whose participant rows are the
+**sum across chunks**, not four manual emits with guessed totals. Do NOT call
+`emit-review-telemetry.ps1` four times by hand for a batch — that is how a run
+lands as all-zeros. Instead:
+
+1. **Drive the chunks with `batch-review.ps1`** (don't hand-roll the fan-out).
+   It runs the spine once per chunk under one shared `RunRoot`/`RunId`, so every
+   chunk leaves a `metrics.json` holding that chunk's three reviewers'
+   deterministic outcome — `issuesRaised` + cost + duration (G/X exact from their
+   usage sidecars, B a blended-rate estimate marked `costEstimated`). Pass the
+   chunk plan from §0a as the JSON manifest:
+   `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/batch-review.ps1 -ChunkManifest <chunks.json> -Target audit`
+   (If a batch was already run another way, the only requirement downstream is
+   that each chunk dir contains a `metrics.json` of this shape.)
+
+2. **At §5 synthesis, write `<RunRoot>/aggregate-verdict.json`** — the two things
+   that are host judgment, not deterministic: `issuesAccepted` per reviewer (each
+   reviewer's own findings that survived into the consolidated `report.md`) and
+   the **judge participant** = the §5 synthesis Opus pass (its `model`,
+   `costUsd`, `reviewDurationMs`; `inputTokens` from the Agent `<usage>` block).
+   Shape:
+   ```json
+   { "accepted": { "anthropic": 6, "google": 3, "openai": 4 },
+     "judge": { "reviewer": "anthropic", "model": "claude-opus-4-8",
+                "inputTokens": 90000, "costUsd": 2.7, "reviewDurationMs": 140000 } }
+   ```
+
+3. **Aggregate and emit once** with `aggregate-and-emit.ps1` — it sums every
+   `metrics.json`, folds in the verdict, and emits one row per participant with
+   `-ChunkCount N` (the dashboard then shows an "aggregate of N chunks" badge):
+   `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/aggregate-and-emit.ps1 -RunRoot <RunRoot> -Repo <repo> [-Summary <name>]`
+   It is idempotent — the API upserts on `(runId, reviewer, role)`, so you can
+   re-run it after more chunks complete or after filling in the verdict, and the
+   run's rows are corrected in place rather than duplicated. Report the capture
+   line in §4 as usual.
 
 ### 6. Persist the findings to the Obsidian vault
 

@@ -35,7 +35,7 @@
     your-repo). Optional; groups runs by repo in the dashboard.
 
 .PARAMETER Summary
-    Operator-assigned run name shown as the dashboard card title. Optional --
+    Operator-assigned run name shown as the dashboard card title. Optional —
     only set when the invocation gave a naming directive (e.g. "...name it
     'Verifying adjusted formatting'"). Same value on all four calls of a run.
     Capped at 80 chars server-side.
@@ -57,6 +57,13 @@
 .PARAMETER ReviewDurationMs
     Wall-clock duration of the Phase 1 call in milliseconds. Pass 0 when not
     measured (the Claude Code Agent path does not expose call duration).
+
+.PARAMETER ChunkCount
+    Number of chunks aggregated into this participant row for a chunked/batched
+    review (large diff split into cohesive chunks, each a full panel run, summed
+    per participant). Omit (or 0) for a single-diff run — the field is then sent
+    as null and the dashboard shows no aggregate badge. Same value on all four
+    calls of a run. Normally set by aggregate-and-emit.ps1, not by hand.
 
 .PARAMETER IssuesRaised
     Count of ### finding blocks in this reviewer's Phase 1 output.
@@ -96,6 +103,7 @@ param(
     [long]   $OutputTokens     = 0,
     [double] $CostUsd          = 0,
     [long]   $ReviewDurationMs = 0,
+    [int]    $ChunkCount       = 0,
 
     [Parameter(Mandatory)]
     [int] $IssuesRaised,
@@ -120,6 +128,8 @@ $body = @{
     role             = $Role
     repo             = $Repo
     summary          = $Summary
+    # null for a single-diff run; a positive count flags an aggregated batch run.
+    chunkCount       = ($ChunkCount -gt 0 ? $ChunkCount : $null)
 } | ConvertTo-Json -Compress
 
 try {
