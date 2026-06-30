@@ -61,6 +61,8 @@ param(
     [string] $RunRoot,
     [string] $Target = 'audit',
     [string[]] $ContextPath,
+
+    [ValidateRange(1, [int]::MaxValue)]
     [int] $BatchSize = 3
 )
 
@@ -77,8 +79,10 @@ if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
 # RunRoot. A separator or '..' would let a chunk write outside the run root; a
 # duplicate id would make two chunks race on the same directory. Reject both.
 $ids = @($chunks | ForEach-Object { $_.id })
-$bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' })
-if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-]: $($bad -join ', ')"; exit 2 }
+# Slug-safe AND not a pure-dot id: '.' / '..' pass the character class but are
+# directory-traversal handles ('..' would escape RunRoot), so reject them too.
+$bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' })
+if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-] and not be all dots: $($bad -join ', ')"; exit 2 }
 $dupes = @($ids | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
 if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')"; exit 2 }
 
