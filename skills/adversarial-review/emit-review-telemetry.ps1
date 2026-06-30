@@ -103,6 +103,10 @@ param(
     [long]   $OutputTokens     = 0,
     [double] $CostUsd          = 0,
     [long]   $ReviewDurationMs = 0,
+
+    # 0 = single-diff run (sent as null); a positive count flags an aggregated
+    # batch run. Negative is rejected here rather than silently coerced to null.
+    [ValidateRange(0, [int]::MaxValue)]
     [int]    $ChunkCount       = 0,
 
     [Parameter(Mandatory)]

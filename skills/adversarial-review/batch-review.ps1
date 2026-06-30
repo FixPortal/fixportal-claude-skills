@@ -73,6 +73,15 @@ if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest 
 $chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
 if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
 
+# Validate ids BEFORE any per-chunk work: each becomes a directory name joined to
+# RunRoot. A separator or '..' would let a chunk write outside the run root; a
+# duplicate id would make two chunks race on the same directory. Reject both.
+$ids = @($chunks | ForEach-Object { $_.id })
+$bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' })
+if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-]: $($bad -join ', ')"; exit 2 }
+$dupes = @($ids | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')"; exit 2 }
+
 if (-not $RepoPath) {
     $top = (& git rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.'; exit 2 }
