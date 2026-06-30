@@ -72,24 +72,30 @@ if (-not $RunId)       { $RunId = Split-Path -Leaf $RunRoot }
 if (-not $VerdictPath) { $VerdictPath = Join-Path $RunRoot 'aggregate-verdict.json' }
 
 # --- Collect per-chunk metrics ------------------------------------------
-$metricFiles = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue)
-if (-not $metricFiles) {
-    Write-Error "No metrics.json found under $RunRoot. Each chunk's run-review.ps1 writes one; nothing to aggregate."
-    exit 3
-}
-
-# Chunk count = ALL chunks in the batch, including any that failed and left no
-# metrics.json. batch-review.ps1 records every chunk in batch-summary.json, so
-# prefer it as the source of truth; fall back to the metrics.json count only for
-# an ad-hoc batch run that did not go through batch-review.ps1.
+# batch-summary.json (written by batch-review.ps1) is the source of truth for
+# BOTH which chunks belong to this run and how many there were. Use it to pick
+# the exact chunk dirs to aggregate — a blind recursive scan of RunRoot would
+# also pull in stale metrics.json left over from a reused run root and inflate
+# the totals while ChunkCount came from the newer summary. Fall back to the
+# recursive scan only for an ad-hoc batch that did not go through batch-review.ps1.
 $batchSummary = Join-Path $RunRoot 'batch-summary.json'
 if (Test-Path -LiteralPath $batchSummary) {
-    $chunkCount = @(Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json).Count
+    $summaryRows = @(Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json)
+    $chunkCount  = $summaryRows.Count
+    $metricFiles = @($summaryRows |
+        ForEach-Object { Join-Path $_.workDir 'metrics.json' } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        ForEach-Object { Get-Item -LiteralPath $_ })
     if ($chunkCount -gt $metricFiles.Count) {
         Write-Warning "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics."
     }
 } else {
-    $chunkCount = $metricFiles.Count
+    $metricFiles = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue)
+    $chunkCount  = $metricFiles.Count
+}
+if (-not $metricFiles) {
+    Write-Error "No metrics.json found for $RunRoot. Each chunk's run-review.ps1 writes one; nothing to aggregate."
+    exit 3
 }
 
 # Sum per reviewer vendor across chunks.
