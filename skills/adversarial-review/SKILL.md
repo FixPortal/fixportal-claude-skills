@@ -509,8 +509,11 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   a bare alias like `sonnet`, which lands as a separate row in the stats table).
   For the merged Anthropic row (B+F), pass both canonical ids joined —
   `claude-fable-5,claude-sonnet-4-6` — so the card records which two models the
-  Anthropic vote came from (the field is display-only, not part of the upsert
-  key).
+  Anthropic vote came from. The field is display-only (not part of the upsert
+  key), so exact provenance is best-effort: the automated batch path (§5a)
+  instead labels the merged row with whichever same-vendor reviewer sorts first
+  rather than the joined pair. Either is acceptable; the numbers are what
+  matter.
 - **`-IssuesRaised`** — count of `### ` blocks in that reviewer's Phase 1 output
   (available in context for the Claude Code path; in `<workdir>/p1-<id>.txt` for
   the driver path). For the merged Anthropic row, **sum B's and F's `### `
@@ -907,19 +910,17 @@ Produce the final report:
 - Deduplicate findings that describe the same defect.
 - For each surviving finding give: title, severity, location, issue, impact,
   suggested fix, and a consensus tag. MEASURE CONSENSUS BY VENDOR, NOT BY
-  REVIEWER HEADCOUNT. The panel currently has four reviewers across three
-  vendors: two are Anthropic (Claude Fable and Claude Sonnet), one Google
-  (Gemini), one OpenAI (GPT). The two Anthropic reviewers share a vendor, so
-  their agreement is NOT independent corroboration — count them as a single
-  Anthropic vote. Consensus is over the three vendor-votes (Anthropic, Google,
-  OpenAI):
-  [unanimous] - all three vendors treated it as real
-  [majority]  - two of the three vendors did; note the dissent in one line
+  REVIEWER HEADCOUNT. Reviewers that share a vendor are not independent
+  corroboration of each other (same training lineage, correlated blind spots),
+  so collapse each group of same-vendor reviewers into a single vendor-vote,
+  then tally consensus across the distinct vendors on the panel:
+  [unanimous] - every vendor treated it as real
+  [majority]  - most vendors did; note the dissent in one line
   [contested] - the vendors split; state both sides, do NOT pick a winner
-  A finding raised only by the Anthropic pair (Fable and/or Sonnet) with no
-  Google or OpenAI support is a SINGLE-VENDOR finding — tag it [contested] (or
-  note "single-vendor: Anthropic only"), never [majority]. Two Anthropic
-  reviewers agreeing does not by itself make a majority.
+  A finding supported only within a single vendor (that vendor's reviewer(s)
+  alone, no other vendor concurring) is a SINGLE-VENDOR finding — tag it
+  [contested] (or note "single-vendor: <vendor>"), never [majority]. Two
+  reviewers from the same vendor agreeing does not by itself make a majority.
 - Rank by severity. A contested Critical or High finding keeps its severity —
   never demote a finding for being contested.
 - Distinguish "contested" from "mechanism refuted". Disagreement about whether
