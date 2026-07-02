@@ -7,7 +7,9 @@
 .DESCRIPTION
     A large diff is reviewed as N cohesive chunks, each a full panel run (see the
     skill, §0a / §5). Each chunk's run-review.ps1 leaves a `metrics.json` holding
-    the three reviewers' deterministic outcome (issuesRaised + cost + duration).
+    each reviewer's deterministic outcome (issuesRaised + cost + duration), one
+    participant entry per manifest reviewer — summed per vendor here, so the two
+    Anthropic reviewers (Fable + Sonnet) collapse into one anthropic row.
     Adjudication/synthesis is host judgment; its products — issuesAccepted per
     reviewer and the synthesis (judge) participant's cost — are recorded in an
     `aggregate-verdict.json` the host writes at §5 synthesis time.

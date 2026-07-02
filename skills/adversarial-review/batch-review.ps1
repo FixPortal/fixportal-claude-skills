@@ -16,8 +16,9 @@
         chunks, so aggregate-and-emit.ps1 groups them as ONE dashboard run;
       - each chunk gets its own subdirectory <RunRoot>/<chunkId> and runs the
         spine with the chunk's pathspec;
-      - chunks run -BatchSize at a time (each spine itself runs three reviewers in
-        parallel, so wall concurrency ≈ BatchSize × 3);
+      - chunks run -BatchSize at a time (each spine itself runs the manifest's
+        enabled reviewers in parallel — currently four, so wall concurrency
+        ≈ BatchSize × reviewer count);
       - it STOPS at the judge boundary, exactly like the spine. Adjudication,
         per-chunk reports, §5 synthesis, and the aggregate-verdict.json that feeds
         accepted/judge into aggregate-and-emit.ps1 remain host judgment.

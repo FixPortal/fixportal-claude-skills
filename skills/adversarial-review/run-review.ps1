@@ -59,7 +59,8 @@
     reviewers.json. Defaults to the copy beside this script.
 
 .PARAMETER MaxParallel
-    Reviewer concurrency. Default 3 (one per default-panel reviewer).
+    Reviewer concurrency. Default 4 (one per default-panel reviewer:
+    Fable + Sonnet + Gemini + GPT).
 
 .OUTPUTS
     Writes all artefacts into WorkDir and prints a JSON status object plus a
@@ -79,7 +80,7 @@ param(
     [string] $RepoPath,
     [string] $WorkDir,
     [string] $ManifestPath,
-    [int] $MaxParallel = 3
+    [int] $MaxParallel = 4
 )
 
 $ErrorActionPreference = 'Stop'
@@ -365,9 +366,11 @@ $p2ok = Invoke-Round 'p2' '^(F\d+:|### )' $true
 # aggregate-verdict.json at synthesis time. Best-effort: a failure here must
 # never fail the review, so the whole block is guarded.
 function Get-BlendedRatePerMillion([string] $model) {
-    # Putative blend of published Anthropic rates (Sonnet $3/$15, Opus $15/$75),
-    # 75% input / 25% output — the same convention emit telemetry uses.
-    if ($model -match 'opus') { return 30.0 }
+    # Putative blend of published Anthropic rates, 75% input / 25% output — the
+    # same convention emit telemetry uses. Sonnet $3/$15 → $6/M, Fable $10/$50 →
+    # $20/M, Opus $15/$75 → $30/M.
+    if ($model -match 'opus')  { return 30.0 }
+    if ($model -match 'fable') { return 20.0 }
     return 6.0
 }
 function Read-UsageSidecar([string] $path) {

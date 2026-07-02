@@ -7,16 +7,24 @@ description: Use when the user requests an adversarial review, cross-vendor / mu
 
 ## Overview
 
-`adversarial-review` runs a code review as a three-model panel whose value
-comes from *uncorrelated* error: three models across three vendors — Claude
-Sonnet, Google Gemini, and GPT-5.4 (via the OpenAI Chat Completions API) —
-review the same change, then attack each other's
-findings, then a judge (Claude Opus) reconciles. NOTE: the anthropic reviewer
-was Claude Fable 5 until 2026-06-13, when US Commerce Dept access restrictions
-made Fable unreachable; it is now Claude Sonnet — kept deliberately distinct
-from the Opus judge so the anthropic Phase-1 voice and the adjudicator stay
-decorrelated (the original Fable-reviewer + Opus-judge intent). An Opus reviewer
-would collapse the anthropic axis to one model seen twice.
+`adversarial-review` runs a code review as a multi-model panel whose value
+comes from *uncorrelated* error: models across three vendors — Claude (Fable 5
+and Sonnet), Google Gemini, and GPT-5.4 (via the OpenAI Chat Completions API) —
+review the same change, then attack each other's findings, then a judge
+(Claude Opus) reconciles. NOTE: as of 2026-07-02 the panel runs FOUR reviewers
+across three vendors — Claude Fable 5 was re-added as a second Anthropic
+reviewer alongside Claude Sonnet while Fable 5 is available for a limited time
+(it had been unreachable from 2026-06-13 under US Commerce Dept access
+restrictions). Fable and Sonnet share a vendor, so their errors CORRELATE — they
+are not two independent votes. Two consequences follow and are enforced
+throughout: (1) the judge measures consensus by VENDOR, not reviewer headcount
+(Fable+Sonnet agreeing = one Anthropic vote — see the Phase-3 brief); (2) the
+Observatory telemetry sums both Anthropic reviewers into one `anthropic/reviewer`
+row (the dashboard tracks the vendor axis). The Sonnet/Fable reviewers are kept
+distinct from the Opus judge so the Anthropic Phase-1 voice and the adjudicator
+stay decorrelated; an Opus reviewer would collapse that axis to the judge's model
+seen twice. When Fable's limited-time window closes, disable reviewer `F` in
+`reviewers.json` and the panel reverts to a single Anthropic reviewer.
 
 The pipeline has four phases, and the invariants matter more than the tools:
 
@@ -71,11 +79,13 @@ resolves all of this in full.
 ## Prerequisites
 
 - A git repository — the change under review lives here.
-- The native panel spans three vendors: **Claude Sonnet** (spawned in-process
-  via the `Agent` tool), **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4**
-  (`openai-review.ps1`, via the OpenAI Chat Completions API). The two non-Claude
-  reviewers run as subprocess wrappers because no `Agent` tool exists for
-  non-Claude vendors.
+- The native panel spans three vendors across four reviewers: **Claude Fable 5**
+  and **Claude Sonnet** (both spawned in-process via the `Agent` tool),
+  **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4** (`openai-review.ps1`,
+  via the OpenAI Chat Completions API). The two non-Claude reviewers run as
+  subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
+  Fable and Sonnet are the same vendor (Anthropic) — see the Overview: consensus
+  is vendor-weighted and their telemetry is merged into one Anthropic row.
 - `$env:OPENAI_API_KEY` set to an OpenAI key with Chat Completions access (for
   the GPT reviewer), and the Gemini CLI installed and authenticated (`gemini` on
   PATH), drawing on the user's Google quota.
@@ -291,7 +301,7 @@ each chunk is a full run (see Cost).
 
 ### 1. Phase 1 — blind independent review
 
-Run three reviewers **in parallel, in a single message**. Each is given the
+Run all four reviewers **in parallel, in a single message**. Each is given the
 Phase 1 brief and the diff; none is given anything from the others.
 
 **Audit mode:** when the target is an `audit`, the diff is the empty tree vs
@@ -305,8 +315,15 @@ really are new.
 - **Reviewer B** — `Agent` tool, `subagent_type: general-purpose`,
   `model: sonnet` (Claude Sonnet). Prompt: the Phase 1 brief, plus an
   instruction to read the diff at `<workdir>/review-diff.txt`. The subagent may
-  also read the repository for surrounding context — it is the one reviewer with
+  also read the repository for surrounding context — the Claude reviewers have
   repo access.
+- **Reviewer F** — `Agent` tool, `subagent_type: general-purpose`,
+  `model: fable` (Claude Fable 5). Same prompt and repo access as Reviewer B —
+  it is the second Anthropic reviewer (enabled while Fable 5 is available). It is
+  the SAME vendor as B, so it is not an independent fourth vote: consensus is
+  vendor-weighted at adjudication (Fable+Sonnet = one Anthropic vote) and its
+  telemetry merges with B's into one Anthropic row (§3a). Spawn it in the same
+  parallel message as B, G, and X.
 - **Reviewer G** — the Gemini wrapper. Write the Phase 1 brief to a file in the
   working directory first; the wrapper reads it inlined. Invoke via
   `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist:
@@ -338,7 +355,7 @@ really are new.
   to close the specific blind spots, not to hand over the repo. If the diff is
   self-contained (no external contract in play), omit `-ContextPath`.
 
-**End the `Agent` prompt (Reviewer B, both phases) with a verbatim-capture
+**End the `Agent` prompt (Reviewers B and F, both phases) with a verbatim-capture
 line:** `Your entire final message is captured verbatim as this reviewer's
 output — return only the findings (Phase 1) / verdicts and gaps (Phase 2), no
 narration or thinking-aloud preamble.` The brief already says "no narration",
@@ -354,9 +371,10 @@ before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
 Phase 1, the first line matching `F#:` in Phase 2 — and keep from there. The
 narration is never part of a finding, so this is lossless. Apply it to Reviewer
-B; the Gemini and OpenAI reviewer output rarely needs it but check the same way.
+B and F; the Gemini and OpenAI reviewer output rarely needs it but check the
+same way.
 
-Collect the three finding sets verbatim (post-strip). Do not merge or edit them
+Collect the four finding sets verbatim (post-strip). Do not merge or edit them
 yet.
 
 ### 2. Phase 2 — cross-examination
@@ -366,11 +384,13 @@ attribution** — no reviewer names, no per-reviewer grouping — and give each
 finding a stable id (`F1`, `F2`, …). Anonymity is load-bearing: a reviewer must
 judge a finding on its merits, not defer to whoever raised it.
 
-Run the same three reviewers again, in parallel, each given the Phase 2 brief,
+Run the same four reviewers again, in parallel, each given the Phase 2 brief,
 the diff, and the pooled findings:
 
 - Reviewer B — a fresh `Agent` call (`model: sonnet`); have it read both
   `review-diff.txt` and `pooled-findings.txt`.
+- Reviewer F — a fresh `Agent` call (`model: fable`); same as B (read both
+  files). Second Anthropic reviewer.
 - Reviewer G — `gemini-review.ps1` with the Phase 2 brief and **both** files,
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
   files you gave it in Phase 1:
@@ -443,12 +463,22 @@ pass"). Note the added cost when you present the chunk plan (§0a) — see Cost.
 **Outcome telemetry.** (Single-chunk runs — for a multi-chunk audit do NOT emit
 here; the run is summed across chunks and emitted once via §5a.) After folding
 Phase 4 verdicts back into the report, emit
-one outcome event per *participant* to the AI Observatory. This is *additive* to
-the per-call token telemetry the reviewer wrappers already post — it captures
-which reviewers contributed findings that survived, not economics. Call
-`emit-review-telemetry.ps1` (beside this file) **four times in parallel — the
-three Phase-1 reviewers AND the Phase-3 judge** (omit the judge only if the
-panel ran without adjudication). All four MUST share the same `-RunId` so the
+one outcome event per *vendor participant* to the AI Observatory. This is
+*additive* to the per-call token telemetry the reviewer wrappers already post —
+it captures which reviewers contributed findings that survived, not economics.
+
+**The two Anthropic reviewers (B + F) emit as ONE merged `anthropic/reviewer`
+row, not two.** The Observatory upserts on `(runId, reviewer, role)` and
+`-Reviewer` is a vendor id — so two `anthropic/reviewer` events would collide and
+the second would overwrite the first. This is by design and matches the
+vendor-weighted-consensus model: the dashboard tracks the vendor axis. So SUM
+Reviewer B and Reviewer F into a single Anthropic emit call (token, cost,
+duration, issues-raised, issues-accepted all summed — details per field below).
+
+Call `emit-review-telemetry.ps1` (beside this file) **four times in parallel —
+the three VENDOR reviewer rows (Anthropic = B+F merged, Google = G, OpenAI = X)
+AND the Phase-3 judge** (omit the judge only if the panel ran without
+adjudication). All four MUST share the same `-RunId` so the
 dashboard groups them as one run; a run missing the judge row shows as
 "no judge", and a run whose participants carry different `runId`s fragments into
 several one-reviewer "incomplete" runs (the canonical failure that left the
@@ -456,10 +486,11 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
 
 - **`-RunId`** — the workdir's UTC timestamp slug (e.g. `20260614T143022Z`).
   **Identical for all four calls.**
-- **`-Reviewer`** — vendor: reviewers `B` → `anthropic`, `G` → `google`,
-  `X` → `openai`; the judge → the judge's vendor (`anthropic` for the Opus
-  judge in the default roster).
-- **`-Role`** — `reviewer` for the three Phase-1 reviewers, `judge` for the
+- **`-Reviewer`** — vendor: reviewers `B` **and** `F` → one merged `anthropic`
+  row, `G` → `google`, `X` → `openai`; the judge → the judge's vendor
+  (`anthropic` for the Opus judge in the default roster).
+- **`-Role`** — `reviewer` for the three Phase-1 vendor rows (Anthropic merged,
+  Google, OpenAI), `judge` for the
   adjudicator. **REQUIRED** — the API rejects (HTTP 400) any event without a
   valid role and the failure is swallowed silently, so an omitted role means the
   whole run vanishes. (This is exactly what broke capture once the API made role
@@ -476,16 +507,24 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
 - **`-Model`** — the model id from `reviewers.json` for each participant
   (canonical id, e.g. `claude-sonnet-4-6`, `gpt-5.4`, `claude-opus-4-8` — never
   a bare alias like `sonnet`, which lands as a separate row in the stats table).
+  For the merged Anthropic row (B+F), pass both canonical ids joined —
+  `claude-fable-5,claude-sonnet-4-6` — so the card records which two models the
+  Anthropic vote came from (the field is display-only, not part of the upsert
+  key).
 - **`-IssuesRaised`** — count of `### ` blocks in that reviewer's Phase 1 output
   (available in context for the Claude Code path; in `<workdir>/p1-<id>.txt` for
-  the driver path). The judge raises none → `0`.
-- **`-IssuesAccepted`** — count of **this reviewer's OWN Phase-1 findings** that
+  the driver path). For the merged Anthropic row, **sum B's and F's `### `
+  counts**. The judge raises none → `0`.
+- **`-IssuesAccepted`** — count of the vendor's OWN Phase-1 findings that
   survived non-REFUTED into the published report (match by content; a finding
-  this reviewer raised that another also raised still counts for this reviewer).
-  This is **always ≤ `-IssuesRaised`** — the API enforces `accepted ≤ raised`, so
-  do NOT use cross-vendor consensus crediting (which can exceed a reviewer's own
-  raised count and 400s the event). Findings that surfaced only as Phase-2 gaps
-  do not count toward Phase-1 raised/accepted. The judge → `0`.
+  this vendor raised that another vendor also raised still counts for this
+  vendor). For the merged Anthropic row, count the DISTINCT Anthropic findings
+  (raised by B or F, deduplicated so a finding both raised is counted once) that
+  survived. This is **always ≤ `-IssuesRaised`** — the API enforces
+  `accepted ≤ raised`, so do NOT use cross-vendor consensus crediting (which can
+  exceed a vendor's own raised count and 400s the event). Findings that surfaced
+  only as Phase-2 gaps do not count toward Phase-1 raised/accepted. The
+  judge → `0`.
 - **`-InputTokens`**, **`-OutputTokens`**, **`-CostUsd`** — populate cost for
   every vendor so the dashboard shows a per-participant spend (subscription
   vendors get a *putative* cost, the same way the Overview does):
@@ -495,18 +534,23 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   - **Reviewer G (Gemini)** — read `<workdir>/usage-G.json` (Phase 1
     `-UsageSidecarPath`); the wrapper writes the exact summed
     `inputTokens`/`outputTokens`/`costUsd` it already computes from its rate card.
-  - **Reviewer B and the judge (Claude via Agent tool)** — the Agent result's
-    `<usage>` block carries `subagent_tokens` (a single COMBINED in+out count).
-    Sum it across the phases that reviewer ran (B: Phase 1 + Phase 2; judge:
-    Phase 3), pass that total as `-InputTokens` (leave `-OutputTokens 0`; the
-    split is not exposed), and compute a **putative** `-CostUsd` with a blended
-    rate: **Sonnet reviewer `$6/M`, Opus judge `$30/M`** (a 75% input / 25%
-    output blend of the published Anthropic rates — Sonnet $3/$15, Opus $15/$75).
-    So `costUsd = subagent_tokens_total * rate_per_million / 1e6`. This is an
-    estimate; revisit the blend if the per-million rates change.
+  - **Reviewers B and F, and the judge (Claude via Agent tool)** — the Agent
+    result's `<usage>` block carries `subagent_tokens` (a single COMBINED in+out
+    count). Sum it across the phases that reviewer ran (B: Phase 1 + Phase 2;
+    F: Phase 1 + Phase 2; judge: Phase 3). For the merged Anthropic row, add
+    B's total AND F's total together, pass that as `-InputTokens` (leave
+    `-OutputTokens 0`; the split is not exposed), and compute a **putative**
+    `-CostUsd` with a blended per-model rate summed across the two:
+    **Sonnet `$6/M`** (75/25 of Sonnet's published $3/$15), **Fable `$20/M`**
+    (75/25 of Fable's published $10/$50), **Opus judge `$30/M`** (75/25 of Opus
+    $15/$75). So
+    `costUsd = subagent_tokens_total * rate_per_million / 1e6`, summed per model
+    for the merged row. This is an estimate; revisit the blend if the
+    per-million rates change.
 - **`-ReviewDurationMs`** — the participant's Phase-1 (judge: Phase-3) wall-clock
   in ms. The Agent tool **does** expose this: each `Agent` result ends with a
-  `<usage>` block containing `duration_ms` — use it for Reviewer B and the judge.
+  `<usage>` block containing `duration_ms` — use it for Reviewers B and F and the
+  judge. For the merged Anthropic row, sum B's and F's `duration_ms`.
   For the Gemini and OpenAI wrappers, wrap the Phase-1 `pwsh` call in
   `Measure-Command` (or capture start/end) and pass the elapsed ms. Pass `0` only
   if a value genuinely was not captured.
@@ -594,9 +638,15 @@ lands as all-zeros. Instead:
 
 1. **Drive the chunks with `batch-review.ps1`** (don't hand-roll the fan-out).
    It runs the spine once per chunk under one shared `RunRoot`/`RunId`, so every
-   chunk leaves a `metrics.json` holding that chunk's three reviewers'
-   deterministic outcome (G/X exact from their usage sidecars, B a blended-rate
-   estimate marked `costEstimated`). Pass the chunk plan from §0a as the JSON
+   chunk leaves a `metrics.json` holding that chunk's reviewers'
+   deterministic outcome (G/X exact from their usage sidecars, the Claude
+   reviewers a blended-rate estimate marked `costEstimated`). With two Anthropic
+   reviewers enabled (Fable + Sonnet) a chunk's `metrics.json` carries TWO
+   `"reviewer": "anthropic"` participant entries; `aggregate-and-emit.ps1` keys
+   by vendor and SUMS them into one Anthropic row automatically (the emitted
+   row's `model` is whichever Anthropic reviewer sorts first — cosmetic; the
+   numbers are the sum of both). This is the same vendor-merge as the
+   single-diff path (§3a). Pass the chunk plan from §0a as the JSON
    manifest:
    `pwsh -NoProfile -File ~/.claude/skills/adversarial-review/batch-review.ps1 -ChunkManifest <chunks.json> -Target audit`
    If a batch was already run another way, the only requirement downstream is
@@ -683,10 +733,10 @@ note, the `working/` pointer, and — when remediation followed — a
 ```markdown
 ---
 project: your-repo
-run-name: Auth refactor (login, sessions)  # only if the run was named (the -Summary)
+run-name: QF Service Rewrite (NewOrderList, FX Tests)  # only if the run was named (the -Summary)
 review-type: adversarial-audit
 date: 2026-05-29
-reviewers: [Claude Sonnet, Gemini, GPT-5.4]
+reviewers: [Claude Fable 5, Claude Sonnet, Gemini, GPT-5.4]
 remediation-branch: reviewer-findings-batch1        # only if a fix pass followed
 remediation-pr: 25 (rebase-merged to main as <sha>) # only if a fix pass followed
 deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was deferred
@@ -696,9 +746,9 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 # your-repo — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
-chunks (three reviewers per chunk: Claude Sonnet, Gemini, GPT-5.4 (via OpenAI
-API) → blind review → cross-examination → adjudication), then
-synthesised into one repo-level report.
+chunks (four reviewers across three vendors per chunk: Claude Fable 5, Claude
+Sonnet, Gemini, GPT-5.4 (via OpenAI API) → blind review → cross-examination →
+adjudication), then synthesised into one repo-level report.
 
 - **Consolidated report:** [[report]]
 
@@ -744,7 +794,7 @@ In `audit` mode the Phase 1 brief is the audit preamble followed by the Phase 1
 review brief (the driver composes this automatically; the Agent-tool path
 prepends it by hand).
 
-Pass each brief verbatim to all three reviewers (as the `Agent` prompt, and as
+Pass each brief verbatim to all reviewers (as the `Agent` prompt, and as
 the `-Instruction` argument to the wrappers).
 
 ### Audit-mode preamble (prepend to the Phase 1 brief only in `audit` mode)
@@ -773,7 +823,7 @@ not a finding — drop it.
 ### Phase 1 — review brief
 
 ```
-You are one of three independent reviewers on an adversarial code-review
+You are one of several independent reviewers on an adversarial code-review
 panel. You are reviewing a change in isolation — you cannot see the other
 reviewers or their findings.
 
@@ -820,7 +870,7 @@ Output only the findings — no preamble, no narration.
 
 ```
 You are on an adversarial code-review panel. The blind review (Phase 1) is
-done. The attached pooled-findings file holds every finding from the three
+done. The attached pooled-findings file holds every finding from all the
 reviewers combined, with attribution removed, each with an id (F1, F2, …).
 One may be your own; you cannot tell, and that is deliberate.
 
@@ -856,10 +906,20 @@ Produce the final report:
 
 - Deduplicate findings that describe the same defect.
 - For each surviving finding give: title, severity, location, issue, impact,
-  suggested fix, and a consensus tag:
-  [unanimous] - every reviewer treated it as real
-  [majority]  - most did; note the dissent in one line
-  [contested] - reviewers split; state both sides, do NOT pick a winner
+  suggested fix, and a consensus tag. MEASURE CONSENSUS BY VENDOR, NOT BY
+  REVIEWER HEADCOUNT. The panel currently has four reviewers across three
+  vendors: two are Anthropic (Claude Fable and Claude Sonnet), one Google
+  (Gemini), one OpenAI (GPT). The two Anthropic reviewers share a vendor, so
+  their agreement is NOT independent corroboration — count them as a single
+  Anthropic vote. Consensus is over the three vendor-votes (Anthropic, Google,
+  OpenAI):
+  [unanimous] - all three vendors treated it as real
+  [majority]  - two of the three vendors did; note the dissent in one line
+  [contested] - the vendors split; state both sides, do NOT pick a winner
+  A finding raised only by the Anthropic pair (Fable and/or Sonnet) with no
+  Google or OpenAI support is a SINGLE-VENDOR finding — tag it [contested] (or
+  note "single-vendor: Anthropic only"), never [majority]. Two Anthropic
+  reviewers agreeing does not by itself make a majority.
 - Rank by severity. A contested Critical or High finding keeps its severity —
   never demote a finding for being contested.
 - Distinguish "contested" from "mechanism refuted". Disagreement about whether
@@ -1007,12 +1067,14 @@ the code shows. Output only the verdict and evidence — no preamble.
 
 ## Cost
 
-One run (one chunk) is 3 Claude subagent calls — the Sonnet reviewer in Phase 1
-and Phase 2, plus the Opus judge — alongside 2 Gemini calls and 2 OpenAI API
-calls (Phase 1 and Phase 2). Gemini calls draw on the user's Google quota; OpenAI
-calls are billed per-token at the model's rate (see the pricing table in
+One run (one chunk) is 5 Claude subagent calls — the Sonnet and Fable reviewers
+each in Phase 1 and Phase 2 (4 calls), plus the Opus judge — alongside 2 Gemini
+calls and 2 OpenAI API calls (Phase 1 and Phase 2). Adding Fable as a second
+Anthropic reviewer adds 2 Claude subagent calls per chunk over the old
+three-reviewer panel. Gemini calls draw on the user's Google quota; OpenAI calls
+are billed per-token at the model's rate (see the pricing table in
 `openai-review.ps1`). A multi-chunk audit multiplies this by the chunk count and
-adds one Claude synthesis call — e.g. a 6-chunk audit is ~19 Claude subagent
+adds one Claude synthesis call — e.g. a 6-chunk audit is ~31 Claude subagent
 calls, 12 Gemini calls, and 12 OpenAI API calls.
 
 Phase 4 verification adds one more Claude subagent call **per High/contested
