@@ -13,11 +13,22 @@
 
   "reviewers": [
     {
-      "_comment": "Anthropic reviewer slot. Was Claude Fable 5 until 2026-06-13, when US Commerce Dept access restrictions made `claude-fable-5` unreachable via the CLI. Set to `sonnet` (not `opus`) deliberately: the Phase-3 judge is Opus (see `roles.judge`), so a Sonnet reviewer keeps reviewer != judge model — two distinct anthropic viewpoints (the original Fable-reviewer + Opus-judge intent), preserving the panel's decorrelation. An Opus reviewer would collapse the anthropic axis to one model seen twice. The Opus judge + Phase-4 verifiers carry the heavy reasoning.",
+      "_comment": "Anthropic reviewer slot #1 (Sonnet). Set to `sonnet` (not `opus`) deliberately: the Phase-3 judge is Opus (see `roles.judge`), so a Sonnet reviewer keeps reviewer != judge model, preserving the panel's decorrelation. An Opus reviewer would collapse the anthropic axis to the judge's model seen twice. The Opus judge + Phase-4 verifiers carry the heavy reasoning. TWO-ANTHROPIC-REVIEWER CAVEAT: since 2026-07-02 there is a second Anthropic reviewer (Fable, id `F`, below) enabled while Fable 5 is available for a limited time. Fable + Sonnet share a vendor, so their errors correlate — they are NOT two independent votes. The Phase-3 brief therefore weights consensus by VENDOR, not reviewer headcount (Fable+Sonnet agreeing = one Anthropic vote), and the Observatory telemetry sums both into one `anthropic/reviewer` row (the dashboard tracks the vendor axis). When Fable's limited-time window closes, disable id `F` and this reverts to a single Anthropic reviewer.",
       "id": "B",
       "label": "Claude Sonnet",
       "wrapper": "claude",
       "model": "sonnet",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "_comment": "Anthropic reviewer slot #2 (Fable 5). Added 2026-07-02 while Fable 5 is available for a limited time. Same vendor as reviewer B — see the two-anthropic caveat on B: this is a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. `model: fable` is the CLI alias (claude-review.ps1 --model / the Agent tool both accept it); the canonical id for telemetry is `claude-fable-5`. Disable this (enabled:false) when the Fable window closes to return to a single Anthropic reviewer.",
+      "id": "F",
+      "label": "Claude Fable 5",
+      "wrapper": "claude",
+      "model": "fable",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,

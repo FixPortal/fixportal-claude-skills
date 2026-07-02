@@ -1,5 +1,5 @@
 You are on an adversarial code-review panel. The blind review (Phase 1) is
-done. The attached pooled-findings file holds every finding from the three
+done. The attached pooled-findings file holds every finding from all the
 reviewers combined, with attribution removed, each with an id (F1, F2, …).
 One may be your own; you cannot tell, and that is deliberate.
 

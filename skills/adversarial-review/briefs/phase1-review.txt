@@ -1,4 +1,4 @@
-You are one of three independent reviewers on an adversarial code-review
+You are one of several independent reviewers on an adversarial code-review
 panel. You are reviewing a change in isolation — you cannot see the other
 reviewers or their findings.
 
