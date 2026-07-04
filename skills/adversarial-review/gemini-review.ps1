@@ -213,7 +213,7 @@ if ($json.stats?.models) {
         'gemini-2.5-flash-lite'  = @( 0.10,  0.40, 0.00)
         'gemini-2.5-flash'       = @( 0.30,  2.50, 3.50)
     }
-    $observatoryUrl = $env:OBSERVATORY_URL ?? 'https://fpaiobs-api.azurewebsites.net'
+    $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()
     # Accumulate this call's usage so it can be written to the sidecar (host reads
     # it for the adversarial-review outcome event) regardless of Observatory posting.
@@ -239,7 +239,7 @@ if ($json.stats?.models) {
 
             # Post to the general usage pipeline (Overview) only when configured;
             # the sidecar below is written independently for the adv-review event.
-            if ($env:OBSERVATORY_API_KEY) {
+            if ($env:OBSERVATORY_API_KEY -and $observatoryUrl) {
                 # cacheWriteTokens carries thinking tokens (observatory hook convention).
                 $obsBody = @{
                     provider         = 'Google'
