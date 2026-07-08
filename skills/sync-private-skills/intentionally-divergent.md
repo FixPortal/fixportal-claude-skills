@@ -27,3 +27,12 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   install infrastructure; only `installedAt` differs per host. Content hash
   identical. Will re-drift on every reinstall.
 - `visual-recap/agent-native-skill.json` — same as above.
+- `recap/SKILL.md` — ICM steps (`mcp__icm__*` MCP tool calls) are Claude-Code-only;
+  the `icm` MCP server isn't registered in Codex/Antigravity, and the raw tool
+  references there produced config-error noise even though the calls are
+  gated "if available". `.claude` copy keeps the `[icm]` classification bullet
+  and step 8 (store digest to ICM); `.agents`/`.gemini` copies have both
+  stripped. Do not resync this file wholesale.
+- `close/SKILL.md` — same reason as `recap/SKILL.md`: the "ICM (belts and
+  braces)" mirror-to-ICM paragraph in step 3 is Claude-only and stripped from
+  `.agents`/`.gemini`. Do not resync this file wholesale.
