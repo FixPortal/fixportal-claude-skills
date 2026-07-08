@@ -97,8 +97,10 @@ deliberate.
 5. **Classify each remaining diff** via the manifest table above into:
    one-sided (propose the copy in the changed→unchanged direction) or
    two-sided **conflict** (surface only).
-5a. **Vendor-lock-in scan.** Before adding any file to the copy plan, grep its
-   new/changed content for `mcp__<server>__` tool references. Claude Code's MCP
+5a. **Vendor-lock-in scan.** Before adding any file to the copy plan, grep the
+   **whole candidate file** (not just the new/changed diff hunk — an unchanged
+   line already in the file gets copied wholesale too) for `mcp__<server>__`
+   tool references. Claude Code's MCP
    servers (`icm`, `plugin_azure`, `semgrep-guardian`, `plan`, etc.) are
    registered per-host — a Codex or Antigravity copy calling one produces
    config-error noise, not a graceful skip, even when the skill text says "if
