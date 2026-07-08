@@ -97,9 +97,23 @@ deliberate.
 5. **Classify each remaining diff** via the manifest table above into:
    one-sided (propose the copy in the changed→unchanged direction) or
    two-sided **conflict** (surface only).
-6. **Present the plan**: a table of proposed copies (with direction + diff) and a
-   separate list of unresolved conflicts + skipped/curation items. **Confirm
-   before writing anything.**
+5a. **Vendor-lock-in scan.** Before adding any file to the copy plan, grep its
+   new/changed content for `mcp__<server>__` tool references. Claude Code's MCP
+   servers (`icm`, `plugin_azure`, `semgrep-guardian`, `plan`, etc.) are
+   registered per-host — a Codex or Antigravity copy calling one produces
+   config-error noise, not a graceful skip, even when the skill text says "if
+   available". Flag any such reference found in a file proposed to copy
+   **into** `.agents` or `.gemini` (a `.claude`-only file referencing its own
+   MCP servers is fine and not flagged). Do not silently strip or copy through —
+   surface it as a **held-back item** alongside the plan: which file, which
+   `mcp__` reference, and that it needs either (a) stripping into a
+   host-specific variant + a new `intentionally-divergent.md` entry, or (b) the
+   user confirming the server is actually available on the target host. Never
+   propose the copy as-is when it carries an unreviewed `mcp__` reference.
+6. **Present the plan**: a table of proposed copies (with direction + diff), the
+   vendor-lock-in held-back list from step 5a, and a separate list of
+   unresolved conflicts + skipped/curation items. **Confirm before writing
+   anything.**
 7. **Apply confirmed copies** with a plain `Copy-Item` (recurse for whole new
    files), preserving bytes/encoding — no transform. For a conflict, only act on
    the direction the user explicitly chooses.
@@ -117,6 +131,7 @@ deliberate.
 | `Copy-Item -Force` straight from the plan | Show the diff, name the changed side, confirm. Then copy. |
 | Clobbering an intentionally per-host file (reviewers.json) | Honour `intentionally-divergent.md`. When unsure if a divergence is deliberate, surface it — don't resolve it. |
 | Applying the sanitisation map | That's `sync-public-skills`. Private↔private is a verbatim copy. |
+| Copying a file with an `mcp__icm__`/`mcp__plugin_azure__`/etc. reference straight into `.agents`/`.gemini` | Claude-only MCP servers aren't registered on other hosts — the "if available" gate in the skill text doesn't stop config-error noise. Run the step-5a scan, hold the file back, get a decision. (Bit `recap`/`close` — ICM calls mirrored into Codex/Antigravity, fixed 2026-07-08.) |
 
 ## Red Flags — STOP
 
