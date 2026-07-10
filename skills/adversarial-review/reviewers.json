@@ -46,9 +46,9 @@
     },
     {
       "id": "X",
-      "label": "GPT-5.4 (via OpenAI API)",
+      "label": "GPT-5.6 Sol (via OpenAI API)",
       "wrapper": "openai",
-      "model": "gpt-5.4",
+      "model": "gpt-5.6-sol",
       "vendor": "openai",
       "effort": "high",
       "repoAccess": false,
