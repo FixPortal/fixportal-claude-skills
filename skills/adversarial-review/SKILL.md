@@ -9,7 +9,7 @@ description: Use when the user requests an adversarial review, cross-vendor / mu
 
 `adversarial-review` runs a code review as a multi-model panel whose value
 comes from *uncorrelated* error: models across three vendors — Claude (Fable 5
-and Sonnet), Google Gemini, and GPT-5.4 (via the OpenAI Chat Completions API) —
+and Sonnet), Google Gemini, and GPT-5.6 Sol (via the OpenAI Chat Completions API) —
 review the same change, then attack each other's findings, then a judge
 (Claude Opus) reconciles. NOTE: as of 2026-07-02 the panel runs FOUR reviewers
 across three vendors — Claude Fable 5 was re-added as a second Anthropic
@@ -81,7 +81,7 @@ resolves all of this in full.
 - A git repository — the change under review lives here.
 - The native panel spans three vendors across four reviewers: **Claude Fable 5**
   and **Claude Sonnet** (both spawned in-process via the `Agent` tool),
-  **Google Gemini** (`gemini-review.ps1`), and **GPT-5.4** (`openai-review.ps1`,
+  **Google Gemini** (`gemini-review.ps1`), and **GPT-5.6 Sol** (`openai-review.ps1`,
   via the OpenAI Chat Completions API). The two non-Claude reviewers run as
   subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
   Fable and Sonnet are the same vendor (Anthropic) — see the Overview: consensus
@@ -218,7 +218,7 @@ commit subjects (`git log --format='%h %s' <base>..HEAD`); skip this for an
 ### 0a. Size the diff and plan the chunking
 
 A reviewer reasons well over a diff it can hold whole; past roughly **2,000
-added lines** the panel degrades — findings dilute, and the GPT-5.4 reviewer
+added lines** the panel degrades — findings dilute, and the GPT-5.6 Sol reviewer
 (which sees only the diff file, no repo access) starts to lose the
 far end. So before running, count added lines
 (`git diff … | grep -c '^+'`). If the diff is under the budget, run it as a
@@ -333,7 +333,7 @@ really are new.
   only, same as Reviewer X).
 - **Reviewer X** — the OpenAI wrapper, same pattern:
   `pwsh -NoProfile -File ~/.claude\skills\adversarial-review\openai-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-X.json"`
-  The model is `gpt-5.4` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
+  The model is `gpt-5.6-sol` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
   sidecar captures exact token counts from the API response so the host agent
   can pass real figures to `emit-review-telemetry.ps1` rather than zeros.
 
@@ -505,7 +505,7 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
   timestamp (unchanged behaviour). Capped at 80 chars server-side; keep it short
   so it fits the card title bar.
 - **`-Model`** — the model id from `reviewers.json` for each participant
-  (canonical id, e.g. `claude-sonnet-4-6`, `gpt-5.4`, `claude-opus-4-8` — never
+  (canonical id, e.g. `claude-sonnet-4-6`, `gpt-5.6-sol`, `claude-opus-4-8` — never
   a bare alias like `sonnet`, which lands as a separate row in the stats table).
   For the merged Anthropic row (B+F), pass both canonical ids joined —
   `claude-fable-5,claude-sonnet-4-6` — so the card records which two models the
@@ -659,7 +659,7 @@ lands as all-zeros. Instead:
    ```json
    { "chunkId": "L1", "repo": "your-repo", "writtenBy": "run-review.ps1",
      "participants": [
-       { "reviewer": "openai", "role": "reviewer", "model": "gpt-5.4",
+       { "reviewer": "openai", "role": "reviewer", "model": "gpt-5.6-sol",
          "inputTokens": 12000, "outputTokens": 800, "costUsd": 0.04,
          "costEstimated": false, "reviewDurationMs": 5000, "issuesRaised": 7 },
        { "reviewer": "google", "...": "..." },
@@ -739,7 +739,7 @@ project: your-repo
 run-name: QF Service Rewrite (NewOrderList, FX Tests)  # only if the run was named (the -Summary)
 review-type: adversarial-audit
 date: 2026-05-29
-reviewers: [Claude Fable 5, Claude Sonnet, Gemini, GPT-5.4]
+reviewers: [Claude Fable 5, Claude Sonnet, Gemini, GPT-5.6 Sol]
 remediation-branch: reviewer-findings-batch1        # only if a fix pass followed
 remediation-pr: 25 (rebase-merged to main as <sha>) # only if a fix pass followed
 deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was deferred
@@ -750,7 +750,7 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
 chunks (four reviewers across three vendors per chunk: Claude Fable 5, Claude
-Sonnet, Gemini, GPT-5.4 (via OpenAI API) → blind review → cross-examination →
+Sonnet, Gemini, GPT-5.6 Sol (via OpenAI API) → blind review → cross-examination →
 adjudication), then synthesised into one repo-level report.
 
 - **Consolidated report:** [[report]]
