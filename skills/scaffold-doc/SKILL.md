@@ -204,6 +204,8 @@ Full report-style, in order. README and ADR use their own sub-templates above.
 | Truncated IDs (`1234abcd-…`) anywhere | Full IDs in the appendix; truncation only ever in inline prose |
 | Slow build-up to the finding | Executive summary states the conclusion first |
 | Diagram added for decoration | If it carries no information a table couldn't, cut it |
+| Unquoted mermaid node label containing `/`, `:`, `(`, or `,` | **Quote every mermaid label** — `P["/api/parse"]`, not `P[/api/parse]`. A label starting with `/` is read as the *parallelogram* shape (`[/ … /]`), never closes, and fails with `Lexical error … Unrecognized text`. Quoting makes `["` the opener and disambiguates. Same for inline `:::class` (prefer a separate `class A,B name` statement) and `-.text.->` (prefer `-.->\|"text"\|`) |
+| Mermaid block shipped unvalidated | Render it before shipping: `npx -y @mermaid-js/mermaid-cli -i d.mmd -o d.svg`. Exit 0 = it parses. Cheaper than the reader finding the error |
 | Using report skeleton for a README | README has its own sub-template — no ledger, no executive summary, no appendix of infra IDs |
 | `author` in a repo-committed README | Author is vault-doc convention; omit it from anything in source control |
 | No `tags` in vault doc frontmatter | Add a `tags` array; vault docs without tags are invisible in Obsidian graph view |
