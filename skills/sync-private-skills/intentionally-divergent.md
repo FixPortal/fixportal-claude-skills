@@ -21,10 +21,17 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   Corrected 2026-07-12 — the `.agents`/`.gemini` copies still routed the OpenAI
   reviewer through the `copilot` wrapper, which is dead on that account (the
   Copilot CLI rejects every explicit `--model` id). That reviewer silently
-  produced nothing, dropping the panel to Anthropic-only and breaking the
-  `minVendors` invariant. All three homes now route it through
-  `openai-review.ps1`. If a wrapper or model id drifts again across homes, that
-  is rot, not design — fix it. Only the enabled/alternate ROSTER is per-host.
+  produced nothing. This did not trip the manifest-level `minVendors` invariant
+  (`run-review.ps1` ~line 125) — that check runs against the *enabled* reviewer
+  set, which still spanned two vendors, so it passed. The real failure was
+  runtime panel degradation: with the OpenAI reviewer producing nothing, Phase
+  1 findings came from Anthropic-only reviewers, and the driver's post-Phase-1
+  vendor check (~line 324) only emits `Write-Warning` when fewer vendors than
+  `minVendors` actually produced findings — it does not abort. A same-vendor
+  Phase 1 would have run to completion behind a warning, not been stopped. All
+  three homes now route it through `openai-review.ps1`. If a wrapper or model
+  id drifts again across homes, that is rot, not design — fix it. Only the
+  enabled/alternate ROSTER is per-host.
 - `current-skills/CurrentSkills.md` — generated per-home skill inventory. Each
   home has a different installed skill set (e.g. Claude-only `graphify`/`hone`;
   Codex-only `repo-harmonizer`), so the doc is regenerated in each home by the

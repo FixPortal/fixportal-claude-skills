@@ -95,7 +95,7 @@ Close with an appendix carrying the full, copy-pasteable identifiers and exact c
 
 ### README (repo root or NuGet package)
 
-READMEs differ from audit reports: no actions-taken ledger, no Azure ID appendix, `author` omitted from repo-committed frontmatter, plain description over executive summary. Use plain `>` only, never `[!NOTE]`-style callout blocks, in a README — **not** because GitHub can't render them (it can, natively, since 2023-12-14), but because a NuGet package README is also rendered by the **NuGet gallery**, whose Markdig-based renderer does not support GFM alert syntax; a `[!NOTE]` block there renders as a literal, ugly blockquote line. Plain `>` is the one syntax that reads cleanly on both. Non-package repo READMEs (apps, tools) that will never be mirrored to NuGet may use callout blocks if the vault-copy/repo-copy split in *Dual-destination handling* below doesn't apply — but defaulting to plain `>` for every README keeps one rule instead of two.
+READMEs differ from audit reports: no actions-taken ledger, no Azure ID appendix, `author` omitted from repo-committed frontmatter, plain description over executive summary. **Callout syntax depends on where the README is rendered, not on "README" as a category.** A README that is mirrored to NuGet as a package readme — i.e. actually rendered by the **NuGet gallery** — must use plain `>` only, never `[!NOTE]`-style callout blocks: **not** because GitHub can't render them (it can, natively, since 2023-12-14), but because the gallery's Markdig-based renderer does not support GFM alert syntax; a `[!NOTE]` block there renders as a literal, ugly blockquote line. Plain `>` is the one syntax that reads cleanly on both renderers. A standalone repo README that is **never** published to NuGet (an app, a tool, an internal repo) has no such constraint — GitHub renders `[!NOTE]`-style callouts natively, so GFM callout blocks are fine there. When it's unclear whether a README will end up as a package readme, default to plain `>` — it is the one syntax that is never wrong.
 
 ```
 ---  frontmatter (title, date, status; NO author for repo-committed files)  ---
@@ -209,7 +209,7 @@ Full report-style, in order. README and ADR use their own sub-templates above.
 | Using report skeleton for a README | README has its own sub-template — no ledger, no executive summary, no appendix of infra IDs |
 | `author` in a repo-committed README | Author is vault-doc convention; omit it from anything in source control |
 | No `tags` in vault doc frontmatter | Add a `tags` array; vault docs without tags are invisible in Obsidian graph view |
-| Plain `>` for warnings/notes/important caveats (audit/report/runbook/ADR, or vault docs) | Use `> [!WARNING]` / `> [!NOTE]` / `> [!IMPORTANT]` callout blocks — rendered by both GitHub and Obsidian. Exception: a repo README (§*README sub-template*) stays plain `>` — the NuGet gallery doesn't render GFM alerts |
+| Plain `>` for warnings/notes/important caveats (audit/report/runbook/ADR, or vault docs) | Use `> [!WARNING]` / `> [!NOTE]` / `> [!IMPORTANT]` callout blocks — rendered by both GitHub and Obsidian. Exception: a README rendered by the NuGet gallery (§*README sub-template*) stays plain `>` — that renderer doesn't support GFM alerts; a non-package repo README may use callouts |
 | Actions-taken ledger in a new package README | Ledger is for post-hoc audit reports; omit from READMEs authored fresh |
 
 ## Checklist
