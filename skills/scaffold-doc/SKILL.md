@@ -162,7 +162,7 @@ No appendix unless the decision references external IDs. No diagrams unless topo
 
 When a doc serves both a repo root and the Obsidian vault, maintain two separate files — the frontmatter and callout conventions are incompatible:
 
-- **Repo copy** — minimal: no `author`, no `last-updated`, no `tags` in frontmatter; badge row present; plain `>` only (not callout blocks — the NuGet gallery's Markdig renderer doesn't support GFM alert syntax, see §*README sub-template*); no vault paths in the text.
+- **Repo copy** — minimal: no `author`, no `last-updated`, no `tags` in frontmatter; badge row present; no vault paths in the text. Plain `>` only *where the copy is also rendered by the NuGet gallery* — its Markdig renderer does not support GFM alert syntax (see §*README sub-template*). A repo copy that GitHub alone renders may use callout blocks.
 - **Vault copy** — enriched: full frontmatter with `author`, `tags`, `last-updated`; callout blocks for warnings/notes; may carry additional context not appropriate for a public README.
 
 ## Patterns that should already be habit
