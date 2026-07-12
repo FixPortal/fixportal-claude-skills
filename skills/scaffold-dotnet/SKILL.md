@@ -27,7 +27,7 @@ Apply standard .NET project and solution preferences when creating new projects 
 - A **Solution Items** solution folder containing:
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
-  - `.editorconfig` — thin **formatter-only** stub (copied from `~/.claude/resources/.editorconfig`); all analyzer/style **rules** come from the `<YourOrg.CodeStyle>` package, not this file
+  - `.editorconfig` — thin **formatter-only** stub (copied from `~/.claude/resources/dotnet-thin.editorconfig`, a severity-free subset of the full house style at `~/.claude/resources/.editorconfig`); all analyzer/style **rules** come from the `<YourOrg.CodeStyle>` package, not this file — see *Code Style and Analysis* below
   - `.gitignore` (copied from `~/.claude/resources/.gitignore`)
   - `nuget.config` (maps the <your-org> GitHub Packages feed — see Code Style and Analysis)
   - `.github/workflows/` folder
@@ -76,14 +76,25 @@ package version bump instead of N hand-edits to drift-prone copies.
   up the newest release automatically during development, run:
   `dotnet add package <YourOrg.CodeStyle>` — this resolves and pins the latest.
 
-- Keep only a **thin formatter-only `.editorconfig`** at the solution root (indent,
-  charset, newline/spacing, file-type sections) — copy `~/.claude/resources/.editorconfig`
-  to the project root as `.editorconfig`. This is the authoritative source; do **not** use
-  `<YourOrg.CodeStyle>`'s `assets/consumer.editorconfig` instead — if the two ever differ,
-  `~/.claude/resources/.editorconfig` wins. Do **not** copy the rule set back into it; a
-  local copy re-drifts, which is exactly what the package eliminates. Add a local rule
-  override only for a genuine project-specific need, with a comment why (e.g. re-enabling
-  culture rules CA1304/1307/1308/1309/1311 in a service that serves localized text).
+- Copy a genuinely **thin, formatter-only `.editorconfig`** to the solution root —
+  `~/.claude/resources/dotnet-thin.editorconfig`, saved as `.editorconfig`. It carries only
+  whitespace/layout settings (charset, indent, EOL, spacing, wrapping) — every key **without**
+  a `:severity` suffix. That is the real formatter/rule boundary: a key with `:severity` is a
+  Roslyn diagnostic (IDExxxx/CAxxxx), which `EnforceCodeStyleInBuild` can enforce from a
+  NuGet-shipped global config; a bare whitespace key (`indent_size`, `charset`, `end_of_line`,
+  `trim_trailing_whitespace`) is not a diagnostic at all — `dotnet format`/the IDE read it only
+  from a real `.editorconfig` on disk, so no NuGet package can deliver it. That is the whole
+  reason a project-local `.editorconfig` still exists once `<YourOrg.CodeStyle>` is referenced.
+  **Do not copy `~/.claude/resources/.editorconfig`** (no `-thin` suffix) into a project — that
+  file is the **full** house style (every analyzer/naming/CA/IDE severity, pre-`<YourOrg.CodeStyle>`
+  legacy — see *Resource Files* below) and copying it wholesale reproduces the exact
+  rule-duplication this section exists to avoid. Do **not** use `<YourOrg.CodeStyle>`'s
+  `assets/consumer.editorconfig` instead — if the two formatter-only sources ever differ,
+  `~/.claude/resources/dotnet-thin.editorconfig` wins. Add a local rule override only for a
+  genuine project-specific need, with a comment why (e.g. re-enabling culture rules
+  CA1304/1307/1308/1309/1311 in a service that serves localized text) — such an override
+  necessarily carries a `:severity` suffix, so it belongs in the project's own `.editorconfig`,
+  never merged back into the thin template.
 - **Do not** add `SonarAnalyzer.CSharp` separately — the package bundles it. The `S3776`
   cognitive-complexity gate (prefer cognitive over cyclomatic, which over-counts flat
   `switch`/ternary dispatch) and the full CA/IDE/Sonar suppression set all live in the
@@ -176,20 +187,27 @@ stance) — not in the formatter-only `.editorconfig`.
 ### Resource Files
 
 The following files are copied into the new solution. The `.gitignore` and
-`dependabot.yml` are source-controlled in the `.claude` repo under `~/.claude/resources/`;
-the `.editorconfig` is a **formatter-only stub** (the rules live in the package, not this file):
+`dependabot.yml` are source-controlled in the `.claude` repo under `~/.claude/resources/`.
+There are **two** `.editorconfig`-shaped files in `~/.claude/resources/` and they do
+different jobs — do not confuse them:
 
-| File | Source | Destination |
-|------|--------|-------------|
-| `.editorconfig` (formatter-only stub) | `~/.claude/resources/.editorconfig` | Solution root |
-| `.gitignore` | `~/.claude/resources/.gitignore` | Solution root |
-| `dependabot.yml` | `~/.claude/resources/dependabot.yml` | `.github/dependabot.yml` |
+| File | Role | Source | Destination |
+|------|------|--------|-------------|
+| `dotnet-thin.editorconfig` | Formatter-only (no `:severity` keys) — what actually gets copied into a new scaffold | `~/.claude/resources/dotnet-thin.editorconfig` | Solution root, as `.editorconfig` |
+| `.editorconfig` | **Full** house style (formatting + naming + every analyzer/CA/IDE severity) — pre-`<YourOrg.CodeStyle>` legacy; the master the package's global config is generated from | `~/.claude/resources/.editorconfig` | Not copied into a project that references `<YourOrg.CodeStyle>` — see below |
+| `.gitignore` | — | `~/.claude/resources/.gitignore` | Solution root |
+| `dependabot.yml` | — | `~/.claude/resources/dependabot.yml` | `.github/dependabot.yml` |
 
-> `~/.claude/resources/.editorconfig` is the **authoritative source** — copy it directly to
-> the project root. It is also the source the package's global config is generated from; if
-> `<YourOrg.CodeStyle>`'s `assets/consumer.editorconfig` ever differs, the
-> `~/.claude/resources/` version wins. When the house style changes, edit the master there,
-> regenerate the package's global config, and release a new package version.
+> `~/.claude/resources/.editorconfig` predates `<YourOrg.CodeStyle>` and is honestly a **full**
+> ruleset, not a stub — it still carries every CA/IDE/naming severity the package now also
+> ships. It is kept for two reasons: as the master the package's global config is regenerated
+> from, and as a self-contained fallback for the rare repo that does **not** reference
+> `<YourOrg.CodeStyle>` at all — that repo copies it in full, with no package dependency. For
+> any project that **does** reference the package, only `dotnet-thin.editorconfig` is copied;
+> copying the full file too would duplicate every rule the package already build-enforces. When
+> house style changes: edit the master (`.editorconfig`) and mirror any change to a
+> non-severity key into `dotnet-thin.editorconfig`; for any change to a `:severity` key,
+> regenerate the package's global config from the master and release a new package version.
 
 ## Checklist
 
@@ -208,6 +226,6 @@ When scaffolding or normalizing a .NET project, verify:
 - [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
-- [ ] `.editorconfig` formatter-only stub in place (copied from `~/.claude/resources/.editorconfig`); rules NOT duplicated locally
+- [ ] `.editorconfig` formatter-only stub in place (copied from `~/.claude/resources/dotnet-thin.editorconfig`, not the full `~/.claude/resources/.editorconfig`); rules NOT duplicated locally
 - [ ] `.gitignore` copied from resources
 - [ ] No projects renamed

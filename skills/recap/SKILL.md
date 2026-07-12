@@ -170,11 +170,13 @@ never an error.
   if `gh` is absent, unauthenticated, or there is no PR.
 - **`[memory]`** — relevant `project` and `feedback` memories already in your
   context. No file read needed.
-- **`[icm]`** — if `mcp__icm__icm_memory_recall` is available, call it for
+- **ICM** — if `mcp__icm__icm_memory_recall` is available, call it for
   `context-{repo-basename}` (query: "project state status next steps") and
   `decisions-{repo-basename}` (query: "architecture decision rationale") to
   surface cross-session context not in the file-based memory. Skip silently if
-  unavailable or empty.
+  unavailable or empty. ICM is a recall channel, not a separate render tag —
+  items sourced this way carry the `[memory]` tag in the digest, same as any
+  other memory-sourced item.
 
 **Then classify every candidate into one of five buckets.** This split is the
 whole point of the digest — do it deliberately, item by item. The bucket is

@@ -74,7 +74,7 @@ These are the deltas an unaided agent gets wrong. Get them right:
 | `actions/upload-artifact` | `v7` |
 | `raven-actions/actionlint` | `v2` |
 
-.NET: `10.0.x`. Node: `22`.
+.NET: `10.0.x`. Node: `24`.
 
 ### `ci.yml` skeleton (hybrid; drop the job you don't need)
 
@@ -142,7 +142,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: src/your-ui/package-lock.json
       - name: Install
@@ -391,7 +391,7 @@ that diverges from house practice and double-scans.
 Enable it headless:
 
 ```
-gh api -X PUT /repos/{owner}/{repo}/code-scanning/default-setup -f state=configured
+gh api -X PATCH /repos/{owner}/{repo}/code-scanning/default-setup -f state=configured
 ```
 
 Default setup auto-detects languages (C#, JS/TS for a hybrid repo). Surface this as a
@@ -414,8 +414,6 @@ alerts get triaged. Apply this per repo:
   suppression for structural false positives that will recur.
 - **Don't merge with "fix it later" intentions** — once merged, the alert detaches from PR
   context and rots in the backlog. Triage at PR time.
-
-Full rationale and the day-to-day rhythm live in `~/.claude/notes/codeql-triage.md`.
 
 ### Reading alert state needs the `security_events` scope
 
