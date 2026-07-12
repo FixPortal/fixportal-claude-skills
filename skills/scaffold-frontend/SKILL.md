@@ -48,16 +48,22 @@ of 2026-06; bump to current latest when scaffolding, but do not go below it.
 | `vite` | ^8.0.16 | `eslint` | ^10.4.1 |
 | `react` / `react-dom` | ^19.2.7 | `@eslint/js` | ^10.0.1 |
 | `react-router` | ^8.0.1 | `typescript-eslint` | ^8.61.0 |
-| `typescript` | ~6.0.3 | `eslint-plugin-react-hooks` | ^7.1.1 |
+| `typescript` | ^7.0.2 | `eslint-plugin-react-hooks` | ^7.1.1 |
 | `@vitejs/plugin-react` | ^6.0.2 | `eslint-plugin-react-refresh` | ^0.5.2 |
 | `vitest` | ^4.1.6 | `eslint-plugin-sonarjs` | ^4.0.3 |
 | `@vitest/coverage-v8` | ^4.1.8 | `globals` | ^17.6.0 |
 | `@testing-library/react` | ^16.3.2 | `@tailwindcss/vite` | ^4.3.0 |
 | `@testing-library/jest-dom` | ^6.9.1 | `tailwindcss` | ^4.2.2 |
 | `@testing-library/user-event` | ^14.6.1 | `jsdom` | ^29.1.1 |
-| **`archunit`** | **`2.3.0` (exact, no caret)** | `@types/node` | ^26 |
+| **`archunit`** | **`2.3.3` (exact, no caret)** | `@types/node` | ^26 |
 
-`archunit` is pinned **exactly** — see *Architecture tests* below for why.
+`archunit` is pinned **exactly** — see *Architecture tests* below for why. Re-verified
+2026-07-12 against 2.3.3: `dist/src/files/index.js` still re-exports `projectFiles` via
+`fluentapi` (unchanged file across 2.3.0→2.3.3), and root `dist/index.js` is byte-identical
+between the two versions — it still `require("./src/testing/setup")` eagerly at import time,
+so the root-import-throws-under-`globals:false` behaviour the wrapper works around is
+unchanged. The only files that differ between 2.3.0 and 2.3.3 are `violation-factory.js` and
+`jasmine-adapter.js` (bugfix-shaped, unrelated to the wrapper's deep-import path).
 
 ## Project Structure
 

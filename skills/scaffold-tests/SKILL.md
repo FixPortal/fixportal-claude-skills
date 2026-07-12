@@ -22,6 +22,13 @@ Create and maintain xUnit test projects that mirror the `src/` structure, using 
 - Test projects use `Microsoft.NET.Sdk`
 - Test projects must reference their corresponding source project via `ProjectReference`
 - Test projects are added to the solution under the `tests` solution folder
+- New `xunit.v3` test projects set `<OutputType>Exe</OutputType>` in the `.csproj`. This is
+  what makes xunit.v3 emit a Microsoft.Testing.Platform (MTP) test host — no
+  `<UseMicrosoftTestingPlatformRunner>` property needed, `OutputType=Exe` alone does it. The
+  house `scaffold-ci` default is `test-runner: mtp`; without this property a scaffolded
+  project silently falls back off MTP the first time CI wires up Stryker. Keep
+  `Microsoft.NET.Test.Sdk` + `xunit.runner.visualstudio` alongside it — `dotnet test` (VSTest)
+  keeps working, the two runners coexist. Does not apply to `xunit` v2 projects.
 
 ## Naming Conventions
 
@@ -161,4 +168,5 @@ When scaffolding test projects, verify:
 - [ ] AwesomeAssertions used for all assertions (no `Assert.*`)
 - [ ] NSubstitute used for all mocking
 - [ ] Async/timing tests are event-driven (await a signal or poll-with-timeout) — no `Thread.Sleep`/`Task.Delay`-then-assert, no tight `BeLessThan(TimeSpan)` ceilings
+- [ ] `xunit.v3` test projects have `<OutputType>Exe</OutputType>` set (required for the house `scaffold-ci` `test-runner: mtp` default)
 - [ ] Tests build and pass

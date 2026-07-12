@@ -55,7 +55,7 @@ tags: [audit, azure, acme]
 > Cost Management API on 2026-05-30.
 ```
 
-**Callout blocks** — use these (not plain `>`) for warnings, notes, and tips within sections. Both GitHub (since Sep 2023) and Obsidian render them distinctly; they are valid in repo-committed files and vault docs alike:
+**Callout blocks** — use these (not plain `>`) for warnings, notes, and tips within sections. Both GitHub (since 2023-12-14) and Obsidian render them distinctly. They are valid in **any Markdown that GitHub itself renders** — a repo README, an Issue, a PR body, a Discussion. They are **not** valid everywhere a repo-committed file ends up: see §*README sub-template* below for the one place (the NuGet gallery) they silently fail to render:
 
 ```markdown
 > [!WARNING]
@@ -95,7 +95,7 @@ Close with an appendix carrying the full, copy-pasteable identifiers and exact c
 
 ### README (repo root or NuGet package)
 
-READMEs differ from audit reports: no actions-taken ledger, no Azure ID appendix, `author` omitted from repo-committed frontmatter, plain description over executive summary. Obsidian callout syntax is vault-copy-only (GitHub renders plain `>`).
+READMEs differ from audit reports: no actions-taken ledger, no Azure ID appendix, `author` omitted from repo-committed frontmatter, plain description over executive summary. Use plain `>` only, never `[!NOTE]`-style callout blocks, in a README — **not** because GitHub can't render them (it can, natively, since 2023-12-14), but because a NuGet package README is also rendered by the **NuGet gallery**, whose Markdig-based renderer does not support GFM alert syntax; a `[!NOTE]` block there renders as a literal, ugly blockquote line. Plain `>` is the one syntax that reads cleanly on both. Non-package repo READMEs (apps, tools) that will never be mirrored to NuGet may use callout blocks if the vault-copy/repo-copy split in *Dual-destination handling* below doesn't apply — but defaulting to plain `>` for every README keeps one rule instead of two.
 
 ```
 ---  frontmatter (title, date, status; NO author for repo-committed files)  ---
@@ -162,7 +162,7 @@ No appendix unless the decision references external IDs. No diagrams unless topo
 
 When a doc serves both a repo root and the Obsidian vault, maintain two separate files — the frontmatter and callout conventions are incompatible:
 
-- **Repo copy** — minimal: no `author`, no `last-updated`, no `tags` in frontmatter; badge row present; plain `>` only (not callout blocks); no vault paths in the text.
+- **Repo copy** — minimal: no `author`, no `last-updated`, no `tags` in frontmatter; badge row present; plain `>` only (not callout blocks — the NuGet gallery's Markdig renderer doesn't support GFM alert syntax, see §*README sub-template*); no vault paths in the text.
 - **Vault copy** — enriched: full frontmatter with `author`, `tags`, `last-updated`; callout blocks for warnings/notes; may carry additional context not appropriate for a public README.
 
 ## Patterns that should already be habit
@@ -204,12 +204,12 @@ Full report-style, in order. README and ADR use their own sub-templates above.
 | Truncated IDs (`1234abcd-…`) anywhere | Full IDs in the appendix; truncation only ever in inline prose |
 | Slow build-up to the finding | Executive summary states the conclusion first |
 | Diagram added for decoration | If it carries no information a table couldn't, cut it |
-| Unquoted mermaid node label containing `/`, `:`, `(`, or `,` | **Quote every mermaid label** — `P["/api/parse"]`, not `P[/api/parse]`. A label starting with `/` is read as the *parallelogram* shape (`[/ … /]`), never closes, and fails with `Lexical error … Unrecognized text`. Quoting makes `["` the opener and disambiguates. Same for inline `:::class` (prefer a separate `class A,B name` statement) and `-.text.->` (prefer `-.->\|"text"\|`) |
+| Unquoted mermaid node label starting with `/` or containing `(` | **Quote the label** — `P["/api/parse"]`, not `P[/api/parse]`; `P["Cost (USD)"]`, not `P[Cost (USD)]`. A label starting with `/` is read as the *parallelogram* shape (`[/ … /]`) and never closes; an unquoted `(` is read as node-shape syntax. Both fail with `Lexical error … Unrecognized text`. Quoting makes `["` the opener and disambiguates. Bare `:` and `,` inside an unquoted label render fine in practice — quoting them is optional, not required. Same shape-collision risk applies to inline `:::class` (prefer a separate `class A,B name` statement) and `-.text.->` (prefer `-.->\|"text"\|`) |
 | Mermaid block shipped unvalidated | Render it before shipping: `npx -y @mermaid-js/mermaid-cli@11.16.0 -i d.mmd -o d.svg`. Exit 0 = it parses. Cheaper than the reader finding the error. **Pin the version** — a bare `npx -y <pkg>` runs whatever the registry serves at that moment, which is a rug-pull surface |
 | Using report skeleton for a README | README has its own sub-template — no ledger, no executive summary, no appendix of infra IDs |
 | `author` in a repo-committed README | Author is vault-doc convention; omit it from anything in source control |
 | No `tags` in vault doc frontmatter | Add a `tags` array; vault docs without tags are invisible in Obsidian graph view |
-| Plain `>` for warnings/notes/important caveats | Use `> [!WARNING]` / `> [!NOTE]` / `> [!IMPORTANT]` callout blocks — rendered by both GitHub and Obsidian |
+| Plain `>` for warnings/notes/important caveats (audit/report/runbook/ADR, or vault docs) | Use `> [!WARNING]` / `> [!NOTE]` / `> [!IMPORTANT]` callout blocks — rendered by both GitHub and Obsidian. Exception: a repo README (§*README sub-template*) stays plain `>` — the NuGet gallery doesn't render GFM alerts |
 | Actions-taken ledger in a new package README | Ledger is for post-hoc audit reports; omit from READMEs authored fresh |
 
 ## Checklist

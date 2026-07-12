@@ -10,11 +10,21 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
 
 ---
 
-- `adversarial-review/reviewers.json` — panel composition is host-specific. The
-  Claude Code copy honours the global "Opus needs explicit approval" rule (Opus
-  parked in `alternates`, Gemini active); the Codex/Antigravity copy keeps Opus
-  active and warns against pairing a Gemini reviewer with an Antigravity/`agy`
-  adjudication (same-vendor judge). Reconciling them would break one host.
+- `adversarial-review/reviewers.json` — panel composition is host-specific, and
+  that part is deliberate: the Claude Code copy honours the global "Opus needs
+  explicit approval" rule (Opus parked in `alternates`, Gemini active); the
+  Codex copy keeps Opus active as a reviewer; the Antigravity copy keeps Opus in
+  `alternates` and warns against pairing a Gemini reviewer with a Gemini-backed
+  (`agy`) adjudication — same-vendor judge re-correlates the error the panel
+  exists to decorrelate. Reconciling those would break a host.
+  **What is NOT divergent-by-design: the wrapper each reviewer runs through.**
+  Corrected 2026-07-12 — the `.agents`/`.gemini` copies still routed the OpenAI
+  reviewer through the `copilot` wrapper, which is dead on that account (the
+  Copilot CLI rejects every explicit `--model` id). That reviewer silently
+  produced nothing, dropping the panel to Anthropic-only and breaking the
+  `minVendors` invariant. All three homes now route it through
+  `openai-review.ps1`. If a wrapper or model id drifts again across homes, that
+  is rot, not design — fix it. Only the enabled/alternate ROSTER is per-host.
 - `current-skills/CurrentSkills.md` — generated per-home skill inventory. Each
   home has a different installed skill set (e.g. Claude-only `graphify`/`hone`;
   Codex-only `repo-harmonizer`), so the doc is regenerated in each home by the
