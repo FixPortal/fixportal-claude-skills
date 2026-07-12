@@ -28,7 +28,7 @@ if (-not $reviewed.git.lastReviewDate) { throw "<your-reviewed-repo> missing las
 # gain a reviewer-findings commit at any time), so pick one dynamically rather
 # than pinning to a repo name — a structural check of the "unreviewed" shape,
 # not an assertion about which specific repo is unreviewed today.
-$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.reviewCommits.Count -eq 0 })
+$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.neverReviewed -and $_.git.reviewCommits.Count -eq 0 })
 if ($neverReviewed.Count -eq 0) { throw "no never-reviewed repo found in output (coverage-gap listing not exercised)" }
 $gap = $neverReviewed[0]
 if ($gap.git.reviewCommits -isnot [array]) { throw "$($gap.repo): reviewCommits must be an array even when empty" }
@@ -75,7 +75,10 @@ if ($null -eq $reviewed.PSObject.Properties['hasGraphify']) { throw "<your-revie
 # a never-reviewed repo: null/empty boundary, flagged neverReviewed, well-typed commit count
 if ($gap.git.boundarySha) { throw "$($gap.repo) (unreviewed) must have a null/empty boundarySha" }
 if (-not $gap.git.neverReviewed) { throw "$($gap.repo) must be flagged neverReviewed" }
-if ($gap.git.sinceReviewCount -isnot [int] -and $gap.git.sinceReviewCount -isnot [long]) { throw "$($gap.repo) sinceReviewCount must be an integer (got $($gap.git.sinceReviewCount.GetType().Name))" }
+if ($gap.git.sinceReviewCount -isnot [int] -and $gap.git.sinceReviewCount -isnot [long]) {
+    $gotType = if ($null -eq $gap.git.sinceReviewCount) { '<null>' } else { $gap.git.sinceReviewCount.GetType().Name }
+    throw "$($gap.repo) sinceReviewCount must be an integer (got $gotType)"
+}
 if ($gap.git.sinceReviewCount -lt 0) { throw "$($gap.repo) sinceReviewCount must be a non-negative int" }
 "collect.ps1 scope-side OK — <your-reviewed-repo> since-review: $($reviewed.git.sinceReviewCount) commit(s), $($reviewed.git.daysSinceReview)d stale"
 
