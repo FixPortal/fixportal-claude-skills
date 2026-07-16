@@ -434,8 +434,8 @@ Separate the causes before concluding anything, cheapest first:
    Not applicable to a personal-account repo, which has no such policy layer.
 4. **Licence gate.** Admin confirmed, public read clean, policy permissive (or no org) and
    the private repo still 403s → the gate. Only here is it true that no
-   `gh auth refresh -s security_events` or PAT swap will move it; said any earlier it
-   talks you out of the one cause a credential change actually fixes.
+   `gh auth refresh -s security_events` or PAT swap will move it. Saying that earlier
+   talks you out of step 1 — the one cause a credential change actually fixes.
 
 **A personal account cannot buy its way out.** GitHub Code Security is sold only against a
 **Team or Enterprise organization** plan; personal accounts (Free or Pro) cannot purchase
