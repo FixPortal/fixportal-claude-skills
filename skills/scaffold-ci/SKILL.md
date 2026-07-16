@@ -85,6 +85,13 @@ tag-pinned scaffold gets flagged the moment it is written. Re-resolve the SHA be
 scaffolding rather than trusting this table (`gh api repos/raven-actions/actionlint/git/ref/tags/v2
 --jq '.object.sha'`); dependabot bumps it in-repo and this doc lags.
 
+That SHA pins the **action**, not the **actionlint binary** it downloads. Those are
+separate knobs: the action's `version:` input is actionlint's own semver and defaults to
+`latest`, so a SHA-pinned action still fetches a floating linter. The house default is to
+omit `version:` and accept that — a new actionlint release surfacing a new lint is
+usually what you want from a linter. Set an explicit semver only where a reproducible
+binary matters more than current rules.
+
 ### `ci.yml` skeleton (hybrid; drop the job you don't need)
 
 ```yaml
@@ -492,7 +499,7 @@ if explicitly asked:
 | Flat `cancel-in-progress: false` on a no-deploy repo | `${{ github.ref != 'refs/heads/main' }}`; flat `false` only when a deploy job needs protecting. |
 | `cancel-in-progress: true` unconditionally | Cancels main/tags too. Gate on `github.ref != 'refs/heads/main'`. |
 | Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
-| `version: latest` on `raven-actions/actionlint` | Not a valid input — omit it; the pin (the commit SHA, per the row below) already selects the version. |
+| Believing `version:` on `raven-actions/actionlint` is invalid | It is valid — actionlint's own semver, defaulting to `latest`. The action-ref SHA pins the *action*, not the actionlint *binary*. Omit it to take the default, or set an explicit semver if you want the binary reproducible too. |
 | `push: [main]` only | `['**']` + tags `v*` + `pull_request` + `workflow_dispatch`. |
 | Stale `@v4` pins | checkout@v7, setup-dotnet@v6, setup-node@v7, upload-artifact@v7. |
 | Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
