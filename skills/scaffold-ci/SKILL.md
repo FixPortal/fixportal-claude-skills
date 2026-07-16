@@ -407,24 +407,28 @@ Default setup auto-detects languages (C#, JS/TS for a hybrid repo). Surface this
 required step and confirm it's enabled — don't silently skip it because there's no file.
 
 **Not available on a private repo without GitHub Code Security (ex-GHAS).** The PATCH
-above then returns `403 "Code scanning is not enabled for this repository"` — which reads
-like a scope problem but is usually the licence gate, and no `gh auth refresh -s
-security_events` or PAT swap will move it.
+above then returns `403 "Code scanning is not enabled for this repository"`, which reads
+like a scope problem. It is often the licence gate — but work the causes below before
+concluding that, because missing admin and org policy return the same 403.
 
 Separate the causes before concluding anything, cheapest first:
 
 1. **Admin on the target?** `gh api repos/{owner}/{repo} --jq .permissions` — the PATCH
    needs write/admin. Rule this out first; it is the one cause a token swap *can* fix.
 2. **Credential able to read code-scanning at all?** Run the same token against a
-   **public** repo. A clean read there (`state: configured`) shows the credential works
-   *on that repo* — it does NOT prove access to the private target, which is why step 1
-   comes first.
+   **public** repo. Any HTTP 200 is a pass — the endpoint answered, so the credential
+   reaches code-scanning. Do not require `state: configured`: that reports whether *that*
+   repo has CodeQL on, which is a different question, and a `not-configured` 200 clears
+   the check just as well. A pass shows the credential works *on that repo* — it does NOT
+   prove access to the private target, which is why step 1 comes first.
 3. **Policy, if the repo is org-owned.** An org or enterprise policy can disable Code
    Security and yields the same 403 — a licensed org still 403s when policy forbids it.
    Check the org's code-security configuration before concluding the licence is missing.
    Not applicable to a personal-account repo, which has no such policy layer.
 4. **Licence gate.** Admin confirmed, public read clean, policy permissive (or no org) and
-   the private repo still 403s → the gate.
+   the private repo still 403s → the gate. Only here is it true that no
+   `gh auth refresh -s security_events` or PAT swap will move it; said any earlier it
+   talks you out of the one cause a credential change actually fixes.
 
 **A personal account cannot buy its way out.** GitHub Code Security is sold only against a
 **Team or Enterprise organization** plan; personal accounts (Free or Pro) cannot purchase
@@ -488,11 +492,11 @@ if explicitly asked:
 | Flat `cancel-in-progress: false` on a no-deploy repo | `${{ github.ref != 'refs/heads/main' }}`; flat `false` only when a deploy job needs protecting. |
 | `cancel-in-progress: true` unconditionally | Cancels main/tags too. Gate on `github.ref != 'refs/heads/main'`. |
 | Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
-| `version: latest` on `raven-actions/actionlint@v2` | Not a valid input — omit it; the `@v2` pin already selects the version. |
+| `version: latest` on `raven-actions/actionlint` | Not a valid input — omit it; the pin (the commit SHA, per the row below) already selects the version. |
 | `push: [main]` only | `['**']` + tags `v*` + `pull_request` + `workflow_dispatch`. |
 | Stale `@v4` pins | checkout@v7, setup-dotnet@v6, setup-node@v7, upload-artifact@v7. |
 | Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
-| No actionlint step | First step of every job. |
+| No actionlint step | First validation step of every job, immediately after `actions/checkout`. |
 | Node added to backend job | Backend CI is npm-free; frontend build is publish-only. |
 | Stryker as a `ci.yml` job / per-PR gate | Separate `mutation.yml`, push-to-main + dispatch, `continue-on-error`. |
 | `break: 50` or cron schedule for Stryker | `break: 0`, triggered on push-to-main + dispatch. |
