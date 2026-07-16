@@ -57,8 +57,9 @@ These are the deltas an unaided agent gets wrong. Get them right:
    input to `workflow_dispatch` **only when the repo has a real deploy job** that reads
    `${{ inputs.environment }}` — otherwise the dropdown is dead and misleads a manual trigger
    (a footgun that recurred across library repos in the sweep). See the Deploy section.
-3. **actionlint is the first step of every job** (`raven-actions/actionlint@v2`,
-   `shellcheck: true`).
+3. **actionlint is the first validation step of every job**, immediately after
+   `actions/checkout` (`raven-actions/actionlint`, SHA-pinned, `shellcheck: true`) — it
+   needs the repo on disk, so it cannot precede checkout.
 4. **Current action pins** (see table). An unaided agent defaults to stale `@v4`.
 5. **Backend job is npm-free.** The frontend build runs only on `dotnet publish`
    (gated by an MSBuild target), so ordinary `build`/`test` never invokes npm. Do NOT add
@@ -69,12 +70,20 @@ These are the deltas an unaided agent gets wrong. Get them right:
 | Action | Pin |
 |--------|-----|
 | `actions/checkout` | `v7` |
-| `actions/setup-dotnet` | `v5` |
-| `actions/setup-node` | `v6` |
+| `actions/setup-dotnet` | `v6` |
+| `actions/setup-node` | `v7` |
 | `actions/upload-artifact` | `v7` |
-| `raven-actions/actionlint` | `v2` |
+| `raven-actions/actionlint` | `3d39aea434753780c3b3d4a1a31c854b4dbf49d7` (`v2`) |
 
 .NET: `10.0.x`. Node: `24`.
+
+**First-party `actions/*` take the major tag; third-party actions take a full commit
+SHA.** `raven-actions/actionlint` is third-party, so pin the SHA with a trailing `# v2`
+comment — a floating tag there trips the semgrep
+`third-party-action-not-pinned-to-commit-sha` rule that runs as a local edit hook, so a
+tag-pinned scaffold gets flagged the moment it is written. Re-resolve the SHA before
+scaffolding rather than trusting this table (`gh api repos/raven-actions/actionlint/git/ref/tags/v2
+--jq '.object.sha'`); dependabot bumps it in-repo and this doc lags.
 
 ### `ci.yml` skeleton (hybrid; drop the job you don't need)
 
@@ -106,11 +115,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Lint workflows (actionlint)
-        uses: raven-actions/actionlint@v2
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
         with:
           shellcheck: true
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
       - name: Restore
@@ -136,11 +145,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Lint workflows (actionlint)
-        uses: raven-actions/actionlint@v2
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
         with:
           shellcheck: true
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -247,7 +256,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Restore solution
@@ -397,6 +406,35 @@ gh api -X PATCH /repos/{owner}/{repo}/code-scanning/default-setup -f state=confi
 Default setup auto-detects languages (C#, JS/TS for a hybrid repo). Surface this as a
 required step and confirm it's enabled — don't silently skip it because there's no file.
 
+**Not available on a private repo without GitHub Code Security (ex-GHAS).** The PATCH
+above then returns `403 "Code scanning is not enabled for this repository"` — which reads
+like a scope problem but is usually the licence gate, and no `gh auth refresh -s
+security_events` or PAT swap will move it.
+
+Separate the causes before concluding anything, cheapest first:
+
+1. **Admin on the target?** `gh api repos/{owner}/{repo} --jq .permissions` — the PATCH
+   needs write/admin. Rule this out first; it is the one cause a token swap *can* fix.
+2. **Credential able to read code-scanning at all?** Run the same token against a
+   **public** repo. A clean read there (`state: configured`) shows the credential works
+   *on that repo* — it does NOT prove access to the private target, which is why step 1
+   comes first.
+3. **Policy, if the repo is org-owned.** An org or enterprise policy can disable Code
+   Security and yields the same 403 — a licensed org still 403s when policy forbids it.
+   Check the org's code-security configuration before concluding the licence is missing.
+   Not applicable to a personal-account repo, which has no such policy layer.
+4. **Licence gate.** Admin confirmed, public read clean, policy permissive (or no org) and
+   the private repo still 403s → the gate.
+
+**A personal account cannot buy its way out.** GitHub Code Security is sold only against a
+**Team or Enterprise organization** plan; personal accounts (Free or Pro) cannot purchase
+a licence at all. So on a private personal-account repo the routes are making the repo
+public, or **transferring it to an eligible org** — not paying as-is. Record CodeQL as
+blocked rather than burning a session on the credential.
+*(Seen on two private .NET+React repos under a personal account — admin confirmed, public
+control read clean, no org policy layer, so genuinely the gate and un-enableable where
+they sat.)*
+
 ### Gating & triage policy (house standard)
 
 Enabling the scan is half the job; the other half is deciding what blocks merge and how
@@ -452,7 +490,8 @@ if explicitly asked:
 | Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
 | `version: latest` on `raven-actions/actionlint@v2` | Not a valid input — omit it; the `@v2` pin already selects the version. |
 | `push: [main]` only | `['**']` + tags `v*` + `pull_request` + `workflow_dispatch`. |
-| Stale `@v4` pins | checkout@v7, setup-dotnet@v5, setup-node@v6, upload-artifact@v7. |
+| Stale `@v4` pins | checkout@v7, setup-dotnet@v6, setup-node@v7, upload-artifact@v7. |
+| Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
 | No actionlint step | First step of every job. |
 | Node added to backend job | Backend CI is npm-free; frontend build is publish-only. |
 | Stryker as a `ci.yml` job / per-PR gate | Separate `mutation.yml`, push-to-main + dispatch, `continue-on-error`. |
