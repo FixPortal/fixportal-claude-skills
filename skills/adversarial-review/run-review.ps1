@@ -322,7 +322,13 @@ $p1ok = Invoke-Round 'p1' '^### ' $false
 if (-not $p1ok) { Die 'No reviewer produced Phase 1 findings; cannot continue.' }
 $p1Vendors = ($p1ok.Vendor | Sort-Object -Unique).Count
 if ($p1Vendors -lt $minVendors) {
-    Write-Warning "Only $p1Vendors vendor(s) produced Phase 1 findings (min $minVendors). The panel is degraded; surface this to the user."
+    # Below minVendors this is NOT an adversarial panel — a single-vendor round is
+    # self-review, and the whole value of the exercise is uncorrelated error across
+    # vendors. This used to be a Write-Warning and the script still exited 0, so a
+    # batched caller recorded the chunk as clean and the run reported success on a
+    # panel that never happened. Fail loudly instead: the caller must be able to
+    # tell "reviewed by one vendor" from "reviewed properly".
+    Die "Only $p1Vendors vendor(s) produced Phase 1 findings (min $minVendors) — this is not an adversarial panel. Re-run this chunk; do not judge it."
 }
 
 # --- Pool + anonymise + assign F-ids ------------------------------------
@@ -393,40 +399,68 @@ try {
             (Read-UsageSidecar (Join-Path $WorkDir ("usage-{0}-p2.json" -f $r.id)))
         ) | Where-Object { $_ }
 
-        if ($sidecars) {
-            $inTok  = [long]($sidecars | Measure-Object -Property inputTokens  -Sum).Sum
-            $outTok = [long]($sidecars | Measure-Object -Property outputTokens -Sum).Sum
-            $cost   = [double]($sidecars | Measure-Object -Property costUsd     -Sum).Sum
-            # Exact only when every phase the reviewer ran produced a sidecar. A
-            # partial set (a phase failed, or its wrapper wrote none) still sums
-            # the real figures it has but is flagged putative rather than exact,
-            # so the missing phase's cost is not silently presented as complete.
-            $phasesRun = @($p1res, $p2res | Where-Object { $_ }).Count
-            $estimated = ($sidecars.Count -lt $phasesRun)
-        } else {
-            # No sidecar (Claude wrapper) — estimate from proxies and the blended
-            # rate. Input ≈ the diff twice (P1 full + P2 with pooled findings);
-            # output ≈ chars in this reviewer's P1+P2 text / 4.
-            $inTok  = [long]($estTokens * 2)
-            $outChars = 0
-            foreach ($f in @($p1res.OutFile, $p2res.OutFile)) {
-                if ($f -and (Test-Path -LiteralPath $f)) { $outChars += (Get-Content -LiteralPath $f -Raw).Length }
-            }
-            $outTok = [long][Math]::Ceiling($outChars / 4.0)
-            $cost   = ($inTok + $outTok) * (Get-BlendedRatePerMillion $r.model) / 1e6
-            $estimated = $true
-        }
+        # A reviewer that produced NO usable output in either phase ran nothing.
+        # It must record zeros, not an estimate. The old code fell straight into
+        # the sidecar-less branch below and billed it $estTokens * 2 — the DIFF's
+        # own token estimate — so a dead reviewer was indistinguishable from a
+        # live one, and a chunk whose cross-vendor call failed logged the exact
+        # same figure as the reviewers that actually ran. Fabricated metrics for
+        # a reviewer that never spoke are worse than no metrics: they make a
+        # broken panel read as a working one.
+        $phasesRun = @(@($p1res, $p2res) | Where-Object { $_ }).Count
 
-        [ordered]@{
-            reviewer         = $r.vendor
-            role             = 'reviewer'
-            model            = $r.model
-            inputTokens      = $inTok
-            outputTokens     = $outTok
-            costUsd          = [Math]::Round($cost, 6)
-            costEstimated    = $estimated
-            reviewDurationMs = $durationMs
-            issuesRaised     = $raised
+        if ($phasesRun -eq 0) {
+            [ordered]@{
+                reviewer         = $r.vendor
+                role             = 'reviewer'
+                model            = $r.model
+                inputTokens      = 0
+                outputTokens     = 0
+                costUsd          = 0.0
+                costEstimated    = $false
+                failed           = $true
+                reviewDurationMs = $durationMs
+                issuesRaised     = 0
+            }
+        }
+        else {
+            if ($sidecars) {
+                $inTok  = [long]($sidecars | Measure-Object -Property inputTokens  -Sum).Sum
+                $outTok = [long]($sidecars | Measure-Object -Property outputTokens -Sum).Sum
+                $cost   = [double]($sidecars | Measure-Object -Property costUsd     -Sum).Sum
+                # Exact only when every phase the reviewer ran produced a sidecar. A
+                # partial set (a phase failed, or its wrapper wrote none) still sums
+                # the real figures it has but is flagged putative rather than exact,
+                # so the missing phase's cost is not silently presented as complete.
+                $estimated = ($sidecars.Count -lt $phasesRun)
+            } else {
+                # No sidecar (Claude wrapper) — estimate from proxies and the blended
+                # rate. Input ≈ the diff once per phase ACTUALLY RUN (P1 full, P2 with
+                # pooled findings); output ≈ chars in this reviewer's P1+P2 text / 4.
+                # Scale by $phasesRun, not a hardcoded 2: a reviewer that only
+                # survived P1 must not be billed for a P2 it never made.
+                $inTok  = [long]($estTokens * $phasesRun)
+                $outChars = 0
+                foreach ($f in @($p1res.OutFile, $p2res.OutFile)) {
+                    if ($f -and (Test-Path -LiteralPath $f)) { $outChars += (Get-Content -LiteralPath $f -Raw).Length }
+                }
+                $outTok = [long][Math]::Ceiling($outChars / 4.0)
+                $cost   = ($inTok + $outTok) * (Get-BlendedRatePerMillion $r.model) / 1e6
+                $estimated = $true
+            }
+
+            [ordered]@{
+                reviewer         = $r.vendor
+                role             = 'reviewer'
+                model            = $r.model
+                inputTokens      = $inTok
+                outputTokens     = $outTok
+                costUsd          = [Math]::Round($cost, 6)
+                costEstimated    = $estimated
+                failed           = $false
+                reviewDurationMs = $durationMs
+                issuesRaised     = $raised
+            }
         }
     }
     $metrics = [ordered]@{

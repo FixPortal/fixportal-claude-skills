@@ -136,20 +136,50 @@ $requestBody = @{
     )
 } | ConvertTo-Json -Depth 10 -Compress
 
-try {
-    $response = Invoke-RestMethod `
-        -Uri 'https://api.openai.com/v1/chat/completions' `
-        -Method Post `
-        -ContentType 'application/json; charset=utf-8' `
-        -Headers @{ 'Authorization' = "Bearer $env:OPENAI_API_KEY" } `
-        -Body ([System.Text.Encoding]::UTF8.GetBytes($requestBody)) `
-        -TimeoutSec 300
+# A transient failure here silently costs the panel an entire vendor for the whole
+# chunk: the caller records "[reviewer unavailable]" and the run reads as a valid
+# 2-vendor degrade rather than an error. This has been observed with HTTP 401
+# ("insufficient permissions") firing intermittently on payloads that succeed
+# unchanged on retry -- bisecting one such payload showed it failing twice and then
+# succeeding byte-identical, while a smaller slice of the same diff failed. So it is
+# neither size-related nor deterministic. Retry the retryable codes before giving up.
+# 401 is included deliberately: it is normally a genuine auth error (and a real one
+# still fails after the retries), but some accounts emit it spuriously under load.
+$retryableStatus = @(401, 408, 429, 500, 502, 503, 504)
+$maxAttempts = 4
+$response = $null
+
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        $response = Invoke-RestMethod `
+            -Uri 'https://api.openai.com/v1/chat/completions' `
+            -Method Post `
+            -ContentType 'application/json; charset=utf-8' `
+            -Headers @{ 'Authorization' = "Bearer $env:OPENAI_API_KEY" } `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($requestBody)) `
+            -TimeoutSec 300
+        break
+    }
+    catch {
+        $statusCode = $_.Exception.Response?.StatusCode.value__
+        $detail = ''
+        try { $detail = $_.ErrorDetails.Message } catch {}
+
+        $isRetryable = $retryableStatus -contains $statusCode
+        if (-not $isRetryable -or $attempt -eq $maxAttempts) {
+            Write-Error ("OpenAI API call failed (HTTP $statusCode) after $attempt attempt(s): $($_.Exception.Message)`n$detail")
+            exit 1
+        }
+
+        # Exponential backoff with jitter, so concurrent chunks do not retry in lockstep.
+        $backoff = [Math]::Pow(2, $attempt) + (Get-Random -Minimum 0.0 -Maximum 1.0)
+        Write-Warning ("OpenAI HTTP $statusCode (attempt $attempt/$maxAttempts) — retrying in $([Math]::Round($backoff,1))s")
+        Start-Sleep -Seconds $backoff
+    }
 }
-catch {
-    $statusCode = $_.Exception.Response?.StatusCode.value__
-    $detail = ''
-    try { $detail = $_.ErrorDetails.Message } catch {}
-    Write-Error ("OpenAI API call failed (HTTP $statusCode): $($_.Exception.Message)`n$detail")
+
+if (-not $response) {
+    Write-Error 'OpenAI API call failed: no response after retries.'
     exit 1
 }
 
