@@ -106,29 +106,39 @@ try {
     # batch aborts (correctly) -- but an EARLIER chunk's stale metrics must survive, or
     # a later retry with just that chunk finds a clean slate no one ever regenerated:
     # data destroyed by a cleanup pass that never got to redo the work.
-    $runRoot6 = Join-Path $root 'run6'
-    foreach ($id in @('C01', 'C02')) {
-        New-Item -ItemType Directory -Path (Join-Path $runRoot6 $id) -Force | Out-Null
-        "old-$id" | Set-Content -LiteralPath (Join-Path $runRoot6 "$id\metrics.json") -Encoding utf8
-    }
-    $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
+    #
+    # Windows-only: the fault injection is an open FileShare.Read handle blocking
+    # Remove-Item, which is Win32 share-mode semantics. POSIX unlink() can remove a
+    # directory entry out from under an open file descriptor, so the same lock would
+    # not force a delete failure on Linux/macOS -- $code6 would stay 0 and the
+    # assertion below would wrongly fail a working system, not catch a broken one.
+    if ($IsWindows) {
+        $runRoot6 = Join-Path $root 'run6'
+        foreach ($id in @('C01', 'C02')) {
+            New-Item -ItemType Directory -Path (Join-Path $runRoot6 $id) -Force | Out-Null
+            "old-$id" | Set-Content -LiteralPath (Join-Path $runRoot6 "$id\metrics.json") -Encoding utf8
+        }
+        $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
 
-    # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
-    # fails, and check that C01's survives the abort anyway. FileShare.Read, not
-    # None: None would also block the pre-delete ReadAllBytes backup, so the fault
-    # fires before any deletion is even attempted and the rollback path is never
-    # actually reached -- Read allows the backup to succeed while still blocking
-    # Remove-Item, so this exercises the real rollback, not a different early exit.
-    $fs = [System.IO.File]::Open((Join-Path $runRoot6 'C02\metrics.json'), 'Open', 'Read', 'Read')
-    try {
-        & pwsh -NoProfile -File $batch -ChunkManifest $m6 -RepoPath $fakeRepo -RunRoot $runRoot6 -BatchSize 1 *>$null
-        $code6 = $LASTEXITCODE
-    } finally { $fs.Close() }
-    if ($code6 -eq 0) { throw "a locked stale metrics.json should abort the batch, exited 0" }
-    if (-not (Test-Path -LiteralPath (Join-Path $runRoot6 'C01\metrics.json'))) {
-        throw "C01's stale metrics must survive an abort caused by C02's locked file, not be destroyed"
+        # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
+        # fails, and check that C01's survives the abort anyway. FileShare.Read, not
+        # None: None would also block the pre-delete ReadAllBytes backup, so the fault
+        # fires before any deletion is even attempted and the rollback path is never
+        # actually reached -- Read allows the backup to succeed while still blocking
+        # Remove-Item, so this exercises the real rollback, not a different early exit.
+        $fs = [System.IO.File]::Open((Join-Path $runRoot6 'C02\metrics.json'), 'Open', 'Read', 'Read')
+        try {
+            & pwsh -NoProfile -File $batch -ChunkManifest $m6 -RepoPath $fakeRepo -RunRoot $runRoot6 -BatchSize 1 *>$null
+            $code6 = $LASTEXITCODE
+        } finally { $fs.Close() }
+        if ($code6 -eq 0) { throw "a locked stale metrics.json should abort the batch, exited 0" }
+        if (-not (Test-Path -LiteralPath (Join-Path $runRoot6 'C01\metrics.json'))) {
+            throw "C01's stale metrics must survive an abort caused by C02's locked file, not be destroyed"
+        }
+        "batch-review.ps1 OK — an aborted cleanup pass restores chunks it already cleared, rather than destroying them"
+    } else {
+        "batch-review.ps1 SKIPPED — rollback-on-abort fault injection needs Windows file-share semantics"
     }
-    "batch-review.ps1 OK — an aborted cleanup pass restores chunks it already cleared, rather than destroying them"
 
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process
