@@ -165,15 +165,22 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         $detail = ''
         try { $detail = $_.ErrorDetails.Message } catch {}
 
-        $isRetryable = $retryableStatus -contains $statusCode
+        # A null status code means no HTTP response arrived at all — a timeout
+        # (past -TimeoutSec), DNS failure, or connection reset. Those are the most
+        # common transient failures of the lot, so they must retry too; keying the
+        # decision on the status code alone would exclude exactly the class this
+        # retry exists for.
+        $isRetryable = ($null -eq $statusCode) -or ($retryableStatus -contains $statusCode)
         if (-not $isRetryable -or $attempt -eq $maxAttempts) {
-            Write-Error ("OpenAI API call failed (HTTP $statusCode) after $attempt attempt(s): $($_.Exception.Message)`n$detail")
+            $where = if ($null -eq $statusCode) { 'no HTTP response' } else { "HTTP $statusCode" }
+            Write-Error ("OpenAI API call failed ($where) after $attempt attempt(s): $($_.Exception.Message)`n$detail")
             exit 1
         }
 
         # Exponential backoff with jitter, so concurrent chunks do not retry in lockstep.
         $backoff = [Math]::Pow(2, $attempt) + (Get-Random -Minimum 0.0 -Maximum 1.0)
-        Write-Warning ("OpenAI HTTP $statusCode (attempt $attempt/$maxAttempts) — retrying in $([Math]::Round($backoff,1))s")
+        $what = if ($null -eq $statusCode) { 'no HTTP response' } else { "HTTP $statusCode" }
+        Write-Warning ("OpenAI $what (attempt $attempt/$maxAttempts) — retrying in $([Math]::Round($backoff,1))s")
         Start-Sleep -Seconds $backoff
     }
 }
