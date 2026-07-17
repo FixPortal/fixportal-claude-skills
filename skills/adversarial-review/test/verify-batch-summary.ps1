@@ -71,6 +71,30 @@ try {
     if ($c02[0].label -ne 'repair C02') { throw "the repair invocation must win for C02, got label '$($c02[0].label)'" }
     "batch-review.ps1 OK — a repair re-run preserves the run's other chunks and wins for the one it retried"
 
+    # --- a FAILED retry must not inherit the previous attempt's metrics -------
+    # The chunk dir is reused (New-Item -Force), so without clearing it a retry that
+    # dies before writing its own metrics.json leaves the earlier attempt's numbers
+    # in place. They then get aggregated under a summary row that records the retry
+    # as FAILED, and the "failed chunk(s) contribute no metrics" warning is false.
+    $runRoot4 = Join-Path $root 'run4'
+    New-Item -ItemType Directory -Path (Join-Path $runRoot4 'C01') -Force | Out-Null
+    [ordered]@{
+        participants = @(
+            [ordered]@{ reviewer = 'anthropic'; model = 'stale'; inputTokens = 1; outputTokens = 1
+                        costUsd = 0.5; reviewDurationMs = 1; issuesRaised = 99 }
+        )
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runRoot4 'C01\metrics.json') -Encoding utf8
+
+    $m4 = Join-Path $root 'm4.json'; New-Manifest $m4 @('C01')
+    & pwsh -NoProfile -File $batch -ChunkManifest $m4 -RepoPath $fakeRepo -RunRoot $runRoot4 -BatchSize 1 *>$null
+    if ($LASTEXITCODE -ne 0) { throw "retry batch invocation exited $LASTEXITCODE" }
+    if (Test-Path -LiteralPath (Join-Path $runRoot4 'C01\metrics.json')) {
+        throw "a retry that wrote no metrics.json must not leave the previous attempt's behind"
+    }
+    $row4 = @(Get-Content -LiteralPath (Join-Path $runRoot4 'batch-summary.json') -Raw | ConvertFrom-Json)[0]
+    if ($row4.hasMetrics) { throw "summary must record hasMetrics=false for a retry that produced none, got true" }
+    "batch-review.ps1 OK — a failed retry contributes nothing, rather than the previous attempt's numbers"
+
     # --- aggregate-and-emit.ps1 refuses a summary that misses chunks ----------
     $runRoot2 = Join-Path $root 'run2'
     foreach ($id in @('C01', 'C02', 'C03')) {
