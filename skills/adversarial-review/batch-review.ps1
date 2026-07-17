@@ -183,9 +183,17 @@ if (Test-Path -LiteralPath $summaryPath) {
             if ($row.chunkId) { $merged[$row.chunkId] = $row }
         }
     } catch {
-        # Don't throw: the chunks have already run and this is the last step. Losing
-        # the just-computed rows to a corrupt prior summary would be the worse bug.
-        Write-Warning "Existing batch-summary.json is unreadable ($($_.Exception.Message)) — writing this invocation's $($results.Count) chunk(s) only. Any earlier chunks in this RunRoot will be missing from it, and aggregate-and-emit.ps1 will refuse to emit until it is rebuilt."
+        # Don't throw: the chunks have already run and this is the last step. But the
+        # prior summary may name FAILED chunks that left no metrics.json -- those exist
+        # only as summary rows, so overwriting the file outright would erase them with
+        # no way to rediscover them (the fallback scan only finds metrics.json). Move
+        # the unreadable file aside first, so its bytes survive for the operator to
+        # recover those rows from, then write this invocation's rows. Nothing is
+        # destroyed; a metrics-bearing prior chunk still trips aggregate's orphan
+        # refusal, and the preserved file covers the metrics-less ones.
+        $preserved = "$summaryPath.unreadable-$PID"
+        try { Move-Item -LiteralPath $summaryPath -Destination $preserved -Force } catch { $preserved = '(could not preserve it)' }
+        Write-Warning "Existing batch-summary.json is unreadable ($($_.Exception.Message)) — moved to $preserved and writing this invocation's $($results.Count) chunk(s) only. Any earlier FAILED chunks (no metrics.json) live only in the preserved file; recover their rows from it before aggregating, or aggregate-and-emit.ps1 will under-count them."
         $merged = [ordered]@{}
     }
 }

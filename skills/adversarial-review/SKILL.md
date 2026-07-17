@@ -676,7 +676,11 @@ lands as all-zeros. Instead:
      emit if it finds one the summary does not name.
    - That refusal is also what a pre-union RunRoot looks like (its summary was
      overwritten by the last retry). Rebuild `batch-summary.json` from the chunk
-     dirs, or delete it to aggregate every chunk dir under the RunRoot instead.
+     dirs. You *can* instead delete it and let `aggregate-and-emit.ps1` scan every
+     chunk dir under the RunRoot — but that scan only finds chunks that left a
+     `metrics.json`, so it **silently drops any FAILED chunk** (a failed chunk
+     writes no metrics). Only delete the summary when every chunk is known to have
+     succeeded; otherwise rebuild it so the failed chunks stay counted.
 
 2. **At §5 synthesis, write `<RunRoot>/aggregate-verdict.json`** — the two things
    that are host judgment, not deterministic: `issuesAccepted` per reviewer (each

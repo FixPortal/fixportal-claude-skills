@@ -99,7 +99,20 @@ if (Test-Path -LiteralPath $batchSummary) {
     # authoritative rather than a blind scan). workDir stays informational only.
     # Keying by id also collapses a duplicate row, which would otherwise double-count
     # both ChunkCount and that chunk's metrics.
-    $summaryIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    #
+    # Match the id comparison to the FILESYSTEM's case rule, not a fixed one. A chunk
+    # id both names a summary row and (via Join-Path) a directory on disk, so the two
+    # must agree on whether 'c01' and 'C01' are the same chunk exactly when the
+    # filesystem does. A fixed OrdinalIgnoreCase is right on Windows/macOS but wrong
+    # on a case-sensitive filesystem: it would resolve 'c01' to a 'C01' dir that
+    # isn't really there (missing its metrics) while the orphan scan below, keyed by
+    # the same set, treats the on-disk 'C01' as named -- so a short run emits instead
+    # of being refused. Probe with a file we know exists (this very summary, whose
+    # name is lowercase on disk): if its upper-cased path resolves, the filesystem is
+    # case-insensitive. Zero writes, exact per volume rather than guessed from the OS.
+    $fsCaseInsensitive = Test-Path -LiteralPath (Join-Path $RunRoot 'BATCH-SUMMARY.JSON')
+    $idComparer = if ($fsCaseInsensitive) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
+    $summaryIds = [System.Collections.Generic.HashSet[string]]::new($idComparer)
     foreach ($row in $summaryRows) { if ($row.chunkId) { [void]$summaryIds.Add([string]$row.chunkId) } }
 
     # Re-validate every id against batch-review.ps1's slug rule before joining it into
@@ -148,7 +161,9 @@ $orphanDirs
 The summary is not describing this run, so ChunkCount and every per-vendor total would be short and every accepted count silently clamped to match. Refusing to emit. Fix by ONE of:
   - re-run batch-review.ps1 for the missing chunks into this RunRoot (it unions the summary); or
   - rebuild batch-summary.json from the chunk dirs; or
-  - delete batch-summary.json to aggregate every chunk dir under RunRoot instead.
+  - delete batch-summary.json to aggregate every chunk dir under RunRoot instead
+    (WARNING: the scan finds only chunks that left a metrics.json, so any FAILED
+    chunk is silently dropped -- only do this when every chunk succeeded).
 "@ -ErrorAction Continue
         exit 4
     }
