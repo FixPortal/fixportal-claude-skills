@@ -149,8 +149,9 @@ if (Test-Path -LiteralPath $batchSummary) {
     # trusted source: a hand-written or corrupted id like '..\other' joins straight
     # into <RunRoot>\..\other\metrics.json, escaping RunRoot to aggregate an unrelated
     # file — and the orphan scan below misses it, because the resolved dir is not a
-    # child of RunRoot at all. Same rule as batch-review.ps1 (slug chars, not all dots).
-    $badIds = @($summaryIds | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' })
+    # child of RunRoot at all. Same rule as batch-review.ps1 (slug chars, not all
+    # dots, no trailing '.'/space -- Windows strips those, collapsing 'C01.' onto 'C01').
+    $badIds = @($summaryIds | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' -or $_ -match '[. ]$' })
     if ($rowsMissingId -gt 0 -or $badIds) {
         $parts = @()
         if ($rowsMissingId -gt 0) { $parts += "$rowsMissingId row(s) with no chunkId" }
@@ -166,6 +167,24 @@ if (Test-Path -LiteralPath $batchSummary) {
         ForEach-Object { Get-Item -LiteralPath $_ })
     if ($chunkCount -gt $metricFiles.Count) {
         Write-Warning "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics."
+    }
+
+    # A row that DECLARES failure (exitCode != 0 or hasMetrics = false) must have no
+    # metrics.json on disk -- metrics are selected purely by chunkId, so a stale file
+    # in a failed chunk's dir would otherwise be summed anyway, inflating the totals,
+    # and the orphan scan would wave it through because the id IS named. Current runs
+    # can't produce this (batch-review clears a chunk's metrics before a retry), but a
+    # legacy or hand-repaired RunRoot can. The summary contradicting the disk is not
+    # something to silently resolve in the inflating direction: refuse.
+    $contradictions = @($summaryRows | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.chunkId) -and
+        (($_.hasMetrics -eq $false) -or ($null -ne $_.exitCode -and [int]$_.exitCode -ne 0)) -and
+        (Test-Path -LiteralPath (Join-Path (Join-Path $RunRoot ([string]$_.chunkId)) 'metrics.json'))
+    })
+    if ($contradictions) {
+        $names = ($contradictions | ForEach-Object { $_.chunkId }) -join ', '
+        Write-Error "batch-summary.json marks these chunk(s) as failed (exitCode != 0 or hasMetrics = false) yet a metrics.json exists in their dir: $names. Counting it would inflate the totals; the summary and the filesystem disagree. Refusing to aggregate — remove the stale metrics.json or correct the row before re-running." -ErrorAction Continue
+        exit 7
     }
 
     # A metrics.json under RunRoot the summary does NOT name means the summary is not

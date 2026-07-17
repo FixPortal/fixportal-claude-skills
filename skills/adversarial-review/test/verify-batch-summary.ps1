@@ -285,6 +285,32 @@ try {
     if ($out -notmatch 'no chunkId') { throw "the refusal should call out the missing chunkId, got:`n$out" }
     "aggregate-and-emit.ps1 OK — a row with no chunkId is refused, not silently dropped"
 
+    # --- a trailing-dot chunk id is rejected ----------------------------------
+    # Windows strips a trailing '.'/space from a path segment, so 'C01.' and 'C01'
+    # collapse onto one dir while reading as two ids -- a double-count vector.
+    $runRoot12 = Join-Path $root 'run12'
+    New-Item -ItemType Directory -Path $runRoot12 -Force | Out-Null
+    @([pscustomobject]@{ chunkId = 'C01.'; label = 'x'; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }) |
+        ConvertTo-Json -AsArray | Set-Content -LiteralPath (Join-Path $runRoot12 'batch-summary.json') -Encoding utf8
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot12 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 5) { throw "a trailing-dot chunk id must refuse with exit 5, got $LASTEXITCODE`n$out" }
+    "aggregate-and-emit.ps1 OK — a trailing-dot chunk id (Windows path collapse) is rejected"
+
+    # --- a failed row must not carry stale metrics ----------------------------
+    # A row marked failed (exitCode != 0 / hasMetrics = false) with a metrics.json in
+    # its dir is a summary/disk contradiction: counting it inflates totals. Refuse.
+    $runRoot13 = Join-Path $root 'run13'
+    $d13 = Join-Path $runRoot13 'C01'; New-Item -ItemType Directory -Path $d13 -Force | Out-Null
+    [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 99 }) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d13 'metrics.json') -Encoding utf8
+    @([pscustomobject]@{ chunkId = 'C01'; label = 'x'; exitCode = 1; elapsedSec = 1; workDir = 'x'; hasMetrics = $false }) |
+        ConvertTo-Json -AsArray | Set-Content -LiteralPath (Join-Path $runRoot13 'batch-summary.json') -Encoding utf8
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot13 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 7) { throw "a failed row with stale metrics must refuse with exit 7, got $LASTEXITCODE`n$out" }
+    if ($out -match '\b99\b' -and $out -notmatch 'failed') { throw "the stale issuesRaised=99 must not be aggregated, got:`n$out" }
+    "aggregate-and-emit.ps1 OK — a failed row carrying stale metrics is refused, not counted"
+
     # --- id matching follows the filesystem's case rule -----------------------
     # Only meaningful on a case-SENSITIVE filesystem: where 'c01' and 'C01' are the
     # same path (Windows/macOS), there is no mismatch to catch and the scenario

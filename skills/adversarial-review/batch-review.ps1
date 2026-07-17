@@ -81,9 +81,12 @@ if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
 # duplicate id would make two chunks race on the same directory. Reject both.
 $ids = @($chunks | ForEach-Object { $_.id })
 # Slug-safe AND not a pure-dot id: '.' / '..' pass the character class but are
-# directory-traversal handles ('..' would escape RunRoot), so reject them too.
-$bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' })
-if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-] and not be all dots: $($bad -join ', ')"; exit 2 }
+# directory-traversal handles ('..' would escape RunRoot), so reject them too. Also
+# reject a trailing '.' or space: Windows silently strips those from a path segment,
+# so 'C01.' and 'C01' would resolve to the SAME directory while reading as two
+# distinct ids -- two chunks racing one dir, or a double-counted metrics.json.
+$bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' -or $_ -match '[. ]$' })
+if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-], not be all dots, and not end in '.' or space: $($bad -join ', ')"; exit 2 }
 $dupes = @($ids | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
 if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')"; exit 2 }
 
