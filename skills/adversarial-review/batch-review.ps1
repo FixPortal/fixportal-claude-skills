@@ -117,9 +117,24 @@ Write-Host "RunRoot: $RunRoot"
 # chunk would not be enough — the union below would keep its previous summary row and
 # aggregate the stale file anyway. This is also why a chunk dir worth keeping must be
 # backed up OUTSIDE the RunRoot before a retry, per the skill.
+#
+# Read every target's bytes into memory BEFORE deleting any of them, then restore
+# whatever this loop already deleted if a later one fails. Deleting sequentially with
+# no rollback meant a LATER locked file aborted the batch (correctly) but AFTER earlier
+# chunks' stale metrics were already gone — destroying their data without this
+# invocation ever getting to the fan-out that would have regenerated it.
+$staleBackups = [ordered]@{}
 foreach ($c in $chunks) {
     $stale = Join-Path (Join-Path $RunRoot $c.id) 'metrics.json'
-    if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+    if (Test-Path -LiteralPath $stale) { $staleBackups[$stale] = [System.IO.File]::ReadAllBytes($stale) }
+}
+try {
+    foreach ($stale in $staleBackups.Keys) { Remove-Item -LiteralPath $stale -Force }
+} catch {
+    foreach ($stale in $staleBackups.Keys) {
+        if (-not (Test-Path -LiteralPath $stale)) { [System.IO.File]::WriteAllBytes($stale, $staleBackups[$stale]) }
+    }
+    throw
 }
 
 $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
