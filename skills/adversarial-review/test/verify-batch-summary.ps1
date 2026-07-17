@@ -92,7 +92,12 @@ try {
         throw "a retry that wrote no metrics.json must not leave the previous attempt's behind"
     }
     $row4 = @(Get-Content -LiteralPath (Join-Path $runRoot4 'batch-summary.json') -Raw | ConvertFrom-Json)[0]
-    if ($row4.hasMetrics) { throw "summary must record hasMetrics=false for a retry that produced none, got true" }
+    # exitCode first: without it the hasMetrics assertion is vacuous if the retry
+    # somehow SUCCEEDED (nothing to inherit). Compare hasMetrics against $false
+    # explicitly rather than testing truthiness, which also passes when the property
+    # is absent entirely.
+    if ($row4.exitCode -eq 0) { throw "the retry was supposed to fail; exitCode was 0, so this case proves nothing" }
+    if ($row4.hasMetrics -ne $false) { throw "summary must record hasMetrics=false for a retry that produced none, got '$($row4.hasMetrics)'" }
     "batch-review.ps1 OK — a failed retry contributes nothing, rather than the previous attempt's numbers"
 
     # --- aggregate-and-emit.ps1 refuses a summary that misses chunks ----------

@@ -104,6 +104,24 @@ $RunId = Split-Path -Leaf $RunRoot
 Write-Host "Batch review: $($chunks.Count) chunks, batch-size $BatchSize"
 Write-Host "RunRoot: $RunRoot"
 
+# Clear each target chunk's previous metrics.json BEFORE any chunk runs. The chunk
+# dir is reused (New-Item -Force below), which is exactly what a repair re-run hits:
+# if a previous attempt left a metrics.json and this attempt dies before writing its
+# own, the chunk would contribute the OLD attempt's numbers under a summary row that
+# records THIS attempt's failure — and the "failed chunk(s) contribute no metrics"
+# warning would be false (observed: a failed retry still contributing raised=99).
+#
+# Deliberately here, in the main scope, and NOT swallowed: $ErrorActionPreference is
+# 'Stop', so a delete that cannot proceed (a locked file) aborts the batch before any
+# expensive work, rather than leaving stale numbers to be counted. Skipping just the
+# chunk would not be enough — the union below would keep its previous summary row and
+# aggregate the stale file anyway. This is also why a chunk dir worth keeping must be
+# backed up OUTSIDE the RunRoot before a retry, per the skill.
+foreach ($c in $chunks) {
+    $stale = Join-Path (Join-Path $RunRoot $c.id) 'metrics.json'
+    if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+}
+
 $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
     $c = $_
     $spine      = $using:spine
@@ -114,15 +132,6 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
 
     $chunkDir = Join-Path $RunRoot $c.id
     New-Item -ItemType Directory -Path $chunkDir -Force | Out-Null
-    # -Force REUSES an existing chunk dir, which is what a repair re-run hits. If the
-    # previous attempt left a metrics.json and this one dies before writing its own,
-    # the chunk keeps the OLD attempt's numbers while its summary row records THIS
-    # attempt's failure — and the "failed chunk(s) contribute no metrics" warning
-    # below is then simply false (observed: a failed retry still contributing
-    # issuesRaised=99). Clear it first so a failed retry contributes nothing, which
-    # is what the run then reports. This is why a chunk dir worth keeping must be
-    # backed up OUTSIDE the RunRoot before a retry, per the skill.
-    Remove-Item -LiteralPath (Join-Path $chunkDir 'metrics.json') -Force -ErrorAction SilentlyContinue
 
     $a = @('-NoProfile', '-File', $spine, '-Target', $Target, '-RepoPath', $RepoPath, '-WorkDir', $chunkDir)
     if ($c.pathspec) { $a += @('-Pathspec', ((@($c.pathspec)) -join ';')) }
