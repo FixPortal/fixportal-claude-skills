@@ -131,10 +131,23 @@ foreach ($c in $chunks) {
 try {
     foreach ($stale in $staleBackups.Keys) { Remove-Item -LiteralPath $stale -Force }
 } catch {
+    # Attempt EVERY restore, don't stop at the first that fails: a later still-restorable
+    # backup must not be abandoned because an earlier one couldn't be written. Collect any
+    # restore failures and surface them alongside the original cleanup error, so the
+    # operator sees the full picture (which chunks are now unrecoverable) rather than just
+    # the first fault.
+    $cleanupError = $_
+    $restoreFailures = @()
     foreach ($stale in $staleBackups.Keys) {
-        if (-not (Test-Path -LiteralPath $stale)) { [System.IO.File]::WriteAllBytes($stale, $staleBackups[$stale]) }
+        if (-not (Test-Path -LiteralPath $stale)) {
+            try { [System.IO.File]::WriteAllBytes($stale, $staleBackups[$stale]) }
+            catch { $restoreFailures += "$stale ($($_.Exception.Message))" }
+        }
     }
-    throw
+    if ($restoreFailures) {
+        throw "Stale-metrics cleanup failed ($($cleanupError.Exception.Message)) and these backups could NOT be restored: $($restoreFailures -join '; '). Those chunks' previous metrics are lost; recover them before aggregating."
+    }
+    throw $cleanupError
 }
 
 $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
