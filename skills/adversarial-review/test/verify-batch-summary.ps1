@@ -100,6 +100,16 @@ try {
     if ($row4.hasMetrics -ne $false) { throw "summary must record hasMetrics=false for a retry that produced none, got '$($row4.hasMetrics)'" }
     "batch-review.ps1 OK — a failed retry contributes nothing, rather than the previous attempt's numbers"
 
+    # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
+    # deliberately NOT covered by a test here. The property it defends -- a process
+    # dying between truncate and write-complete must not leave a corrupted summary
+    # -- can only be faked by locking the destination, and Windows then refuses to
+    # even OPEN the file for either a direct Set-Content or the atomic replace, so
+    # the file is left untouched either way. Tried it, watched it pass against the
+    # pre-fix code too: a check that cannot fail is not evidence, so it is not
+    # kept here. The fix stands on the reasoning (Move-Item within one directory is
+    # a single filesystem operation on NTFS), not on a fabricated regression test.
+
     # --- aggregate-and-emit.ps1 refuses a summary that misses chunks ----------
     $runRoot2 = Join-Path $root 'run2'
     foreach ($id in @('C01', 'C02', 'C03')) {
