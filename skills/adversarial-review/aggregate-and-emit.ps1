@@ -67,7 +67,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $PSCommandPath
 $emit = Join-Path $scriptDir 'emit-review-telemetry.ps1'
-if (-not (Test-Path -LiteralPath $emit)) { Write-Error "emit-review-telemetry.ps1 not found beside this script."; exit 2 }
+# -ErrorAction Continue on every fatal Write-Error below: $ErrorActionPreference is
+# 'Stop', under which Write-Error throws a terminating ActionPreferenceStopException
+# and the `exit <n>` after it never runs — so each distinct exit code was dead and
+# every failure surfaced as a bare exit 1. Print, then exit with the real code.
+if (-not (Test-Path -LiteralPath $emit)) { Write-Error "emit-review-telemetry.ps1 not found beside this script." -ErrorAction Continue; exit 2 }
 
 $RunRoot = (Resolve-Path -LiteralPath $RunRoot).Path
 if (-not $RunId)       { $RunId = Split-Path -Leaf $RunRoot }
@@ -83,20 +87,63 @@ if (-not $VerdictPath) { $VerdictPath = Join-Path $RunRoot 'aggregate-verdict.js
 $batchSummary = Join-Path $RunRoot 'batch-summary.json'
 if (Test-Path -LiteralPath $batchSummary) {
     $summaryRows = @(Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json)
-    $chunkCount  = $summaryRows.Count
-    $metricFiles = @($summaryRows |
-        ForEach-Object { Join-Path $_.workDir 'metrics.json' } |
+
+    # A run IS its set of distinct chunk ids. Resolve each chunk's metrics.json from
+    # <RunRoot>/<chunkId> rather than from the row's persisted workDir: batch-review.ps1
+    # does not resolve -RunRoot, so a relative one persists relative workDirs that
+    # Test-Path silently misses when aggregation runs from a different directory, and
+    # a temp path can be recorded in 8.3 short form. RunRoot is resolved above and a
+    # chunkId is a validated slug naming a direct child, so this is exact and
+    # path-form independent — while staying bounded by the summary, so a stale chunk
+    # dir it does not name is still excluded (that inflation is why the summary is
+    # authoritative rather than a blind scan). workDir stays informational only.
+    # Keying by id also collapses a duplicate row, which would otherwise double-count
+    # both ChunkCount and that chunk's metrics.
+    $summaryIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($row in $summaryRows) { if ($row.chunkId) { [void]$summaryIds.Add([string]$row.chunkId) } }
+    $chunkCount  = $summaryIds.Count
+    $metricFiles = @($summaryIds |
+        ForEach-Object { Join-Path (Join-Path $RunRoot $_) 'metrics.json' } |
         Where-Object { Test-Path -LiteralPath $_ } |
         ForEach-Object { Get-Item -LiteralPath $_ })
     if ($chunkCount -gt $metricFiles.Count) {
         Write-Warning "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics."
+    }
+
+    # A metrics.json under RunRoot the summary does NOT name means the summary is not
+    # describing this run — it was overwritten by a partial re-run (batch-review.ps1
+    # now unions, but run roots predating that fix still exist), or a chunk dir was
+    # hand-made or backed up inside the RunRoot. Emitting anyway is the failure this
+    # guard exists to stop: totals come out short and every `accepted` is clamped down
+    # to match, so a broken run reads as a smaller but plausible one. The clamp
+    # warnings below do fire, but they describe the consequence, not the cause.
+    # Refuse — a confident wrong number is worse than no number. Requiring a direct
+    # child AND a known id also catches a chunk dir backed up inside the RunRoot under
+    # the id it copied.
+    $orphans = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $chunkDir = Split-Path -Parent $_.FullName
+            (Split-Path -Parent $chunkDir) -ne $RunRoot -or
+            -not $summaryIds.Contains((Split-Path -Leaf $chunkDir))
+        })
+    if ($orphans) {
+        $orphanDirs = ($orphans | ForEach-Object { '  ' + (Split-Path -Parent $_.FullName) }) -join [Environment]::NewLine
+        Write-Error @"
+batch-summary.json names $chunkCount chunk(s), but $($orphans.Count) further metrics.json exist under this RunRoot that it does not name:
+$orphanDirs
+The summary is not describing this run, so ChunkCount and every per-vendor total would be short and every accepted count silently clamped to match. Refusing to emit. Fix by ONE of:
+  - re-run batch-review.ps1 for the missing chunks into this RunRoot (it unions the summary); or
+  - rebuild batch-summary.json from the chunk dirs; or
+  - delete batch-summary.json to aggregate every chunk dir under RunRoot instead.
+"@ -ErrorAction Continue
+        exit 4
     }
 } else {
     $metricFiles = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue)
     $chunkCount  = $metricFiles.Count
 }
 if (-not $metricFiles) {
-    Write-Error "No metrics.json found for $RunRoot. Each chunk's run-review.ps1 writes one; nothing to aggregate."
+    Write-Error "No metrics.json found for $RunRoot. Each chunk's run-review.ps1 writes one; nothing to aggregate." -ErrorAction Continue
     exit 3
 }
 
