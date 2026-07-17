@@ -93,14 +93,28 @@ if (Test-Path -LiteralPath $batchSummary) {
     # does not resolve -RunRoot, so a relative one persists relative workDirs that
     # Test-Path silently misses when aggregation runs from a different directory, and
     # a temp path can be recorded in 8.3 short form. RunRoot is resolved above and a
-    # chunkId is a validated slug naming a direct child, so this is exact and
-    # path-form independent — while staying bounded by the summary, so a stale chunk
+    # chunkId is a slug (re-validated just below) naming a direct child, so this is
+    # exact and path-form independent — while staying bounded by the summary, so a stale chunk
     # dir it does not name is still excluded (that inflation is why the summary is
     # authoritative rather than a blind scan). workDir stays informational only.
     # Keying by id also collapses a duplicate row, which would otherwise double-count
     # both ChunkCount and that chunk's metrics.
     $summaryIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($row in $summaryRows) { if ($row.chunkId) { [void]$summaryIds.Add([string]$row.chunkId) } }
+
+    # Re-validate every id against batch-review.ps1's slug rule before joining it into
+    # a path. batch-review.ps1 validates ids it writes, but the skill's repair flow
+    # tells operators to REBUILD batch-summary.json by hand, so this file is not a
+    # trusted source: a hand-written or corrupted id like '..\other' joins straight
+    # into <RunRoot>\..\other\metrics.json, escaping RunRoot to aggregate an unrelated
+    # file — and the orphan scan below misses it, because the resolved dir is not a
+    # child of RunRoot at all. Same rule as batch-review.ps1 (slug chars, not all dots).
+    $badIds = @($summaryIds | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' })
+    if ($badIds) {
+        Write-Error "batch-summary.json contains invalid chunk id(s): $($badIds -join ', '). A chunk id must match [A-Za-z0-9._-] and not be all dots (it names a direct child of RunRoot). Refusing to aggregate — rebuild the summary with valid ids." -ErrorAction Continue
+        exit 5
+    }
+
     $chunkCount  = $summaryIds.Count
     $metricFiles = @($summaryIds |
         ForEach-Object { Join-Path (Join-Path $RunRoot $_) 'metrics.json' } |

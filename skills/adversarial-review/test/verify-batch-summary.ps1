@@ -239,6 +239,51 @@ try {
     if ($out -notmatch '\(3 chunks\)') { throw "expected all 3 chunks despite relative workDirs, got:`n$out" }
     if ($out -notmatch '\b24\b') { throw "expected summed raised=24 despite relative workDirs, got:`n$out" }
     "aggregate-and-emit.ps1 OK — chunk ids resolve against RunRoot, so workDir path form is irrelevant"
+
+    # --- a hand-rebuilt summary can't traverse out of RunRoot -----------------
+    # The repair flow tells operators to rebuild batch-summary.json by hand, so its
+    # chunkIds are untrusted. A '..\escape' id would otherwise join into a path
+    # outside RunRoot and aggregate an unrelated metrics.json, invisibly to the
+    # orphan scan (the resolved dir isn't a child of RunRoot). It must be refused.
+    $runRoot7 = Join-Path $root 'run7'
+    $outsideDir = Join-Path $root 'outside'
+    New-Item -ItemType Directory -Path $runRoot7 -Force | Out-Null
+    New-Item -ItemType Directory -Path $outsideDir -Force | Out-Null
+    [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                outputTokens = 1; costUsd = 9.99; reviewDurationMs = 1; issuesRaised = 42 }) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $outsideDir 'metrics.json') -Encoding utf8
+    @([pscustomobject]@{ chunkId = '..\outside'; label = 'x'; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }) |
+        ConvertTo-Json -AsArray | Set-Content -LiteralPath (Join-Path $runRoot7 'batch-summary.json') -Encoding utf8
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot7 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 5) { throw "a traversal chunk id must refuse with exit 5, got $LASTEXITCODE`n$out" }
+    if ($out -match '\b42\b') { throw "the outside metrics.json must never be aggregated, but its issuesRaised leaked, got:`n$out" }
+    "aggregate-and-emit.ps1 OK — a hand-rebuilt summary with a traversal id is refused, not followed out of RunRoot"
+
+    # --- the distinct fatal exit codes stay distinct --------------------------
+    # Same failure mode the exit-4 case guards: a bare Write-Error under
+    # $ErrorActionPreference 'Stop' throws before its `exit <n>`, collapsing the
+    # code to 1. Pin 2 (emitter missing) and 3 (no metrics) too, so dropping an
+    # -ErrorAction Continue is caught rather than silently reverting the code.
+    $runRoot8 = Join-Path $root 'run8'
+    New-Item -ItemType Directory -Path $runRoot8 -Force | Out-Null
+    # exit 3: a RunRoot with no batch-summary.json and no metrics.json anywhere.
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot8 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 3) { throw "an empty RunRoot must exit 3 (no metrics to aggregate), got $LASTEXITCODE`n$out" }
+
+    # exit 2: emit-review-telemetry.ps1 missing beside the script. Copy the aggregator
+    # to a lone dir with a valid run so it gets past arg parsing to the emitter check.
+    $isolated = Join-Path $root 'isolated'
+    New-Item -ItemType Directory -Path $isolated -Force | Out-Null
+    Copy-Item -LiteralPath $agg -Destination (Join-Path $isolated 'aggregate-and-emit.ps1')
+    $runRoot9 = Join-Path $root 'run9'
+    $d9 = Join-Path $runRoot9 'C01'; New-Item -ItemType Directory -Path $d9 -Force | Out-Null
+    [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 1 }) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d9 'metrics.json') -Encoding utf8
+    New-Summary $runRoot9 @('C01')
+    $out = (& pwsh -NoProfile -File (Join-Path $isolated 'aggregate-and-emit.ps1') -RunRoot $runRoot9 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 2) { throw "a missing emit-review-telemetry.ps1 must exit 2, got $LASTEXITCODE`n$out" }
+    "aggregate-and-emit.ps1 OK — exit codes 2 (no emitter) and 3 (no metrics) stay distinct from 1"
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
