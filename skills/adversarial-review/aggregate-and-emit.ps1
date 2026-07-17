@@ -113,15 +113,21 @@ if (Test-Path -LiteralPath $batchSummary) {
     # a fixed 'BATCH-SUMMARY.JSON' probe would read as case-insensitive if a distinct
     # all-caps file happened to exist beside the lowercase summary on a case-sensitive
     # volume. A guid name can't pre-exist, and the letter prefix guarantees its upper-
-    # and lower-cased forms differ. If RunRoot isn't writable, fall back to the OS
-    # default (Windows/macOS default volumes are case-insensitive).
+    # and lower-cased forms differ. If the probe can't be written, FAIL CLOSED rather
+    # than guess from the OS: macOS can run a case-sensitive volume, so an OS guess of
+    # case-insensitive there would collapse c01/C01, suppress the orphan guard, and
+    # emit short totals -- exactly the bug this exists to stop. A wrong guess on a
+    # correctness-critical comparison is worse than refusing; the operator makes
+    # RunRoot writable (it is a live run's working dir) and re-runs.
     $probeName = "caseprobe-$([guid]::NewGuid().ToString('N'))"
     $probePath = Join-Path $RunRoot $probeName
+    $fsCaseInsensitive = $null
     try {
         Set-Content -LiteralPath $probePath -Value '' -NoNewline -ErrorAction Stop
         $fsCaseInsensitive = Test-Path -LiteralPath (Join-Path $RunRoot $probeName.ToUpperInvariant())
     } catch {
-        $fsCaseInsensitive = $IsWindows -or $IsMacOS
+        Write-Error "Could not determine the filesystem's case rule under $RunRoot ($($_.Exception.Message)). Aggregation compares chunk ids against on-disk directories, and guessing the case rule could collapse c01/C01 and emit short totals. Make RunRoot writable and re-run." -ErrorAction Continue
+        exit 6
     } finally {
         if (Test-Path -LiteralPath $probePath) { Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue }
     }
