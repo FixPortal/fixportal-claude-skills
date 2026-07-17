@@ -242,9 +242,13 @@ try {
 
     # --- a hand-rebuilt summary can't traverse out of RunRoot -----------------
     # The repair flow tells operators to rebuild batch-summary.json by hand, so its
-    # chunkIds are untrusted. A '..\escape' id would otherwise join into a path
+    # chunkIds are untrusted. A '..<sep>escape' id would otherwise join into a path
     # outside RunRoot and aggregate an unrelated metrics.json, invisibly to the
     # orphan scan (the resolved dir isn't a child of RunRoot). It must be refused.
+    # Build the id with the platform separator so it is a REAL parent-ref on POSIX
+    # too -- a hardcoded '..\outside' is just a literal filename on Linux/macOS, so
+    # the test would pass there for the wrong reason (bad char, not traversal).
+    $sep = [IO.Path]::DirectorySeparatorChar
     $runRoot7 = Join-Path $root 'run7'
     $outsideDir = Join-Path $root 'outside'
     New-Item -ItemType Directory -Path $runRoot7 -Force | Out-Null
@@ -252,12 +256,43 @@ try {
     [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
                 outputTokens = 1; costUsd = 9.99; reviewDurationMs = 1; issuesRaised = 42 }) } |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $outsideDir 'metrics.json') -Encoding utf8
-    @([pscustomobject]@{ chunkId = '..\outside'; label = 'x'; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }) |
+    @([pscustomobject]@{ chunkId = "..${sep}outside"; label = 'x'; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }) |
         ConvertTo-Json -AsArray | Set-Content -LiteralPath (Join-Path $runRoot7 'batch-summary.json') -Encoding utf8
     $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot7 -Repo test-repo 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 5) { throw "a traversal chunk id must refuse with exit 5, got $LASTEXITCODE`n$out" }
     if ($out -match '\b42\b') { throw "the outside metrics.json must never be aggregated, but its issuesRaised leaked, got:`n$out" }
     "aggregate-and-emit.ps1 OK — a hand-rebuilt summary with a traversal id is refused, not followed out of RunRoot"
+
+    # --- id matching follows the filesystem's case rule -----------------------
+    # Only meaningful on a case-SENSITIVE filesystem: where 'c01' and 'C01' are the
+    # same path (Windows/macOS), there is no mismatch to catch and the scenario
+    # cannot arise. On a case-sensitive FS a summary naming 'c01' beside an on-disk
+    # 'C01' dir must not silently emit a short run -- the id comparer must treat them
+    # as distinct (so 'c01' misses its metrics AND the on-disk 'C01' reads as an
+    # unnamed orphan), producing the loud refusal instead. Probe the temp FS the
+    # same zero-write way the fix does.
+    $runRoot10 = Join-Path $root 'run10'
+    New-Item -ItemType Directory -Path $runRoot10 -Force | Out-Null
+    'probe' | Set-Content -LiteralPath (Join-Path $runRoot10 'batch-summary.json') -Encoding utf8
+    $tmpFsCaseInsensitive = Test-Path -LiteralPath (Join-Path $runRoot10 'BATCH-SUMMARY.JSON')
+    if (-not $tmpFsCaseInsensitive) {
+        foreach ($id in @('C01', 'C02')) {
+            $d = Join-Path $runRoot10 $id
+            New-Item -ItemType Directory -Path $d -Force | Out-Null
+            [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                        outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 5 }) } |
+                ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d 'metrics.json') -Encoding utf8
+        }
+        # Summary names c01 (lower) where the dir is C01 (upper) -- a hand-edit case slip.
+        @('c01', 'C02' | ForEach-Object {
+            [pscustomobject]@{ chunkId = $_; label = "chunk $_"; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }
+        }) | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $runRoot10 'batch-summary.json') -Encoding utf8
+        $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot10 -Repo test-repo 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0) { throw "on a case-sensitive FS, a c01/C01 mismatch must not emit a short run silently; exited 0`n$out" }
+        "aggregate-and-emit.ps1 OK — id matching honours a case-sensitive filesystem"
+    } else {
+        "aggregate-and-emit.ps1 SKIPPED — case-mismatch test needs a case-sensitive filesystem"
+    }
 
     # --- the distinct fatal exit codes stay distinct --------------------------
     # Same failure mode the exit-4 case guards: a bare Write-Error under
