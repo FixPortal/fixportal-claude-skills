@@ -100,6 +100,32 @@ try {
     if ($row4.hasMetrics -ne $false) { throw "summary must record hasMetrics=false for a retry that produced none, got '$($row4.hasMetrics)'" }
     "batch-review.ps1 OK — a failed retry contributes nothing, rather than the previous attempt's numbers"
 
+    # --- an aborted cleanup pass must not destroy chunks it didn't reach --------
+    # The stale-metrics clear runs sequentially over every chunk in THIS invocation's
+    # manifest, before any of them are re-run. If a later chunk's file is locked, the
+    # batch aborts (correctly) -- but an EARLIER chunk's stale metrics must survive, or
+    # a later retry with just that chunk finds a clean slate no one ever regenerated:
+    # data destroyed by a cleanup pass that never got to redo the work.
+    $runRoot6 = Join-Path $root 'run6'
+    foreach ($id in @('C01', 'C02')) {
+        New-Item -ItemType Directory -Path (Join-Path $runRoot6 $id) -Force | Out-Null
+        "old-$id" | Set-Content -LiteralPath (Join-Path $runRoot6 "$id\metrics.json") -Encoding utf8
+    }
+    $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
+
+    # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
+    # fails, and check that C01's survives the abort anyway.
+    $fs = [System.IO.File]::Open((Join-Path $runRoot6 'C02\metrics.json'), 'Open', 'Read', 'None')
+    try {
+        & pwsh -NoProfile -File $batch -ChunkManifest $m6 -RepoPath $fakeRepo -RunRoot $runRoot6 -BatchSize 1 *>$null
+        $code6 = $LASTEXITCODE
+    } finally { $fs.Close() }
+    if ($code6 -eq 0) { throw "a locked stale metrics.json should abort the batch, exited 0" }
+    if (-not (Test-Path -LiteralPath (Join-Path $runRoot6 'C01\metrics.json'))) {
+        throw "C01's stale metrics must survive an abort caused by C02's locked file, not be destroyed"
+    }
+    "batch-review.ps1 OK — an aborted cleanup pass restores chunks it already cleared, rather than destroying them"
+
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process
     # dying between truncate and write-complete must not leave a corrupted summary
