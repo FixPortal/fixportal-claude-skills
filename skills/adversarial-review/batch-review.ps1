@@ -114,6 +114,15 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
 
     $chunkDir = Join-Path $RunRoot $c.id
     New-Item -ItemType Directory -Path $chunkDir -Force | Out-Null
+    # -Force REUSES an existing chunk dir, which is what a repair re-run hits. If the
+    # previous attempt left a metrics.json and this one dies before writing its own,
+    # the chunk keeps the OLD attempt's numbers while its summary row records THIS
+    # attempt's failure — and the "failed chunk(s) contribute no metrics" warning
+    # below is then simply false (observed: a failed retry still contributing
+    # issuesRaised=99). Clear it first so a failed retry contributes nothing, which
+    # is what the run then reports. This is why a chunk dir worth keeping must be
+    # backed up OUTSIDE the RunRoot before a retry, per the skill.
+    Remove-Item -LiteralPath (Join-Path $chunkDir 'metrics.json') -Force -ErrorAction SilentlyContinue
 
     $a = @('-NoProfile', '-File', $spine, '-Target', $Target, '-RepoPath', $RepoPath, '-WorkDir', $chunkDir)
     if ($c.pathspec) { $a += @('-Pathspec', ((@($c.pathspec)) -join ';')) }
