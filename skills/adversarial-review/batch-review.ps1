@@ -133,7 +133,35 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
 }
 
 $results = @($results) | Sort-Object chunkId
-$results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $RunRoot 'batch-summary.json') -Encoding utf8
+
+# Repairing a run means re-running this script into the SAME RunRoot with a subset
+# manifest, so the chunks that already went well are kept. Writing the summary
+# wholesale silently shrank the run to that subset: aggregate-and-emit.ps1 reads
+# this file as the source of truth for WHICH chunks belong to the run, so a
+# 15-chunk audit repaired in three retries (11, then 5, then 4) emitted as a
+# 4-chunk run, with every per-vendor total short and every `accepted` clamped down
+# to match — a plausible, wrong run. Union by chunkId instead, this invocation
+# winning per chunk, so a RunRoot accumulates chunks across invocations.
+$summaryPath = Join-Path $RunRoot 'batch-summary.json'
+$merged = [ordered]@{}
+if (Test-Path -LiteralPath $summaryPath) {
+    try {
+        foreach ($row in @(Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json)) {
+            if ($row.chunkId) { $merged[$row.chunkId] = $row }
+        }
+    } catch {
+        # Don't throw: the chunks have already run and this is the last step. Losing
+        # the just-computed rows to a corrupt prior summary would be the worse bug.
+        Write-Warning "Existing batch-summary.json is unreadable ($($_.Exception.Message)) — writing this invocation's $($results.Count) chunk(s) only. Any earlier chunks in this RunRoot will be missing from it, and aggregate-and-emit.ps1 will refuse to emit until it is rebuilt."
+        $merged = [ordered]@{}
+    }
+}
+$carried = @($merged.Keys | Where-Object { $_ -notin @($results.chunkId) })
+foreach ($row in @($results)) { $merged[$row.chunkId] = $row }
+$summaryRows = @($merged.Values) | Sort-Object chunkId
+# -AsArray: a single-chunk invocation would otherwise serialise as a bare object,
+# and the merge above reads this file back.
+$summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $summaryPath -Encoding utf8
 
 $failed  = @($results | Where-Object { $_.exitCode -ne 0 })
 $noMetrics = @($results | Where-Object { $_.exitCode -eq 0 -and -not $_.hasMetrics })
@@ -141,6 +169,9 @@ $noMetrics = @($results | Where-Object { $_.exitCode -eq 0 -and -not $_.hasMetri
 Write-Host ""
 Write-Host "==== batch complete: $RunId ===="
 $results | Format-Table chunkId, label, exitCode, elapsedSec, hasMetrics -AutoSize | Out-String | Write-Host
+if ($carried) {
+    Write-Host "Kept $($carried.Count) chunk(s) already in this RunRoot ($($carried -join ', ')) — the run now has $($summaryRows.Count) chunk(s) in total."
+}
 if ($failed)    { Write-Warning "$($failed.Count) chunk(s) failed: $($failed.chunkId -join ', ') — they contribute no metrics." }
 if ($noMetrics) { Write-Warning "$($noMetrics.Count) chunk(s) left no metrics.json: $($noMetrics.chunkId -join ', ')." }
 Write-Host ""
@@ -149,4 +180,6 @@ Write-Host "  1. Adjudicate + verify each chunk -> report-<id>.md."
 Write-Host "  2. §5 synthesise across chunks -> report.md; write $RunRoot\aggregate-verdict.json"
 Write-Host "     (accepted per reviewer + judge participant)."
 Write-Host "  3. pwsh -NoProfile -File `"$scriptDir\aggregate-and-emit.ps1`" -RunRoot `"$RunRoot`" -Repo <repo> [-Summary <name>]"
-[pscustomobject]@{ runRoot = $RunRoot; runId = $RunId; chunks = $results.Count; failed = $failed.Count } | ConvertTo-Json -Compress
+# `chunks` is what THIS invocation ran; `runChunks` is what the RunRoot now holds
+# in total, which is the number aggregate-and-emit.ps1 will emit as ChunkCount.
+[pscustomobject]@{ runRoot = $RunRoot; runId = $RunId; chunks = $results.Count; runChunks = $summaryRows.Count; failed = $failed.Count } | ConvertTo-Json -Compress

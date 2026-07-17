@@ -666,6 +666,18 @@ lands as all-zeros. Instead:
        { "reviewer": "anthropic", "...": "..." } ] }
    ```
 
+   **Repairing chunks:** re-run `batch-review.ps1` with a manifest of just the bad
+   chunks and the SAME `-RunRoot`. It unions `batch-summary.json` by `chunkId`
+   (this invocation winning per chunk), so the chunks that went well are kept and
+   the run keeps its true `ChunkCount`. Two hazards:
+   - A retry **overwrites** its chunk dir, so a retry that goes worse downgrades
+     that chunk. Back the dir up **outside** the RunRoot first — `aggregate-and-emit.ps1`
+     treats every chunk dir under the RunRoot as part of the run, and refuses to
+     emit if it finds one the summary does not name.
+   - That refusal is also what a pre-union RunRoot looks like (its summary was
+     overwritten by the last retry). Rebuild `batch-summary.json` from the chunk
+     dirs, or delete it to aggregate every chunk dir under the RunRoot instead.
+
 2. **At §5 synthesis, write `<RunRoot>/aggregate-verdict.json`** — the two things
    that are host judgment, not deterministic: `issuesAccepted` per reviewer (each
    reviewer's own findings that survived into the consolidated `report.md`) and
