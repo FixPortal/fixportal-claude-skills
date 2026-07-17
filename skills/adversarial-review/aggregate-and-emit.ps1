@@ -113,7 +113,15 @@ if (Test-Path -LiteralPath $batchSummary) {
     $fsCaseInsensitive = Test-Path -LiteralPath (Join-Path $RunRoot 'BATCH-SUMMARY.JSON')
     $idComparer = if ($fsCaseInsensitive) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
     $summaryIds = [System.Collections.Generic.HashSet[string]]::new($idComparer)
-    foreach ($row in $summaryRows) { if ($row.chunkId) { [void]$summaryIds.Add([string]$row.chunkId) } }
+
+    # A row with no chunkId can't be counted or resolved, so SKIPPING it (the old
+    # behaviour) silently drops a chunk from ChunkCount with no orphan evidence — a
+    # failed chunk left no metrics dir either, so nothing downstream can catch it.
+    # Count such rows and reject the whole summary rather than quietly omit them.
+    $rowsMissingId = @($summaryRows | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.chunkId) }).Count
+    foreach ($row in $summaryRows) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$row.chunkId)) { [void]$summaryIds.Add([string]$row.chunkId) }
+    }
 
     # Re-validate every id against batch-review.ps1's slug rule before joining it into
     # a path. batch-review.ps1 validates ids it writes, but the skill's repair flow
@@ -123,8 +131,11 @@ if (Test-Path -LiteralPath $batchSummary) {
     # file — and the orphan scan below misses it, because the resolved dir is not a
     # child of RunRoot at all. Same rule as batch-review.ps1 (slug chars, not all dots).
     $badIds = @($summaryIds | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' })
-    if ($badIds) {
-        Write-Error "batch-summary.json contains invalid chunk id(s): $($badIds -join ', '). A chunk id must match [A-Za-z0-9._-] and not be all dots (it names a direct child of RunRoot). Refusing to aggregate — rebuild the summary with valid ids." -ErrorAction Continue
+    if ($rowsMissingId -gt 0 -or $badIds) {
+        $parts = @()
+        if ($rowsMissingId -gt 0) { $parts += "$rowsMissingId row(s) with no chunkId" }
+        if ($badIds)             { $parts += "invalid chunk id(s): $($badIds -join ', ')" }
+        Write-Error "batch-summary.json is malformed ($($parts -join '; ')). Every row must carry a chunkId matching [A-Za-z0-9._-] and not all dots (it names a direct child of RunRoot). Refusing to aggregate — rebuild the summary with valid ids." -ErrorAction Continue
         exit 5
     }
 
