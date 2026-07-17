@@ -159,8 +159,9 @@ try {
     # even OPEN the file for either a direct Set-Content or the atomic replace, so
     # the file is left untouched either way. Tried it, watched it pass against the
     # pre-fix code too: a check that cannot fail is not evidence, so it is not
-    # kept here. The fix stands on the reasoning (Move-Item within one directory is
-    # a single filesystem operation on NTFS), not on a fabricated regression test.
+    # kept here. The fix stands on the reasoning ([System.IO.File]::Move with
+    # overwrite is the documented same-volume atomic replace), not on a fabricated
+    # regression test.
 
     # --- aggregate-and-emit.ps1 refuses a summary that misses chunks ----------
     $runRoot2 = Join-Path $root 'run2'
@@ -291,11 +292,13 @@ try {
     # 'C01' dir must not silently emit a short run -- the id comparer must treat them
     # as distinct (so 'c01' misses its metrics AND the on-disk 'C01' reads as an
     # unnamed orphan), producing the loud refusal instead. Probe the temp FS the
-    # same zero-write way the fix does.
+    # same collision-safe way the fix does: a fresh uniquely-named marker.
     $runRoot10 = Join-Path $root 'run10'
     New-Item -ItemType Directory -Path $runRoot10 -Force | Out-Null
-    'probe' | Set-Content -LiteralPath (Join-Path $runRoot10 'batch-summary.json') -Encoding utf8
-    $tmpFsCaseInsensitive = Test-Path -LiteralPath (Join-Path $runRoot10 'BATCH-SUMMARY.JSON')
+    $probe10 = "caseprobe-$([guid]::NewGuid().ToString('N'))"
+    Set-Content -LiteralPath (Join-Path $runRoot10 $probe10) -Value '' -NoNewline
+    $tmpFsCaseInsensitive = Test-Path -LiteralPath (Join-Path $runRoot10 $probe10.ToUpperInvariant())
+    Remove-Item -LiteralPath (Join-Path $runRoot10 $probe10) -Force -ErrorAction SilentlyContinue
     if (-not $tmpFsCaseInsensitive) {
         foreach ($id in @('C01', 'C02')) {
             $d = Join-Path $runRoot10 $id

@@ -107,10 +107,24 @@ if (Test-Path -LiteralPath $batchSummary) {
     # on a case-sensitive filesystem: it would resolve 'c01' to a 'C01' dir that
     # isn't really there (missing its metrics) while the orphan scan below, keyed by
     # the same set, treats the on-disk 'C01' as named -- so a short run emits instead
-    # of being refused. Probe with a file we know exists (this very summary, whose
-    # name is lowercase on disk): if its upper-cased path resolves, the filesystem is
-    # case-insensitive. Zero writes, exact per volume rather than guessed from the OS.
-    $fsCaseInsensitive = Test-Path -LiteralPath (Join-Path $RunRoot 'BATCH-SUMMARY.JSON')
+    # of being refused.
+    #
+    # Probe with a FRESH uniquely-named marker, not a case-flip of an existing file:
+    # a fixed 'BATCH-SUMMARY.JSON' probe would read as case-insensitive if a distinct
+    # all-caps file happened to exist beside the lowercase summary on a case-sensitive
+    # volume. A guid name can't pre-exist, and the letter prefix guarantees its upper-
+    # and lower-cased forms differ. If RunRoot isn't writable, fall back to the OS
+    # default (Windows/macOS default volumes are case-insensitive).
+    $probeName = "caseprobe-$([guid]::NewGuid().ToString('N'))"
+    $probePath = Join-Path $RunRoot $probeName
+    try {
+        Set-Content -LiteralPath $probePath -Value '' -NoNewline -ErrorAction Stop
+        $fsCaseInsensitive = Test-Path -LiteralPath (Join-Path $RunRoot $probeName.ToUpperInvariant())
+    } catch {
+        $fsCaseInsensitive = $IsWindows -or $IsMacOS
+    } finally {
+        if (Test-Path -LiteralPath $probePath) { Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue }
+    }
     $idComparer = if ($fsCaseInsensitive) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
     $summaryIds = [System.Collections.Generic.HashSet[string]]::new($idComparer)
 
