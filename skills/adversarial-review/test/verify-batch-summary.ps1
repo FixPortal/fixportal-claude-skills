@@ -118,7 +118,12 @@ try {
             New-Item -ItemType Directory -Path (Join-Path $runRoot6 $id) -Force | Out-Null
             "old-$id" | Set-Content -LiteralPath (Join-Path $runRoot6 "$id\metrics.json") -Encoding utf8
         }
-        $c01Before = Get-Content -LiteralPath (Join-Path $runRoot6 'C01\metrics.json') -Raw
+        # The code under test round-trips raw bytes (ReadAllBytes / WriteAllBytes), so
+        # compare bytes here too -- Get-Content -Raw decodes to a string first, which
+        # would mask an encoding-level regression (e.g. a dropped/added BOM) that still
+        # decodes to the same text.
+        $c01Path = Join-Path $runRoot6 'C01\metrics.json'
+        $c01Before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($c01Path))
         $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
 
         # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
@@ -138,7 +143,8 @@ try {
         }
         # Presence alone doesn't prove the restore is correct -- an empty or truncated
         # write-back would also pass an existence check. Compare the actual bytes.
-        if ((Get-Content -LiteralPath (Join-Path $runRoot6 'C01\metrics.json') -Raw) -ne $c01Before) {
+        $c01After = [Convert]::ToBase64String([IO.File]::ReadAllBytes($c01Path))
+        if ($c01After -ne $c01Before) {
             throw "C01's stale metrics must be restored unchanged after the abort"
         }
         "batch-review.ps1 OK — an aborted cleanup pass restores chunks it already cleared, rather than destroying them"
