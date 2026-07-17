@@ -263,6 +263,27 @@ try {
     if ($out -match '\b42\b') { throw "the outside metrics.json must never be aggregated, but its issuesRaised leaked, got:`n$out" }
     "aggregate-and-emit.ps1 OK — a hand-rebuilt summary with a traversal id is refused, not followed out of RunRoot"
 
+    # --- a row with no chunkId is rejected, not silently dropped ---------------
+    # A chunkId-less row can't be counted or resolved. Skipping it would drop that
+    # chunk from ChunkCount with no orphan evidence (a failed chunk left no metrics
+    # dir either). The whole summary must be refused instead.
+    # C01 gets a real metrics dir so the run is otherwise valid -- the ONLY defect is
+    # the id-less row. Without the fix that row is dropped and the run emits cleanly
+    # (exit 0), which is the silent loss; with it the summary is refused (exit 5).
+    $runRoot11 = Join-Path $root 'run11'
+    $d11 = Join-Path $runRoot11 'C01'; New-Item -ItemType Directory -Path $d11 -Force | Out-Null
+    [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 3 }) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d11 'metrics.json') -Encoding utf8
+    @(
+        [pscustomobject]@{ chunkId = 'C01'; label = 'one'; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }
+        [pscustomobject]@{ label = 'no-id'; exitCode = 1; elapsedSec = 1; workDir = 'x'; hasMetrics = $false }
+    ) | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $runRoot11 'batch-summary.json') -Encoding utf8
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot11 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 5) { throw "a summary row with no chunkId must refuse with exit 5, got $LASTEXITCODE`n$out" }
+    if ($out -notmatch 'no chunkId') { throw "the refusal should call out the missing chunkId, got:`n$out" }
+    "aggregate-and-emit.ps1 OK — a row with no chunkId is refused, not silently dropped"
+
     # --- id matching follows the filesystem's case rule -----------------------
     # Only meaningful on a case-SENSITIVE filesystem: where 'c01' and 'C01' are the
     # same path (Windows/macOS), there is no mismatch to catch and the scenario
@@ -288,7 +309,12 @@ try {
             [pscustomobject]@{ chunkId = $_; label = "chunk $_"; exitCode = 0; elapsedSec = 1; workDir = 'x'; hasMetrics = $true }
         }) | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $runRoot10 'batch-summary.json') -Encoding utf8
         $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot10 -Repo test-repo 2>&1 | Out-String)
-        if ($LASTEXITCODE -eq 0) { throw "on a case-sensitive FS, a c01/C01 mismatch must not emit a short run silently; exited 0`n$out" }
+        # Exit 4 specifically (the orphan refusal), not merely non-zero -- a parse or
+        # runtime error would also be non-zero and would pass a bare check while
+        # meaning something else. The on-disk 'C01' the summary's 'c01' failed to
+        # match must be the one named as the orphan.
+        if ($LASTEXITCODE -ne 4) { throw "a c01/C01 mismatch must refuse with exit 4 (orphan), got $LASTEXITCODE`n$out" }
+        if ($out -notmatch '\bC01\b') { throw "the refusal must name the on-disk C01 as the unlisted orphan, got:`n$out" }
         "aggregate-and-emit.ps1 OK — id matching honours a case-sensitive filesystem"
     } else {
         "aggregate-and-emit.ps1 SKIPPED — case-mismatch test needs a case-sensitive filesystem"

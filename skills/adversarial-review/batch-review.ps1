@@ -180,20 +180,26 @@ $merged = [ordered]@{}
 if (Test-Path -LiteralPath $summaryPath) {
     try {
         foreach ($row in @(Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json)) {
-            if ($row.chunkId) { $merged[$row.chunkId] = $row }
+            # A row with no chunkId can't be keyed or carried forward. Skipping it
+            # would silently drop that chunk (a failed one left no metrics dir either,
+            # so nothing downstream catches it). Treat it as a malformed summary and
+            # fall into the preserve-aside path rather than quietly losing the row.
+            if ([string]::IsNullOrWhiteSpace([string]$row.chunkId)) { throw "summary contains a row with no chunkId" }
+            $merged[$row.chunkId] = $row
         }
     } catch {
-        # Don't throw: the chunks have already run and this is the last step. But the
-        # prior summary may name FAILED chunks that left no metrics.json -- those exist
-        # only as summary rows, so overwriting the file outright would erase them with
-        # no way to rediscover them (the fallback scan only finds metrics.json). Move
-        # the unreadable file aside first, so its bytes survive for the operator to
-        # recover those rows from, then write this invocation's rows. Nothing is
-        # destroyed; a metrics-bearing prior chunk still trips aggregate's orphan
-        # refusal, and the preserved file covers the metrics-less ones.
-        $preserved = "$summaryPath.unreadable-$PID"
-        try { Move-Item -LiteralPath $summaryPath -Destination $preserved -Force } catch { $preserved = '(could not preserve it)' }
-        Write-Warning "Existing batch-summary.json is unreadable ($($_.Exception.Message)) — moved to $preserved and writing this invocation's $($results.Count) chunk(s) only. Any earlier FAILED chunks (no metrics.json) live only in the preserved file; recover their rows from it before aggregating, or aggregate-and-emit.ps1 will under-count them."
+        # Don't blindly proceed: the prior summary may name FAILED chunks that left no
+        # metrics.json -- those exist only as summary rows, so overwriting the file
+        # would erase them with no way to rediscover them (the fallback scan only finds
+        # metrics.json). Move the unreadable/malformed file aside first so its bytes
+        # survive for recovery, THEN write this invocation's rows. But if that move
+        # itself fails, do NOT fall through to the overwrite -- that would destroy the
+        # only record. Let the move throw and abort the run instead; the per-chunk
+        # metrics.json dirs are all still on disk, so nothing this run computed is lost.
+        $reason = $_.Exception.Message
+        $preserved = "$summaryPath.unreadable-$PID-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        Move-Item -LiteralPath $summaryPath -Destination $preserved -Force
+        Write-Warning "Existing batch-summary.json is unusable ($reason) — moved to $preserved and writing this invocation's $($results.Count) chunk(s) only. Any earlier FAILED chunks (no metrics.json) live only in the preserved file; recover their rows from it before aggregating, or aggregate-and-emit.ps1 will under-count them."
         $merged = [ordered]@{}
     }
 }
