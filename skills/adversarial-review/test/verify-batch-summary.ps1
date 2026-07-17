@@ -118,6 +118,7 @@ try {
             New-Item -ItemType Directory -Path (Join-Path $runRoot6 $id) -Force | Out-Null
             "old-$id" | Set-Content -LiteralPath (Join-Path $runRoot6 "$id\metrics.json") -Encoding utf8
         }
+        $c01Before = Get-Content -LiteralPath (Join-Path $runRoot6 'C01\metrics.json') -Raw
         $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
 
         # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
@@ -134,6 +135,11 @@ try {
         if ($code6 -eq 0) { throw "a locked stale metrics.json should abort the batch, exited 0" }
         if (-not (Test-Path -LiteralPath (Join-Path $runRoot6 'C01\metrics.json'))) {
             throw "C01's stale metrics must survive an abort caused by C02's locked file, not be destroyed"
+        }
+        # Presence alone doesn't prove the restore is correct -- an empty or truncated
+        # write-back would also pass an existence check. Compare the actual bytes.
+        if ((Get-Content -LiteralPath (Join-Path $runRoot6 'C01\metrics.json') -Raw) -ne $c01Before) {
+            throw "C01's stale metrics must be restored unchanged after the abort"
         }
         "batch-review.ps1 OK — an aborted cleanup pass restores chunks it already cleared, rather than destroying them"
     } else {
