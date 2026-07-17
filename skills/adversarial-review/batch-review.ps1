@@ -179,7 +179,22 @@ foreach ($row in @($results)) { $merged[$row.chunkId] = $row }
 $summaryRows = @($merged.Values) | Sort-Object chunkId
 # -AsArray: a single-chunk invocation would otherwise serialise as a bare object,
 # and the merge above reads this file back.
-$summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $summaryPath -Encoding utf8
+#
+# Write to a temp file in the SAME directory, then Move-Item -Force over the real
+# path, rather than Set-Content directly on it. Set-Content truncates then writes;
+# a process killed mid-write leaves invalid JSON, and the merge's own catch block
+# above would then discard every chunk this file previously named -- the exact
+# "repair shrinks the run" failure this whole union exists to prevent, just
+# triggered by a crash instead of an overwrite. A same-directory temp file keeps
+# the rename on one volume, where Move-Item is a single filesystem operation.
+$tempSummaryPath = "$summaryPath.tmp-$PID"
+$summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $tempSummaryPath -Encoding utf8
+try {
+    Move-Item -LiteralPath $tempSummaryPath -Destination $summaryPath -Force
+} catch {
+    Remove-Item -LiteralPath $tempSummaryPath -Force -ErrorAction SilentlyContinue
+    throw
+}
 
 $failed  = @($results | Where-Object { $_.exitCode -ne 0 })
 $noMetrics = @($results | Where-Object { $_.exitCode -eq 0 -and -not $_.hasMetrics })
