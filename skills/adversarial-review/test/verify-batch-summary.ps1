@@ -114,8 +114,12 @@ try {
     $m6 = Join-Path $root 'm6.json'; New-Manifest $m6 @('C01', 'C02')
 
     # C01 sorts first and would be cleared first; lock C02's stale file so ITS clear
-    # fails, and check that C01's survives the abort anyway.
-    $fs = [System.IO.File]::Open((Join-Path $runRoot6 'C02\metrics.json'), 'Open', 'Read', 'None')
+    # fails, and check that C01's survives the abort anyway. FileShare.Read, not
+    # None: None would also block the pre-delete ReadAllBytes backup, so the fault
+    # fires before any deletion is even attempted and the rollback path is never
+    # actually reached -- Read allows the backup to succeed while still blocking
+    # Remove-Item, so this exercises the real rollback, not a different early exit.
+    $fs = [System.IO.File]::Open((Join-Path $runRoot6 'C02\metrics.json'), 'Open', 'Read', 'Read')
     try {
         & pwsh -NoProfile -File $batch -ChunkManifest $m6 -RepoPath $fakeRepo -RunRoot $runRoot6 -BatchSize 1 *>$null
         $code6 = $LASTEXITCODE
