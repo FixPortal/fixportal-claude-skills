@@ -195,17 +195,25 @@ $summaryRows = @($merged.Values) | Sort-Object chunkId
 # -AsArray: a single-chunk invocation would otherwise serialise as a bare object,
 # and the merge above reads this file back.
 #
-# Write to a temp file in the SAME directory, then Move-Item -Force over the real
+# Write to a temp file in the SAME directory, then atomically replace the real
 # path, rather than Set-Content directly on it. Set-Content truncates then writes;
 # a process killed mid-write leaves invalid JSON, and the merge's own catch block
 # above would then discard every chunk this file previously named -- the exact
 # "repair shrinks the run" failure this whole union exists to prevent, just
-# triggered by a crash instead of an overwrite. A same-directory temp file keeps
-# the rename on one volume, where Move-Item is a single filesystem operation.
+# triggered by a crash instead of an overwrite. A same-directory temp path keeps
+# the replace on one volume.
+#
+# [System.IO.File]::Move($src, $dst, $true), not Move-Item -Force: the cmdlet's
+# own overwrite handling is not documented as atomic and its behaviour under a
+# blocked overwrite ("Cannot create a file when that file already exists") is not
+# the same guarantee as calling the framework's own overwrite-aware overload
+# directly. File.Move's 3-arg form is the documented atomic same-volume replace
+# (.NET Core 3.0+, so present on any PowerShell 7 runtime) and needs no separate
+# "destination doesn't exist yet" branch -- it handles both.
 $tempSummaryPath = "$summaryPath.tmp-$PID"
 $summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $tempSummaryPath -Encoding utf8
 try {
-    Move-Item -LiteralPath $tempSummaryPath -Destination $summaryPath -Force
+    [System.IO.File]::Move($tempSummaryPath, $summaryPath, $true)
 } catch {
     Remove-Item -LiteralPath $tempSummaryPath -Force -ErrorAction SilentlyContinue
     throw
