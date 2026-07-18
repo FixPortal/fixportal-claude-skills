@@ -22,13 +22,17 @@ Create and maintain xUnit test projects that mirror the `src/` structure, using 
 - Test projects use `Microsoft.NET.Sdk`
 - Test projects must reference their corresponding source project via `ProjectReference`
 - Test projects are added to the solution under the `tests` solution folder
-- New `xunit.v3` test projects set `<OutputType>Exe</OutputType>` in the `.csproj`. This is
-  what makes xunit.v3 emit a Microsoft.Testing.Platform (MTP) test host — no
-  `<UseMicrosoftTestingPlatformRunner>` property needed, `OutputType=Exe` alone does it. The
-  house `scaffold-ci` default is `test-runner: mtp`; without this property a scaffolded
-  project silently falls back off MTP the first time CI wires up Stryker. Keep
-  `Microsoft.NET.Test.Sdk` + `xunit.runner.visualstudio` alongside it — `dotnet test` (VSTest)
-  keeps working, the two runners coexist. Does not apply to `xunit` v2 projects.
+- New `xunit.v3` test projects set both `<OutputType>Exe</OutputType>` AND
+  `<UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>` in the
+  `.csproj`. `OutputType=Exe` alone only enables Test-Explorer integration — the MTP
+  command-line runner/host that `dotnet test`/CI actually invokes needs the
+  `UseMicrosoftTestingPlatformRunner` property too. The house `scaffold-ci` default is
+  `test-runner: mtp`; without both properties a scaffolded project silently falls back
+  off MTP the first time CI wires up Stryker. Keep `Microsoft.NET.Test.Sdk` +
+  `xunit.runner.visualstudio` alongside it — `dotnet test` (VSTest) keeps working, the
+  two runners coexist. Does not apply to `xunit` v2 projects. Verify the generated
+  project actually runs under MTP against the CI + Stryker commands before calling it
+  done.
 
 ## Naming Conventions
 
