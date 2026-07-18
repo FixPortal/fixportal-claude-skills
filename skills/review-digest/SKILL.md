@@ -15,8 +15,7 @@ runs a review and never branches or commits to the scanned repos.
 ## Invocation
 
 `/review-digest [path]`
-- No arg -> scan all git repos directly under `<repos-root>` (the script's
-  default `-Path`; point it at your own root before use).
+- No arg -> scan all git repos directly under the current directory.
 - `path` arg -> scan that folder instead.
 - A single repo name/path -> digest just that one repo.
 
@@ -41,8 +40,41 @@ fixerModel }`, lastReviewDate, batchMarkers
 — the raw review-batch identifier strings lifted from commit subjects, e.g.
 `reviewer-findings batch 1`, `batch 14`, `B5`),
 `vault` (exists, reviewers = panel models, judge, date, reviewType, tally = found
-C/H/M/L), `hasGraphify` (a `graphify-out/` dir is present in the repo), and
-`outsideScanPath`.
+C/H/M/L, `reviewTarget` = the report's `target:` field, `isDocumentReview` = true when that
+target is a document not a code tree), `hasGraphify` (a `graphify-out/` dir is present in the
+repo), `hasTrackedSource` (the repo tracks at least one source file — false for a docs/spec/CV
+repo), and `outsideScanPath`.
+
+**`isDocumentReview` — a document review is NOT code coverage.** When true (a report whose
+`target:` is a document, e.g. `target: some-cv.html` — a reviewed CV/document), the review confers
+zero coverage on any code. Render such a row as reviewed-a-document, never as a reviewed (or
+unreviewed) code repo, and never let it enter a bucket or the rank. The script warns these
+separately from genuine unresolved rows.
+
+**`hasTrackedSource` — voids the never-reviewed floor.** A never-reviewed repo with
+`hasTrackedSource = false` has no code to review (a docs/spec repo, a playbook repo, a CV repo).
+It must NOT get the `100 + commits` floor (see §4) — that floated four such repos above
+genuinely-unreviewed code across three prior digests. Report it as "not code-reviewable", not as
+a review priority.
+
+**Vault-folder resolution.** A vault folder name is NOT proof of a repo — it may name a
+**subsystem** of one. Each vault-only folder is resolved to real code in priority order:
+(1) its report's `file:///` links (walked up to the enclosing `.git`); (2) its `scope: <sha>..HEAD`
+sha, tested with `git cat-file -e` against every in-path and `-RepoRoots` repo — the falsifiable
+check that survives a prefix rename; (3) a normalised name search, exact then **suffix then
+substring** (so a de-hyphenated variant matches AND a prefix-renamed repo resolves).
+A vault folder that resolves to a repo **already scanned in-path** is a stale pre-rename duplicate
+and is dropped (its own newer in-path row already covers it). Resulting fields:
+- `resolvedPath` — the git repo whose tree the review actually covered. The git side
+  (`sinceReview`, boundary, staleness) is computed against THIS path, so remediation on an
+  `outsideScanPath` row is detectable rather than structurally invisible.
+- `isSubsystem` / `subsystemPath` — true when the reviewed code is a sub-path of the host repo
+  (a vault folder whose review covered `host-repo` + `path\to\subsystem`). Every git query for
+  such a row is **pathspec-scoped to `subsystemPath`**, so its counts are the subsystem's, not the
+  host's. When describing one, name the HOST repo and the sub-path — never the vault folder alone.
+  A mere name variance (a de-hyphenated folder name) is not a subsystem: same tree, no sub-path.
+- `unresolved` — true when nothing could be placed on disk. The script `Write-Warning`s these.
+  **Never report an unresolved row's tally as outstanding** (see Common mistakes).
 
 `git` also carries the **forward-looking scope fields** that drive the risk rank
 and the hand-off report:
@@ -54,11 +86,18 @@ and the hand-off report:
   e.g. an OSS re-init squash — boundary anchored at the root commit, so the WHOLE current
   tree is adversarially unreviewed; flag it as a full-repo sweep), `git-marker` (no vault
   report — fell back to the newest non-web-quality reviewer-findings commit), `none`
-  (never reviewed), or `outside-scan-path`. Web-quality sweeps (react-doctor / optimise-web
-  / a11y `reviewer-findings-batch1` commits) are deliberately excluded from boundary
-  candidacy — they are NOT adversarial reviews and previously faked `sinceReview=0`.
+  (never reviewed), `outside-scan-path`, or `unresolved-vault-folder` (a vault folder that
+  could not be placed on disk — review state UNKNOWN, see `neverReviewed` below). Web-quality
+  sweeps (react-doctor / optimise-web / a11y `reviewer-findings-batch1` commits) are
+  deliberately excluded from boundary candidacy — they are NOT adversarial reviews and
+  previously faked `sinceReview=0`.
 - `vaultPredatesHistory` — true for the OSS-re-init case above.
-- `neverReviewed` — true when there is no `boundarySha`.
+- `neverReviewed` — true when there is no `boundarySha`. **One deliberate exception:** an
+  `unresolved` row has a null `boundarySha` but `neverReviewed = false`, because a review
+  demonstrably happened (`vault.exists`) — we just cannot place the code it covered. Its state
+  is UNKNOWN, not "never". Flagging it `true` would assert a falsehood and score it
+  `100 + commits`, floating an unknown to the top of the rank. Unresolved rows are excluded
+  from ranking entirely instead.
 - `sinceReview` — commits **since the last review** (`boundarySha..HEAD`), each
   `{ sha, date, subject }`. Empty for a never-reviewed repo (history is not
   dumped) and for a repo whose last commit *was* the review.
@@ -72,9 +111,9 @@ and the hand-off report:
 ## 2. Classify against themes.json
 
 Read `themes.json` (it lives beside this skill at
-`~/.claude/skills/review-digest/themes.json`). For each repo's
-review commits + vault report findings,
-match the described bug-classes against theme `aliases` (case-insensitive,
+`~/.claude/skills/review-digest/themes.json`; it ships **empty** — `{}` — and this skill
+populates it per-user over successive runs). For each repo's review commits + vault report
+findings, match the described bug-classes against theme `aliases` (case-insensitive,
 substring). Record which themes each repo exhibits. For a genuinely-new recurring
 class not covered, ADD a new theme entry (`aliases`, a suggested `home`,
 `seen: [repo]`). Merge `seen` repos by set-union: append any repos not already
@@ -98,14 +137,24 @@ findings. A repo that surfaced many Highs but was fully remediated is low risk;
 a repo with 30 commits and no review since is high risk. The vault tally is
 shown for context but **does not feed the score**.
 
-Per repo (skip `outsideScanPath` repos — reviewed elsewhere):
+Per repo (skip `outsideScanPath` repos — reviewed elsewhere; skip `isDocumentReview` rows —
+not code):
 
 ```
 score =
-  neverReviewed ? (100 + sinceReviewCount)            # never reviewed floats to the top
-  : sinceReviewCount * (1 + daysSinceReview / 30)      # unreviewed work, aged by staleness
-  + deferredBacklogCount * 5                           # still-open deferred items
+  (neverReviewed && !hasTrackedSource) ? VOID          # no code to review — not a priority
+  : neverReviewed ? (100 + sinceReviewCount)            # never reviewed floats to the top
+  : sinceReviewCount * (1 + daysSinceReview / 30)       # unreviewed work, aged by staleness
+  + deferredBacklogCount * 5                            # still-open deferred items
 ```
+
+**The `hasTrackedSource` guard is not optional.** A never-reviewed repo with no tracked source
+(`git ls-files` for source extensions is empty — docs/spec/playbook/CV repos) is **not
+code-reviewable**: void its score, list it separately as "not code-reviewable (0 tracked source)",
+and never let the `100 + commits` floor rank it. Missing this floated four such docs/spec/CV repos
+into the top-10 across three prior digests. Also treat a `git-marker` boundary with an **empty
+`batchMarkers`** array as effectively-never-reviewed (the marker matched prose like a playbook
+doc, not a real review) — same treatment.
 
 `deferredBacklogCount` = the repo's harvested "out of scope / future batch" items
 (same source as the backlog section). Round to a whole number. Rank descending.
@@ -205,6 +254,20 @@ come back null. Render these honestly:
   absent — it means *unknown*; banner-warn instead.
 - Treating a null tally as zero findings — render "not available".
 - Counting an `outsideScanPath` repo as a coverage gap — it was reviewed elsewhere.
+- **Reporting an `unresolved` row's tally as outstanding.** A vault folder is NOT proof of a
+  repo — it can name a **subsystem** of one. An unresolved row has an EMPTY GIT SIDE, so
+  remediation is undetectable and the row can only ever read "unfixed and aging": it is
+  **unfalsifiable**. Render it "unresolved — cannot assess", never as an outstanding finding
+  count, and never rank it. Not hypothetical: a subsystem folder mistaken for a repo made three
+  consecutive digests call its long-since-fixed Highs "the estate's oldest open wound" because no
+  git side existed to contradict them.
+- **Copying a prior report's prose forward as fact.** The delta step (§5) reads the last report
+  to compute *what changed* — it is not a licence to restate its claims. Any claim carried
+  forward is a claim you are re-asserting: re-derive it from this run's data or drop it. A wrong
+  line in a ledger hardens with every repetition.
+- **Treating "no git evidence" as "not fixed".** It usually means "not looked at" — an empty
+  `reviewCommits`, an unresolved row, or a boundary that could not be anchored. Same shape as
+  the `Glob` "No files found is never evidence of absence" rule in CLAUDE.md.
 - Synthesising a global batch number across repos — numbering schemes differ
   (finding-IDs vs `batch N` vs audit `B<N>`); record the raw marker string.
 - Auto-appending to CLAUDE.md — propose only.
@@ -218,8 +281,12 @@ come back null. Render these honestly:
 - Letting the historical vault tally inflate the risk score — the rank is
   **forward-looking only** (unreviewed commits + staleness + deferred backlog).
   A heavily-reviewed, now-clean repo must NOT rank above an unreviewed one.
-- Ranking an `outsideScanPath` repo — it has no local commits here; skip it from
-  the risk rank and the hand-off (it was reviewed elsewhere).
+- Ranking an `outsideScanPath` repo — it lives outside the folder the user asked about, so it
+  stays out of the risk rank and the hand-off prompts regardless of how it resolved. **But
+  "not ranked" is not "not reported":** a *resolved* outside row now carries real git evidence,
+  so §7 must state its remediation status honestly (fixed / still open / unknown). Only an
+  `unresolved` row is genuinely unassessable. Do not silently drop a resolved outside row that
+  has open findings — say it was reviewed elsewhere and where it stands.
 - Reporting a never-reviewed repo's scope as "0 commits" — its `sinceReview`
   list is empty by design (history isn't dumped); use `sinceReviewCount` (the
   full-history count) and label it full-audit scope.
