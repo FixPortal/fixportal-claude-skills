@@ -170,3 +170,11 @@ When scaffolding test projects, verify:
 - [ ] Async/timing tests are event-driven (await a signal or poll-with-timeout) — no `Thread.Sleep`/`Task.Delay`-then-assert, no tight `BeLessThan(TimeSpan)` ceilings
 - [ ] `xunit.v3` test projects have `<OutputType>Exe</OutputType>` set (required for the house `scaffold-ci` `test-runner: mtp` default)
 - [ ] Tests build and pass
+
+## Related skills
+
+- `audit-tests` — reads this skill's output. This skill creates/normalizes the test
+  project; `audit-tests` is a separate, read-only pass that judges whether an *existing*
+  suite actually defends the codebase's behaviour (risk-based adequacy, not coverage
+  percentage) and produces a prioritized backlog. Use `audit-tests` when the question is
+  "are these tests any good", not "scaffold me a test project".
