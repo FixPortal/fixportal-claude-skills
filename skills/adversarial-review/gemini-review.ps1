@@ -98,6 +98,17 @@ if (-not (Get-Command gemini -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
+# Clear any sidecar left by a previous attempt in this same work dir BEFORE
+# calling gemini. batch-review.ps1 reuses the chunk work dir across retries, and
+# every early exit below (CLI failure, unparsable JSON, empty response) returns
+# without ever reaching the sidecar write further down -- leaving a stale sidecar
+# in place would let the host (run-review.ps1) sum a FAILED retry's telemetry as
+# if it were this attempt's, silently inflating cost with numbers from a call
+# that never happened this time.
+if ($UsageSidecarPath -and (Test-Path -LiteralPath $UsageSidecarPath)) {
+    Remove-Item -LiteralPath $UsageSidecarPath -Force -ErrorAction SilentlyContinue
+}
+
 function Read-InputFile([string] $path, [string] $label) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         Write-Error "$label not found: $path"

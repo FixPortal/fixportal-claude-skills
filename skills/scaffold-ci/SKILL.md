@@ -307,15 +307,17 @@ jobs:
 - `scripts/summarize-stryker.ps1` — shipped verbatim; renders the run into a step summary.
 
 **`mtp` prerequisite:** `test-runner: mtp` (Microsoft.Testing.Platform) requires the test
-project to build as an MTP executable. For **xunit.v3** the house mechanism is simply
-**`<OutputType>Exe</OutputType>`** in the test `.csproj` — that makes xunit.v3 emit an MTP
-test host (no `<UseMicrosoftTestingPlatformRunner>` property needed; the engine repo's test
-projects use `OutputType=Exe` alone). Keep `Microsoft.NET.Test.Sdk` +
+project to build as an MTP executable. For **xunit.v3** the house mechanism is
+**`<OutputType>Exe</OutputType>`** AND
+**`<UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>`** in the test
+`.csproj` — `OutputType=Exe` alone only enables Test-Explorer integration; the MTP
+command-line runner/host that `dotnet test`/CI actually invokes needs the
+`UseMicrosoftTestingPlatformRunner` property too (see `scaffold-tests`, corrected 2026-07-18,
+M-6 adversarial drift review). Keep `Microsoft.NET.Test.Sdk` +
 `xunit.runner.visualstudio` alongside it so `dotnet test` (VSTest) still drives CI — the two
-runners coexist. Confirm before defaulting to `mtp`: if the test project has no
-`OutputType=Exe` (i.e. it runs purely as a VSTest library), either add it or fall back to
-`test-runner: vstest`. *(Verified: adding `OutputType=Exe`
-flips Stryker to mtp with `dotnet test` still green.)*
+runners coexist. Confirm before defaulting to `mtp`: if the test project has neither
+property (i.e. it runs purely as a VSTest library), either add both or fall back to
+`test-runner: vstest`.
 
 ## `dependabot.yml`
 
