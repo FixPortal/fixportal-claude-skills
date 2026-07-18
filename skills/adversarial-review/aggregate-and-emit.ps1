@@ -165,9 +165,6 @@ if (Test-Path -LiteralPath $batchSummary) {
         ForEach-Object { Join-Path (Join-Path $RunRoot $_) 'metrics.json' } |
         Where-Object { Test-Path -LiteralPath $_ } |
         ForEach-Object { Get-Item -LiteralPath $_ })
-    if ($chunkCount -gt $metricFiles.Count) {
-        Write-Warning "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics."
-    }
 
     # A row that DECLARES failure (exitCode != 0 or hasMetrics = false) must have no
     # metrics.json on disk -- metrics are selected purely by chunkId, so a stale file
@@ -216,6 +213,18 @@ The summary is not describing this run, so ChunkCount and every per-vendor total
     chunk is silently dropped -- only do this when every chunk succeeded).
 "@ -ErrorAction Continue
         exit 4
+    }
+
+    # A chunk named by the summary but with no metrics.json anywhere (a genuinely
+    # failed chunk, not a contradiction or an id mismatch -- those are refused above
+    # already) contributes nothing to the totals below, yet ChunkCount still counts
+    # it -- emitting anyway understates cost/duration/findings per chunk while the
+    # dashboard shows a complete-looking ChunkCount. Same fail-loud rule as the rest
+    # of this script: refuse rather than emit a confident short number.
+    if ($chunkCount -gt $metricFiles.Count) {
+        $missing = @($summaryIds | Where-Object { -not (Test-Path -LiteralPath (Join-Path (Join-Path $RunRoot $_) 'metrics.json')) })
+        Write-Error "$($chunkCount - $metricFiles.Count) chunk(s) left no metrics.json — counted in ChunkCount but contributing no metrics: $($missing -join ', '). Refusing to aggregate a degraded run; re-run the failed chunk(s) or remove them from batch-summary.json." -ErrorAction Continue
+        exit 8
     }
 } else {
     $metricFiles = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue)
@@ -275,11 +284,16 @@ $rows = @()
 foreach ($key in $byReviewer.Keys) {
     $r = $byReviewer[$key]
     $acc = if ($accepted.ContainsKey($key)) { $accepted[$key] } else { 0 }
-    # The API enforces accepted <= raised; clamp defensively so a verdict
-    # attribution quirk cannot 400 the whole emit.
+    # The API enforces 0 <= accepted <= raised; clamp defensively both ways so a
+    # verdict attribution quirk (including a hand-authored negative value in
+    # aggregate-verdict.json) cannot 400 the whole emit.
     if ($acc -gt $r.issuesRaised) {
         Write-Warning "accepted ($acc) > raised ($($r.issuesRaised)) for $key — clamping to raised."
         $acc = $r.issuesRaised
+    }
+    if ($acc -lt 0) {
+        Write-Warning "accepted ($acc) < 0 for $key — clamping to 0."
+        $acc = 0
     }
     $named = @{
         RunId = $RunId; Reviewer = $key; Role = 'reviewer'; Model = $r.model
