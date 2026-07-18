@@ -1,24 +1,53 @@
 $ErrorActionPreference = 'Stop'
-$path = Join-Path $PSScriptRoot '..\themes.json'
+
 # themes.json ships EMPTY ({}) as a per-user starter -- the skill populates it over successive
 # runs. So an empty object is valid; we only assert that whatever IS present is well-formed.
 # It is NOT mirrored with real data: that is the user's own runtime ledger, and publishing it
 # would leak their repo names.
-$json = Get-Content $path -Raw | ConvertFrom-Json
-$names = @($json.PSObject.Properties.Name | Where-Object { $_ })
-foreach ($k in $names) {
-  $t = $json.$k
-  # home: a non-empty string.
-  if ($t.home -isnot [string] -or [string]::IsNullOrWhiteSpace($t.home)) { throw "theme $k 'home' must be a non-empty string" }
-  # aliases / seen: arrays of strings (SKILL.md treats them as collections; a scalar or object
-  # would silently break alias matching and seen set-union at runtime). ConvertFrom-Json yields
-  # [object[]] for a JSON array; a scalar stays a bare string; {} becomes a PSCustomObject.
+
+# Validate one theme. home: non-empty string. aliases / seen: arrays of non-empty strings
+# (SKILL.md treats them as collections used for substring matching and seen set-union; a scalar,
+# an object, or a blank element would silently break matching or corrupt provenance -- an
+# aliases: [""] entry becomes a catch-all that classifies every review).
+function Test-Theme {
+  param([string]$Name, $Theme)
+  if ($Theme.home -isnot [string] -or [string]::IsNullOrWhiteSpace($Theme.home)) {
+    throw "theme $Name 'home' must be a non-empty string"
+  }
   foreach ($field in 'aliases','seen') {
-    $v = $t.$field
-    if ($v -isnot [System.Array]) { throw "theme $k '$field' must be an array" }
+    $v = $Theme.$field
+    if ($v -isnot [System.Array]) { throw "theme $Name '$field' must be an array" }
     foreach ($item in $v) {
-      if ($item -isnot [string]) { throw "theme $k '$field' must contain only strings" }
+      if ($item -isnot [string] -or [string]::IsNullOrWhiteSpace($item)) {
+        throw "theme $Name '$field' must contain only non-empty strings"
+      }
     }
   }
 }
-"themes.json OK -- $($names.Count) themes (empty starter is valid)"
+
+$path = Join-Path $PSScriptRoot '..\themes.json'
+$json = Get-Content $path -Raw | ConvertFrom-Json
+# Root must be a JSON object ({} or a map of themes). A null / array / scalar root is malformed and
+# must fail loudly rather than pass as "0 themes".
+if ($json -isnot [System.Management.Automation.PSCustomObject]) {
+  throw "themes.json root must be a JSON object"
+}
+$names = @($json.PSObject.Properties.Name | Where-Object { $_ })
+foreach ($k in $names) { Test-Theme -Name $k -Theme $json.$k }
+
+# Fixtures -- the shipped file is {}, so exercise the validator branches directly.
+Test-Theme -Name 'fixture-good' -Theme ([pscustomobject]@{ home = 'reviewer brief'; aliases = @('a','b'); seen = @('repo-x') })
+$bad = @(
+  @{ n = 'blank-home';    t = [pscustomobject]@{ home = '';   aliases = @('a'); seen = @('r') } },
+  @{ n = 'scalar-alias';  t = [pscustomobject]@{ home = 'h';  aliases = 'a';    seen = @('r') } },
+  @{ n = 'object-seen';   t = [pscustomobject]@{ home = 'h';  aliases = @('a'); seen = ([pscustomobject]@{}) } },
+  @{ n = 'blank-alias';   t = [pscustomobject]@{ home = 'h';  aliases = @('');  seen = @('r') } },
+  @{ n = 'nonstr-seen';   t = [pscustomobject]@{ home = 'h';  aliases = @('a'); seen = @(1) } }
+)
+foreach ($case in $bad) {
+  $threw = $false
+  try { Test-Theme -Name $case.n -Theme $case.t } catch { $threw = $true }
+  if (-not $threw) { throw "verify-themes: fixture '$($case.n)' should have been rejected but passed" }
+}
+
+"themes.json OK -- $($names.Count) themes (empty starter is valid); validator fixtures pass"
