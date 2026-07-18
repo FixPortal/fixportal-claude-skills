@@ -23,16 +23,20 @@ if ($reviewed.git.reviewCommits.Count -lt 1) { throw "<your-reviewed-repo> has n
 if (-not ($reviewed.git.reviewCommits | Where-Object { $_.fixerModel })) { throw "no fixer model parsed on <your-reviewed-repo>" }
 if (-not $reviewed.git.lastReviewDate) { throw "<your-reviewed-repo> missing lastReviewDate" }
 
-# a repo with no reviews must still appear (coverage gap), with empty reviewCommits.
-# Which repo(s) currently have zero reviews is live, mutable state (any repo can
-# gain a reviewer-findings commit at any time), so pick one dynamically rather
-# than pinning to a repo name — a structural check of the "unreviewed" shape,
+# a repo with no ADVERSARIAL review must still appear (coverage gap). Don't also
+# require reviewCommits.Count -eq 0: collect.ps1 legitimately sets neverReviewed=true
+# while reviewCommits is non-empty when every commit is a web-quality-only marker
+# (excluded from boundary candidacy, but still collected) -- requiring zero here
+# throws on that valid shape and hard-fails once the estate reaches full coverage.
+# Which repo(s) currently have zero ADVERSARIAL reviews is live, mutable state (any
+# repo can gain a reviewer-findings commit at any time), so pick one dynamically
+# rather than pinning to a repo name — a structural check of the "unreviewed" shape,
 # not an assertion about which specific repo is unreviewed today.
-$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.neverReviewed -and $_.git.reviewCommits.Count -eq 0 })
+$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.neverReviewed })
 if ($neverReviewed.Count -eq 0) { throw "no never-reviewed repo found in output (coverage-gap listing not exercised)" }
 $gap = $neverReviewed[0]
 if ($gap.git.reviewCommits -isnot [array]) { throw "$($gap.repo): reviewCommits must be an array even when empty" }
-if (-not $gap.git.neverReviewed) { throw "$($gap.repo): zero reviewCommits but neverReviewed flag not set" }
+if (-not $gap.git.neverReviewed) { throw "$($gap.repo): selected by the neverReviewed filter but flag not set" }
 
 # vault side: reviewed repo has a panel + a judge slot + a severity tally parsed from the latest run _index.md.
 # NOTE: judge is a shape check (property present, null-or-string), not a truthiness

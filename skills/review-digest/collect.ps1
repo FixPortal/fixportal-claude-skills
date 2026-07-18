@@ -178,7 +178,7 @@ $results = foreach ($r in $repos) {
   }
 }
 
-# Repos with a vault review folder but NOT under $Path (reviewed elsewhere — e.g. qfservice, ci-dashboard).
+# Repos with a vault review folder but NOT under $Path (reviewed from a different repos-root).
 $scanned = @($results | ForEach-Object { $_.repo })
 if (Test-Path $VaultRoot) {
   $vaultOnly = Get-ChildItem $VaultRoot -Directory | Where-Object { $scanned -notcontains $_.Name }
