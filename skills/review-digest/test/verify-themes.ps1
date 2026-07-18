@@ -5,19 +5,21 @@ $ErrorActionPreference = 'Stop'
 # It is NOT mirrored with real data: that is the user's own runtime ledger, and publishing it
 # would leak their repo names.
 
-# Validate one theme. home: non-empty string. aliases / seen: arrays of non-empty strings
-# (SKILL.md treats them as collections used for substring matching and seen set-union; a scalar,
-# an object, or a blank element would silently break matching or corrupt provenance -- an
-# aliases: [""] entry becomes a catch-all that classifies every review).
+# Validate one theme. home: non-empty string. aliases / seen: collections of non-empty strings
+# (SKILL.md treats them as collections used for substring matching and seen set-union; a null
+# field, an object element, or a blank element would silently break matching or corrupt
+# provenance -- an aliases: [""] entry becomes a catch-all that classifies every review).
+# NOTE: ConvertFrom-Json UNWRAPS a single-element JSON array into a bare scalar, so a valid
+# one-alias theme arrives as a string, not an array. Normalise with @(...) before validating
+# rather than asserting [array]-ness, which would false-reject that legitimate single-element case.
 function Test-Theme {
   param([string]$Name, $Theme)
   if ($Theme.home -isnot [string] -or [string]::IsNullOrWhiteSpace($Theme.home)) {
     throw "theme $Name 'home' must be a non-empty string"
   }
   foreach ($field in 'aliases','seen') {
-    $v = $Theme.$field
-    if ($v -isnot [System.Array]) { throw "theme $Name '$field' must be an array" }
-    foreach ($item in $v) {
+    if ($null -eq $Theme.$field) { throw "theme $Name '$field' is missing" }
+    foreach ($item in @($Theme.$field)) {
       if ($item -isnot [string] -or [string]::IsNullOrWhiteSpace($item)) {
         throw "theme $Name '$field' must contain only non-empty strings"
       }
@@ -37,9 +39,13 @@ foreach ($k in $names) { Test-Theme -Name $k -Theme $json.$k }
 
 # Fixtures -- the shipped file is {}, so exercise the validator branches directly.
 Test-Theme -Name 'fixture-good' -Theme ([pscustomobject]@{ home = 'reviewer brief'; aliases = @('a','b'); seen = @('repo-x') })
+# ...and via a JSON ROUND-TRIP with single-element arrays, the case ConvertFrom-Json unwraps to a
+# scalar -- a valid one-alias/one-seen theme must still pass.
+$rt = '{"solo":{"home":"reviewer brief","aliases":["only-one"],"seen":["only-repo"]}}' | ConvertFrom-Json
+Test-Theme -Name 'solo' -Theme $rt.solo
 $bad = @(
   @{ n = 'blank-home';    t = [pscustomobject]@{ home = '';   aliases = @('a'); seen = @('r') } },
-  @{ n = 'scalar-alias';  t = [pscustomobject]@{ home = 'h';  aliases = 'a';    seen = @('r') } },
+  @{ n = 'null-aliases';  t = [pscustomobject]@{ home = 'h';  aliases = $null;  seen = @('r') } },
   @{ n = 'object-seen';   t = [pscustomobject]@{ home = 'h';  aliases = @('a'); seen = ([pscustomobject]@{}) } },
   @{ n = 'blank-alias';   t = [pscustomobject]@{ home = 'h';  aliases = @('');  seen = @('r') } },
   @{ n = 'nonstr-seen';   t = [pscustomobject]@{ home = 'h';  aliases = @('a'); seen = @(1) } }
