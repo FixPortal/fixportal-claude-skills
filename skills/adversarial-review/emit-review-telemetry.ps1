@@ -130,8 +130,8 @@ $body = @{
     issuesAccepted   = $IssuesAccepted
     runId            = $RunId
     role             = $Role
-    repo             = $Repo
-    summary          = $Summary
+    repo             = ($Repo    ? $Repo    : $null)
+    summary          = ($Summary ? $Summary : $null)
     # null for a single-diff run; a positive count flags an aggregated batch run.
     chunkCount       = ($ChunkCount -gt 0 ? $ChunkCount : $null)
 } | ConvertTo-Json -Compress

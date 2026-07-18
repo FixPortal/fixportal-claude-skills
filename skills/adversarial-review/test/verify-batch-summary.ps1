@@ -22,6 +22,10 @@ foreach ($s in @($batch, $agg)) {
     if (-not (Test-Path -LiteralPath $s)) { throw "script under test not found: $s" }
 }
 
+# Saved so the finally block below can restore them -- otherwise a real review
+# dot-sourced into the same session afterwards would silently no-op its telemetry.
+$origObservatoryApiKey = $env:OBSERVATORY_API_KEY
+$origObservatoryUrl    = $env:OBSERVATORY_URL
 $env:OBSERVATORY_API_KEY = ''
 $env:OBSERVATORY_URL     = ''
 
@@ -48,8 +52,12 @@ try {
     # as replacing it, and only the id set would be checked.
     $m2 = Join-Path $root 'm2.json'; New-Manifest $m2 @('C02') 'repair'
 
+    # Every chunk here fails fast at run-review.ps1's git-work-tree check ($fakeRepo
+    # isn't a repo), so batch-review.ps1 must now exit 1 (M-4 fail-loud fix) even
+    # though it still records the row and writes the summary -- that's what this
+    # scenario is actually testing, not a clean exit.
     & pwsh -NoProfile -File $batch -ChunkManifest $m1 -RepoPath $fakeRepo -RunRoot $runRoot -BatchSize 3 *>$null
-    if ($LASTEXITCODE -ne 0) { throw "first batch invocation exited $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 1) { throw "first batch invocation (all chunks failing) should exit 1, got $LASTEXITCODE" }
     $ids = Get-SummaryIds $runRoot
     if (($ids -join ',') -ne 'C01,C02,C03') { throw "first invocation should record all 3 chunks, got '$($ids -join ',')'" }
 
@@ -60,7 +68,7 @@ try {
     # before writing, the summary would still hold the first run's C01,C02,C03 and
     # the assertion below would pass without the merge ever running.
     & pwsh -NoProfile -File $batch -ChunkManifest $m2 -RepoPath $fakeRepo -RunRoot $runRoot -BatchSize 1 *>$null
-    if ($LASTEXITCODE -ne 0) { throw "repair batch invocation exited $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 1) { throw "repair batch invocation (chunk failing) should exit 1, got $LASTEXITCODE" }
     $ids = Get-SummaryIds $runRoot
     if (($ids -join ',') -ne 'C01,C02,C03') { throw "repair re-run must keep the untouched chunks, got '$($ids -join ',')'" }
 
@@ -87,7 +95,7 @@ try {
 
     $m4 = Join-Path $root 'm4.json'; New-Manifest $m4 @('C01')
     & pwsh -NoProfile -File $batch -ChunkManifest $m4 -RepoPath $fakeRepo -RunRoot $runRoot4 -BatchSize 1 *>$null
-    if ($LASTEXITCODE -ne 0) { throw "retry batch invocation exited $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 1) { throw "retry batch invocation (chunk failing) should exit 1, got $LASTEXITCODE" }
     if (Test-Path -LiteralPath (Join-Path $runRoot4 'C01\metrics.json')) {
         throw "a retry that wrote no metrics.json must not leave the previous attempt's behind"
     }
@@ -377,4 +385,6 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    $env:OBSERVATORY_API_KEY = $origObservatoryApiKey
+    $env:OBSERVATORY_URL     = $origObservatoryUrl
 }
