@@ -25,27 +25,33 @@ reviews:
     - "!**/pnpm-lock.yaml"
     - "!**/yarn.lock"
 
-  instructions: |
-    Review as a senior engineer. Prioritise correctness, security, maintainability,
-    testability, and accidental complexity.
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Review as a senior engineer. Prioritise correctness, security, maintainability,
+        testability, and accidental complexity.
 
-    Do not nitpick style unless it affects readability or consistency.
-    Prefer actionable findings over commentary.
-    Call out missing tests for changed behaviour.
-    Treat generated files, lock files, snapshots, and formatting churn as low value.
+        Do not nitpick style unless it affects readability or consistency.
+        Prefer actionable findings over commentary.
+        Call out missing tests for changed behaviour.
+        Treat generated files, lock files, snapshots, and formatting churn as low value.
 
-    For .NET code, pay particular attention to:
-    - async/await correctness
-    - cancellation token propagation
-    - nullability
-    - DI lifetime mistakes
-    - EF Core query behaviour
-    - exception handling and logging
-    - test coverage around edge cases
+    - path: "**/*.cs"
+      instructions: |
+        Pay particular attention to:
+        - async/await correctness
+        - cancellation token propagation
+        - nullability
+        - DI lifetime mistakes
+        - EF Core query behaviour
+        - exception handling and logging
+        - test coverage around edge cases
 
-    For TypeScript/React code, pay particular attention to:
-    - state/effect dependency bugs
-    - request spam or accidental polling
-    - accessibility regressions
-    - error/loading/empty states
-    - unnecessary re-renders
+    - path: "**/*.{ts,tsx}"
+      instructions: |
+        Pay particular attention to:
+        - state/effect dependency bugs
+        - request spam or accidental polling
+        - accessibility regressions
+        - error/loading/empty states
+        - unnecessary re-renders
