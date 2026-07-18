@@ -32,7 +32,13 @@ if (-not $reviewed.git.lastReviewDate) { throw "<your-reviewed-repo> missing las
 # repo can gain a reviewer-findings commit at any time), so pick one dynamically
 # rather than pinning to a repo name — a structural check of the "unreviewed" shape,
 # not an assertion about which specific repo is unreviewed today.
-$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.neverReviewed })
+# Prefer a never-reviewed repo that DOES carry reviewCommits (web-quality markers)
+# when the estate has one: picking a repo with zero commits every time would let the
+# old `reviewCommits.Count -eq 0` requirement come back without this test catching
+# it. Sort non-empty first rather than requiring it outright, so the test stays
+# green (just less discriminating) on a host where no such repo exists yet.
+$neverReviewed = @($data | Where-Object { -not $_.outsideScanPath -and $_.git.neverReviewed } |
+    Sort-Object -Property @{ Expression = { $_.git.reviewCommits.Count -gt 0 }; Descending = $true })
 if ($neverReviewed.Count -eq 0) { throw "no never-reviewed repo found in output (coverage-gap listing not exercised)" }
 $gap = $neverReviewed[0]
 if ($gap.git.reviewCommits -isnot [array]) { throw "$($gap.repo): reviewCommits must be an array even when empty" }

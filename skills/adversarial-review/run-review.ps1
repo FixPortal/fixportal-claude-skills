@@ -260,7 +260,15 @@ function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool
     $thisDiff = if ($compactDiffFile -and -not $r.repoAccess) { $compactDiffFile } else { $diffFile }
     $a = @('-Instruction', $instruction, '-DiffPath', $thisDiff, '-Model', $r.model)
     if ($withFindings) { $a += @('-FindingsPath', $pooledFile) }
-    foreach ($c in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $c) }
+    # ONE ';'-joined token, not repeated -ContextPath flags: the wrapper runs via a
+    # child `pwsh -File` (below), and PowerShell's -File binder rejects a named flag
+    # specified more than once ("parameter ... specified more than once"), so 2+
+    # context paths made every reviewer wrapper call fail. Every wrapper already
+    # splits its -ContextPath on ';' for exactly this reason (see gemini-review.ps1
+    # et al.) — matches the same normalization batch-review.ps1 uses to forward
+    # ContextPath to THIS script (§ line ~96).
+    $ctx = @($ContextPath | Where-Object { $_ })
+    if ($ctx) { $a += @('-ContextPath', ($ctx -join ';')) }
     if ($caps -contains 'Effort' -and $r.effort) { $a += @('-Effort', $r.effort) }
     if ($caps -contains 'RepoPath' -and $r.repoAccess) { $a += @('-RepoPath', $RepoPath) }
     # Wrappers that expose -UsageSidecarPath (G, X) write exact {inputTokens,
