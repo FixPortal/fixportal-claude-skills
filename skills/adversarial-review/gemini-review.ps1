@@ -54,9 +54,13 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
+    # Instruction text. Either pass it inline (-Instruction) or, to keep the
+    # calling command free of shell command-substitution (which defeats a static
+    # allowlist rule and drops the call to the auto-mode classifier), point
+    # -InstructionPath at a file and the script reads it.
     [string] $Instruction,
+
+    [string] $InstructionPath,
 
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
@@ -67,6 +71,11 @@ param(
     [string[]] $ContextPath,
 
     [string] $Model = 'gemini-2.5-pro',
+
+    # Optional. When set, the review text is written here instead of stdout, so
+    # the calling command needs no '> file' redirect (redirects, like inline
+    # substitutions, make a command "complex" and bypass static allowlist rules).
+    [string] $OutPath,
 
     # When set, write this reviewer's summed token usage + cost as JSON
     # ({inputTokens,outputTokens,costUsd}) so the host can pass exact figures to
@@ -95,6 +104,16 @@ function Read-InputFile([string] $path, [string] $label) {
         exit 2
     }
     Get-Content -LiteralPath $path -Raw
+}
+
+# Resolve the instruction: -InstructionPath (file) takes precedence over inline
+# -Instruction. Exactly one source is required.
+if ($InstructionPath) {
+    $Instruction = Read-InputFile $InstructionPath 'Instruction file'
+}
+if ([string]::IsNullOrWhiteSpace($Instruction)) {
+    Write-Error 'Provide the review instruction via -Instruction or -InstructionPath.'
+    exit 2
 }
 
 # Compose the full prompt and deliver it on stdin (dodges command-line length
@@ -277,4 +296,11 @@ if ($json.stats?.models) {
     }
 }
 
-$response.TrimEnd()
+# Emit the review: to -OutPath when set (keeps the caller free of a '> file'
+# redirect), otherwise to stdout.
+if ($OutPath) {
+    $response.TrimEnd() | Set-Content -LiteralPath $OutPath -Encoding utf8
+}
+else {
+    $response.TrimEnd()
+}
