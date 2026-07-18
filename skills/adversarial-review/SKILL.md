@@ -656,7 +656,7 @@ lands as all-zeros. Instead:
    numbers are the sum of both). This is the same vendor-merge as the
    single-diff path (§3a). Pass the chunk plan from §0a as the JSON
    manifest:
-   `pwsh -NoProfile -File "<skill-dir>/batch-review.ps1" -ChunkManifest <chunks.json> -Target audit`
+   `pwsh -NoProfile -File "<skill-dir>/batch-review.ps1" -ChunkManifest "<chunks.json>" -Target audit`
    If a batch was already run another way, the only requirement downstream is
    that each chunk dir contains a `metrics.json` of this exact shape — the
    aggregator reads every field below, so a manual reconstruction must carry all
@@ -702,7 +702,7 @@ lands as all-zeros. Instead:
 3. **Aggregate and emit once** with `aggregate-and-emit.ps1` — it sums every
    `metrics.json`, folds in the verdict, and emits one row per participant with
    `-ChunkCount N` (the dashboard then shows an "aggregate of N chunks" badge):
-   `pwsh -NoProfile -File "<skill-dir>/aggregate-and-emit.ps1" -RunRoot <RunRoot> -Repo <repo> [-Summary <name>]`
+   `pwsh -NoProfile -File "<skill-dir>/aggregate-and-emit.ps1" -RunRoot "<RunRoot>" -Repo "<repo>" [-Summary "<name>"]`
    It is idempotent — the API upserts on `(runId, reviewer, role)`, so you can
    re-run it after more chunks complete or after filling in the verdict, and the
    run's rows are corrected in place rather than duplicated. Report the capture
