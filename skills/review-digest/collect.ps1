@@ -403,8 +403,11 @@ if (Test-Path $VaultRoot) {
           continue
         }
       }
-      # Second (and later) vault folder resolving to the same outside repo+subsystem: skip.
-      if (-not $resolvedThisPass.Add("$($target.repoName)|$($target.subsystemPath)")) { continue }
+      # Second (and later) vault folder resolving to the same outside repo+subsystem: skip. Key on
+      # the canonical repoPath (not the leaf repoName) so two same-named repos under different
+      # -RepoRoots are not wrongly merged. (The first-enumerated folder wins; picking the newest
+      # across duplicate folders would need a two-pass restructure and is not done here.)
+      if (-not $resolvedThisPass.Add("$($target.repoPath)|$($target.subsystemPath)")) { continue }
       $git = Get-GitSide -RepoPath $target.repoPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPath $target.subsystemPath
       [pscustomobject]@{
         repo = $v.Name
