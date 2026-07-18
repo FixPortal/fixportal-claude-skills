@@ -332,12 +332,12 @@ really are new.
   substitute it literally. Do **not** write `~/...`: `pwsh -File` does not expand
   `~`, and a hardcoded `~/.claude` would point at the wrong home when this skill
   runs from Antigravity or Codex. Forward slashes work on every host:
-  `pwsh -NoProfile -File <skill-dir>/gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-G.json"`
+  `pwsh -NoProfile -File "<skill-dir>/gemini-review.ps1" -Instruction (Get-Content "<workdir>/phase1-brief.txt" -Raw) -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>/usage-G.json"`
   The wrapper pins `gemini-2.5-pro`. `-UsageSidecarPath` writes Gemini's exact
   summed `{inputTokens,outputTokens,costUsd}` for the §3a outcome event (Phase 1
   only, same as Reviewer X).
 - **Reviewer X** — the OpenAI wrapper, same pattern:
-  `pwsh -NoProfile -File <skill-dir>/openai-review.ps1 -Instruction (Get-Content "<workdir>\phase1-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>\usage-X.json"`
+  `pwsh -NoProfile -File "<skill-dir>/openai-review.ps1" -Instruction (Get-Content "<workdir>/phase1-brief.txt" -Raw) -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>/usage-X.json"`
   The model is `gpt-5.6-sol` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
   sidecar captures exact token counts from the API response so the host agent
   can pass real figures to `emit-review-telemetry.ps1` rather than zeros.
@@ -399,12 +399,12 @@ the diff, and the pooled findings:
 - Reviewer G — `gemini-review.ps1` with the Phase 2 brief and **both** files,
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
   files you gave it in Phase 1:
-  `pwsh -NoProfile -File <skill-dir>/gemini-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+  `pwsh -NoProfile -File "<skill-dir>/gemini-review.ps1" -Instruction (Get-Content "<workdir>/phase2-brief.txt" -Raw) -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
 - Reviewer X — `openai-review.ps1` with the Phase 2 brief and **both**
   files, the pooled findings passed as `-FindingsPath`. Pass the **same**
   `-ContextPath` files you gave it in Phase 1, so it can still check the
   mechanisms the diff does not show when it attacks the pooled findings:
-  `pwsh -NoProfile -File <skill-dir>/openai-review.ps1 -Instruction (Get-Content "<workdir>\phase2-brief.txt" -Raw) -DiffPath "<workdir>\review-diff.txt" -FindingsPath "<workdir>\pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+  `pwsh -NoProfile -File "<skill-dir>/openai-review.ps1" -Instruction (Get-Content "<workdir>/phase2-brief.txt" -Raw) -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
 
 ### 3. Phase 3 — adjudication
 
@@ -656,7 +656,7 @@ lands as all-zeros. Instead:
    numbers are the sum of both). This is the same vendor-merge as the
    single-diff path (§3a). Pass the chunk plan from §0a as the JSON
    manifest:
-   `pwsh -NoProfile -File <skill-dir>/batch-review.ps1 -ChunkManifest <chunks.json> -Target audit`
+   `pwsh -NoProfile -File "<skill-dir>/batch-review.ps1" -ChunkManifest <chunks.json> -Target audit`
    If a batch was already run another way, the only requirement downstream is
    that each chunk dir contains a `metrics.json` of this exact shape — the
    aggregator reads every field below, so a manual reconstruction must carry all
@@ -702,7 +702,7 @@ lands as all-zeros. Instead:
 3. **Aggregate and emit once** with `aggregate-and-emit.ps1` — it sums every
    `metrics.json`, folds in the verdict, and emits one row per participant with
    `-ChunkCount N` (the dashboard then shows an "aggregate of N chunks" badge):
-   `pwsh -NoProfile -File <skill-dir>/aggregate-and-emit.ps1 -RunRoot <RunRoot> -Repo <repo> [-Summary <name>]`
+   `pwsh -NoProfile -File "<skill-dir>/aggregate-and-emit.ps1" -RunRoot <RunRoot> -Repo <repo> [-Summary <name>]`
    It is idempotent — the API upserts on `(runId, reviewer, role)`, so you can
    re-run it after more chunks complete or after filling in the verdict, and the
    run's rows are corrected in place rather than duplicated. Report the capture
