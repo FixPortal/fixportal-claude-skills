@@ -137,15 +137,19 @@ findings. A repo that surfaced many Highs but was fully remediated is low risk;
 a repo with 30 commits and no review since is high risk. The vault tally is
 shown for context but **does not feed the score**.
 
-Per repo (skip `outsideScanPath` repos — reviewed elsewhere; skip `isDocumentReview` rows —
-not code):
+Per repo:
 
 ```
+eligible = !outsideScanPath && !isDocumentReview && !unresolved   # reviewed elsewhere / not code / unplaceable
+effectiveNeverReviewed =
+  neverReviewed || (boundarySource == "git-marker" && batchMarkers is empty)  # a prose-only marker is not a review
+
 score =
-  (neverReviewed && !hasTrackedSource) ? VOID          # no code to review — not a priority
-  : neverReviewed ? (100 + sinceReviewCount)            # never reviewed floats to the top
-  : sinceReviewCount * (1 + daysSinceReview / 30)       # unreviewed work, aged by staleness
-  + deferredBacklogCount * 5                            # still-open deferred items
+  !eligible ? VOID
+  : (effectiveNeverReviewed && !hasTrackedSource) ? VOID          # no code to review — not a priority
+  : effectiveNeverReviewed ? (100 + sinceReviewCount)             # never reviewed floats to the top
+  : sinceReviewCount * (1 + daysSinceReview / 30)                 # unreviewed work, aged by staleness
+  + deferredBacklogCount * 5                                      # still-open deferred items
 ```
 
 **The `hasTrackedSource` guard is not optional.** A never-reviewed repo with no tracked source

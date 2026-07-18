@@ -68,6 +68,8 @@ function Get-VaultData {
   # code coverage.
   $reviewTarget = $null; $isDocumentReview = $false
   $gm = [regex]::Match($text, '(?im)^target:\s*(.+)$'); if ($gm.Success) { $reviewTarget = $gm.Groups[1].Value.Trim() }
+  # Strip a surrounding matched YAML quote so `target: "report.pdf"` still hits the extension test.
+  if ($reviewTarget -match '^([''"])(.*)\1$') { $reviewTarget = $Matches[2] }
   if ($reviewTarget -and $reviewTarget -match '\.(html?|pdf|docx?|md|txt|rtf|odt)\s*$') { $isDocumentReview = $true }
   # Tally: prefer a "## Tally" section; support inline "Label: N" and table "| Label | N |" forms.
   $tallyScope = if ($text -match '(?s)##\s*Tally[^\n]*\n(.*?)(?=\n##|\z)') { $Matches[1] } else { $text }
@@ -332,18 +334,18 @@ function Get-GitSide {
   }
 }
 
-# Does the repo track any source file? A repo with ZERO tracked source — a docs/spec repo, a
-# playbook repo, a CV/resume repo — is not code-reviewable, so the never-reviewed floor of 100
-# must not float it above a genuinely unreviewed code repo. Exposed as hasTrackedSource; SKILL.md
-# §4 voids the floor when false. A git pathspec '*.cs' matches at any depth (git '*' crosses '/'),
-# so this is repo-wide.
-$sourceGlobs = @('*.cs','*.ts','*.tsx','*.js','*.jsx','*.mjs','*.cjs','*.py','*.go','*.java',
-  '*.rb','*.rs','*.cpp','*.cc','*.c','*.h','*.hpp','*.kt','*.swift','*.php','*.scala','*.sql',
-  '*.ps1','*.psm1','*.sh','*.bicep','*.vue','*.svelte','*.fs','*.fsx')
+# Does the repo (or, for a subsystem row, its reviewed sub-path) track any source file? A repo
+# with ZERO tracked source — a docs/spec repo, a playbook repo, a CV/resume repo — is not
+# code-reviewable, so the never-reviewed floor of 100 must not float it above a genuinely
+# unreviewed code repo. Exposed as hasTrackedSource; SKILL.md section 4 voids the floor when false.
+# When a SubsystemPath is given the query is pathspec-scoped to it, so a docs-only subsystem of a
+# code-bearing host is not credited with the host's unrelated source.
+$sourceExtRegex = '\.(cs|ts|tsx|js|jsx|mjs|cjs|py|go|java|rb|rs|cpp|cc|c|h|hpp|kt|swift|php|scala|sql|ps1|psm1|sh|bicep|vue|svelte|fs|fsx)$'
 function Get-HasTrackedSource {
-  param([string]$RepoPath)
+  param([string]$RepoPath, [string]$SubsystemPath)
   if (-not $RepoPath) { return $false }
-  $out = & git -C $RepoPath ls-files @sourceGlobs 2>$null | Select-Object -First 1
+  $pathspec = if ($SubsystemPath) { @('--', $SubsystemPath) } else { @() }
+  $out = & git -C $RepoPath ls-files @pathspec 2>$null | Where-Object { $_ -match $sourceExtRegex } | Select-Object -First 1
   if ($LASTEXITCODE -ne 0) { return $false }
   return [bool]$out
 }
@@ -375,23 +377,38 @@ $results = foreach ($r in $repos) {
 $scanned = @($results | ForEach-Object { $_.repo })
 if (Test-Path $VaultRoot) {
   $vaultOnly = Get-ChildItem $VaultRoot -Directory | Where-Object { $scanned -notcontains $_.Name }
+  # Track outside targets already emitted THIS pass, keyed on repo + subsystem, so two differently
+  # named vault folders resolving to the same outside repo (a de-hyphen + a suffix match, or an old
+  # and a current folder) do not both emit and double-count it. Distinct subsystems of one host
+  # stay distinct (the key includes the sub-path).
+  $resolvedThisPass = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   $extra = @(foreach ($v in $vaultOnly) {
     $vd = Get-VaultData -RepoName $v.Name -VaultRoot $VaultRoot
     if (-not $vd.exists) { continue }
     $target = Resolve-VaultTarget -IndexPath $vd.indexPath -FolderName $v.Name -RepoRoots $RepoRoots -ScanPath $Path
-    # A vault folder that resolves to a repo ALREADY scanned in-path is a stale pre-rename
-    # duplicate (old-name -> prefixed-old-name), already covered by that repo's own newer vault
-    # folder. Emitting it again double-counts the same repo, so drop it. Now that the resolver
-    # has sha + suffix fallbacks, this is the common outcome for renamed repos.
-    if ($target.resolved -and ($scanned -contains $target.repoName)) { continue }
     if ($target.resolved) {
+      # Resolves to a repo ALREADY scanned in-path: a stale pre-rename duplicate (old-name ->
+      # prefixed-old-name). Drop it — BUT if that in-path row carries no vault of its own, backfill
+      # it with this review first, so a repo whose ONLY review lives under the old folder name is not
+      # left falsely never-reviewed. A newer same-name review already on the row wins; don't clobber.
+      $inPath = $results | Where-Object { $_.repo -eq $target.repoName -and -not $_.outsideScanPath } | Select-Object -First 1
+      if ($inPath) {
+        if (-not $inPath.vault.exists -and $vd.exists) {
+          $inPath.vault = $vd
+          $inPath.git = Get-GitSide -RepoPath $inPath.resolvedPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPath $target.subsystemPath
+          $inPath.hasTrackedSource = Get-HasTrackedSource -RepoPath $inPath.resolvedPath -SubsystemPath $target.subsystemPath
+        }
+        continue
+      }
+      # Second (and later) vault folder resolving to the same outside repo+subsystem: skip.
+      if (-not $resolvedThisPass.Add("$($target.repoName)|$($target.subsystemPath)")) { continue }
       $git = Get-GitSide -RepoPath $target.repoPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPath $target.subsystemPath
       [pscustomobject]@{
         repo = $v.Name
         git  = $git
         vault = $vd
         hasGraphify = [bool](Test-Path (Join-Path $target.repoPath 'graphify-out'))
-        hasTrackedSource = Get-HasTrackedSource -RepoPath $target.repoPath
+        hasTrackedSource = Get-HasTrackedSource -RepoPath $target.repoPath -SubsystemPath $target.subsystemPath
         outsideScanPath = $true
         resolvedPath = $target.repoPath
         # A SUBSYSTEM row is one whose reviewed code is a sub-path of the host repo
