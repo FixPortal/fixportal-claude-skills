@@ -387,18 +387,21 @@ if (Test-Path $VaultRoot) {
     if (-not $vd.exists) { continue }
     $target = Resolve-VaultTarget -IndexPath $vd.indexPath -FolderName $v.Name -RepoRoots $RepoRoots -ScanPath $Path
     if ($target.resolved) {
-      # Resolves to a repo ALREADY scanned in-path: a stale pre-rename duplicate (old-name ->
-      # prefixed-old-name). Drop it — BUT if that in-path row carries no vault of its own, backfill
-      # it with this review first, so a repo whose ONLY review lives under the old folder name is not
-      # left falsely never-reviewed. A newer same-name review already on the row wins; don't clobber.
-      $inPath = $results | Where-Object { $_.repo -eq $target.repoName -and -not $_.outsideScanPath } | Select-Object -First 1
-      if ($inPath) {
-        if (-not $inPath.vault.exists -and $vd.exists) {
-          $inPath.vault = $vd
-          $inPath.git = Get-GitSide -RepoPath $inPath.resolvedPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPath $target.subsystemPath
-          $inPath.hasTrackedSource = Get-HasTrackedSource -RepoPath $inPath.resolvedPath -SubsystemPath $target.subsystemPath
+      # A WHOLE-REPO resolution (no subsystemPath) onto an already-scanned in-path repo is a stale
+      # pre-rename duplicate (old-name -> prefixed-old-name): drop it — but if that in-path row
+      # carries no vault of its own, backfill it first, so a repo whose ONLY review lives under the
+      # old folder name is not left falsely never-reviewed. A resolution WITH a subsystemPath is a
+      # DISTINCT subsystem of that host and must still emit its own row, never be swallowed here.
+      if (-not $target.subsystemPath) {
+        $inPath = $results | Where-Object { $_.repo -eq $target.repoName -and -not $_.outsideScanPath } | Select-Object -First 1
+        if ($inPath) {
+          if (-not $inPath.vault.exists -and $vd.exists) {
+            $inPath.vault = $vd
+            $inPath.git = Get-GitSide -RepoPath $inPath.resolvedPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex
+            $inPath.hasTrackedSource = Get-HasTrackedSource -RepoPath $inPath.resolvedPath
+          }
+          continue
         }
-        continue
       }
       # Second (and later) vault folder resolving to the same outside repo+subsystem: skip.
       if (-not $resolvedThisPass.Add("$($target.repoName)|$($target.subsystemPath)")) { continue }
