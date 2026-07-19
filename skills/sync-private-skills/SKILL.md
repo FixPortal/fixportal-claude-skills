@@ -68,6 +68,9 @@ looks fresh). Instead keep a manifest of the content hash of each mirrored file
 (`{ "<skill>/<relative-path>": "<sha256>" }`) — the **authoritative** copy lives
 in `.claude` only; the `.agents`/`.gemini`/`.kimi-code` copies are inert
 artefacts of mirroring this skill's own folder (see `intentionally-divergent.md`).
+The manifest is itself a **registered intentional divergence**, so it is
+**excluded** from the mirrored-file reconciliation below — never hash-compared,
+diffed, or `Copy-Item`ed between homes. Only the `.claude` copy is read and written.
 
 For each differing file, compare **all four** homes' current hash against the
 manifest. The rule is by count of changed homes, not a per-combination table:
