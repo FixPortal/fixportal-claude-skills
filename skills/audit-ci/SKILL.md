@@ -25,10 +25,11 @@ writes a report. It does **not** edit workflows, branch, or commit. Remediation 
 separate `scaffold-ci` pass (in the review worktree, per the code-review-pass
 workflow). Sibling of `review-sweep` and `azure-cost-sweep`.
 
-**Before reasoning about any GitHub Actions gotcha, read
-`~/.claude/notes/deploy-and-ci-traps.md`** — concurrency-cancel semantics, CodeQL
-default-setup scope, the Blacksmith `--provenance` / actionlint-label traps. The
-audit's findings lean on those.
+**Before reasoning about a GitHub Actions gotcha, consult your own CI/deploy trap
+notes if you keep such a catalogue** — concurrency-cancel semantics, CodeQL
+default-setup scope, the Blacksmith `--provenance` / actionlint-label traps are the
+kinds of gotchas several of this skill's findings lean on. (Optional: the skill
+works without it; a maintained trap catalogue just sharpens the findings.)
 
 ## The spine
 
