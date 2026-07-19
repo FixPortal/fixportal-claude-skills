@@ -1,28 +1,35 @@
 ---
 name: sync-private-skills
-description: Use when reconciling authored skills between the three PRIVATE homes — ~/.claude/skills/ (Claude Code), ~/.agents/skills/ (Codex/Copilot), and ~/.gemini/config/skills/ (Antigravity) — e.g. "sync my private skills", skill drift across CLIs, or after audit-skills reports cross-home divergence. For private↔private mirroring, NOT the public sanitised mirror (that is sync-public-skills).
+description: Use when reconciling authored skills between the four PRIVATE homes — ~/.claude/skills/ (Claude Code), ~/.agents/skills/ (Codex/Copilot), ~/.gemini/config/skills/ (Antigravity), and ~/.kimi-code/skills/ (Kimi Code) — e.g. "sync my private skills", skill drift across CLIs, or after audit-skills reports cross-home divergence. For private↔private mirroring, NOT the public sanitised mirror (that is sync-public-skills).
 ---
 
 # Sync Private Skills
 
 ## Overview
 
-The user authors skills in **three private homes** — `~/.claude/skills/`,
-`~/.agents/skills/`, and `~/.gemini/config/skills/` — and edits in **any**,
-depending on which CLI they are in:
+The user authors skills in **four private homes** — `~/.claude/skills/`,
+`~/.agents/skills/`, `~/.gemini/config/skills/`, and `~/.kimi-code/skills/` —
+and edits in **any**, depending on which CLI they are in:
 
 - `~/.claude/skills/` — Claude Code
 - `~/.agents/skills/` — Codex / Copilot
 - `~/.gemini/config/skills/` — Antigravity
+- `~/.kimi-code/skills/` — Kimi Code
+
+Note: `~/.agents/skills/` is already scanned by Kimi, so a skill there is
+visible to Kimi without copying. `~/.kimi-code/skills/` is for skills authored
+**Kimi-first** that must flow back to the other homes, or skills that stay
+Kimi-native (Kimi-specific paths / placeholders — register those in
+`intentionally-divergent.md`).
 
 Drift is therefore **multi-directional**: a given skill's newer copy may be in
-any home. This skill **reconciles** the three — it does not blindly copy one
+any home. This skill **reconciles** the four — it does not blindly copy one
 over the others.
 
 **Core principle: detect which side changed, then propose — never assume a
 global winner, never overwrite without showing the diff and getting a yes.**
 
-All three homes hold the same real paths, so this is a **straight copy with NO
+All four homes hold the same real paths, so this is a **straight copy with NO
 sanitisation** — unlike `sync-public-skills` (private→public, which transforms
 client names / vault paths / emails). Do not apply the sanitisation map here.
 
@@ -33,11 +40,11 @@ diverged; run this to reconcile it.
 ## What is mirrored
 
 The mirror set is the **intersection of skill folders present in at least two**
-of the three homes. When a skill is in the mirror set, it is synchronized across
-all three homes (copied to the third home if missing, and kept in sync). A skill
-in only one home (today: `hone`, `observe` are Claude-only) is **reported, not
-copied** — adding a skill to another home is an explicit **curation decision the
-user makes**, not an automatic sync.
+of the four homes. When a skill is in the mirror set, it is synchronized across
+all homes that hold it (copied to a missing home only on explicit curation, and
+kept in sync where present). A skill in only one home (today: `hone`, `observe`
+are Claude-only) is **reported, not copied** — adding a skill to another home is
+an explicit **curation decision the user makes**, not an automatic sync.
 
 ## The Iron Law
 
@@ -57,20 +64,23 @@ Guessing direction from mtime alone is unsafe (a copy resets mtime; a stale edit
 looks fresh). Instead keep a manifest of the content hash of each mirrored file
 **as of the last successful sync**, at:
 
-`~/.claude/skills/sync-private-skills/.last-sync-manifest.json`
-(`{ "<skill>/<relative-path>": "<sha256>" }`)
+`~/.agents/skills/sync-private-skills/.last-sync-manifest.json`
+(`{ "<skill>/<relative-path>": "<sha256>" }`) — kept in the **shared** `.agents`
+home (scanned by both Codex and Kimi), not in `.claude`.
 
-For each differing file, compare all three homes' current hash against the manifest:
+For each differing file, compare **all four** homes' current hash against the
+manifest. The rule is by count of changed homes, not a per-combination table:
 
-| .claude vs manifest | .agents vs manifest | .gemini vs manifest | Meaning | Action |
-|---|---|---|---|---|
-| changed | unchanged | unchanged | **.claude** was edited | propose `.claude → .agents, .gemini` |
-| unchanged | changed | unchanged | **.agents** was edited | propose `.agents → .claude, .gemini` |
-| unchanged | unchanged | changed | **.gemini** was edited | propose `.gemini → .claude, .agents` |
-| changed | changed | * | **conflict** | surface diffs, do NOT auto-pick |
-| * | changed | changed | **conflict** | surface diffs, do NOT auto-pick |
-| changed | * | changed | **conflict** | surface diffs, do NOT auto-pick |
-| (no manifest yet / first run) | — | — | unknown | treat every diff as a conflict to surface |
+| Homes changed vs manifest | Meaning | Action |
+|---|---|---|
+| exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other three |
+| two or more | **conflict** | surface diffs, do NOT auto-pick a winner |
+| none (differs but all match manifest — impossible unless manifest stale) | stale manifest | treat as conflict, surface |
+| (no manifest yet / first run) | unknown | treat every diff as a conflict to surface |
+
+A home that does not hold the skill at all is simply excluded from its
+comparison — a mirror-set file present in three homes is reconciled across those
+three; the fourth is a curation call, not a diff.
 
 mtime is shown only as a secondary *hint* next to the diff — never as the basis
 for an automatic overwrite.
@@ -87,7 +97,7 @@ deliberate.
 
 ## Procedure
 
-1. **Enumerate all three homes.** Glob `~/.claude/skills/*/`, `~/.agents/skills/*/`, and `~/.gemini/config/skills/*/`.
+1. **Enumerate all four homes.** Glob `~/.claude/skills/*/`, `~/.agents/skills/*/`, `~/.gemini/config/skills/*/`, and `~/.kimi-code/skills/*/`.
    Compute the **mirror set** (present in at least two homes) and the **single-home-only** list (present in only one home).
    Report the single-home list; take no action on it.
 2. **Load** `.last-sync-manifest.json` (may be absent) and `intentionally-divergent.md`.
@@ -105,8 +115,10 @@ deliberate.
    registered per-host — a Codex or Antigravity copy calling one produces
    config-error noise, not a graceful skip, even when the skill text says "if
    available". Flag any such reference found in a file proposed to copy
-   **into** `.agents` or `.gemini` (a `.claude`-only file referencing its own
-   MCP servers is fine and not flagged). Do not silently strip or copy through —
+   **into** `.agents`, `.gemini`, or `.kimi-code` (a `.claude`-only file
+   referencing its own MCP servers is fine and not flagged). Kimi has its own MCP
+   config (`~/.kimi-code/mcp.json`), so an `mcp__icm__…` call copied from Claude
+   fails on Kimi unless that server is registered there too. Do not silently strip or copy through —
    surface it as a **held-back item** alongside the plan: which file, which
    `mcp__` reference, and that it needs either (a) stripping into a
    host-specific variant + a new `intentionally-divergent.md` entry, or (b) the
@@ -133,7 +145,7 @@ deliberate.
 | `Copy-Item -Force` straight from the plan | Show the diff, name the changed side, confirm. Then copy. |
 | Clobbering an intentionally per-host file (reviewers.json) | Honour `intentionally-divergent.md`. When unsure if a divergence is deliberate, surface it — don't resolve it. |
 | Applying the sanitisation map | That's `sync-public-skills`. Private↔private is a verbatim copy. |
-| Copying a file with an `mcp__icm__`/`mcp__plugin_azure__`/etc. reference straight into `.agents`/`.gemini` | Claude-only MCP servers aren't registered on other hosts — the "if available" gate in the skill text doesn't stop config-error noise. Run the step-5a scan, hold the file back, get a decision. (Bit `recap`/`close` — ICM calls mirrored into Codex/Antigravity, fixed 2026-07-08.) |
+| Copying a file with an `mcp__icm__`/`mcp__plugin_azure__`/etc. reference straight into `.agents`/`.gemini`/`.kimi-code` | Claude-only MCP servers aren't registered on other hosts (Kimi has its own `~/.kimi-code/mcp.json`) — the "if available" gate in the skill text doesn't stop config-error noise. Run the step-5a scan, hold the file back, get a decision. (Bit `recap`/`close` — ICM calls mirrored into Codex/Antigravity, fixed 2026-07-08.) |
 
 ## Red Flags — STOP
 
