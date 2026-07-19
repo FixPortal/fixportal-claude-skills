@@ -64,16 +64,17 @@ Guessing direction from mtime alone is unsafe (a copy resets mtime; a stale edit
 looks fresh). Instead keep a manifest of the content hash of each mirrored file
 **as of the last successful sync**, at:
 
-`~/.agents/skills/sync-private-skills/.last-sync-manifest.json`
-(`{ "<skill>/<relative-path>": "<sha256>" }`) — kept in the **shared** `.agents`
-home (scanned by both Codex and Kimi), not in `.claude`.
+`~/.claude/skills/sync-private-skills/.last-sync-manifest.json`
+(`{ "<skill>/<relative-path>": "<sha256>" }`) — the **authoritative** copy lives
+in `.claude` only; the `.agents`/`.gemini`/`.kimi-code` copies are inert
+artefacts of mirroring this skill's own folder (see `intentionally-divergent.md`).
 
 For each differing file, compare **all four** homes' current hash against the
 manifest. The rule is by count of changed homes, not a per-combination table:
 
 | Homes changed vs manifest | Meaning | Action |
 |---|---|---|
-| exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other three |
+| exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other homes **that already hold the skill** (an absent home stays a curation call, never an auto-copy target) |
 | two or more | **conflict** | surface diffs, do NOT auto-pick a winner |
 | none (differs but all match manifest — impossible unless manifest stale) | stale manifest | treat as conflict, surface |
 | (no manifest yet / first run) | unknown | treat every diff as a conflict to surface |
