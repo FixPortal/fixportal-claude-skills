@@ -18,6 +18,7 @@ placeholders.
 | `scaffold-dotnet` | Create / normalise a .NET solution to a house standard (NodaTime boundaries, central package management, canonical `.editorconfig`). |
 | `scaffold-tests` | Scaffold xUnit v3 + NSubstitute + AwesomeAssertions test projects. |
 | `scaffold-ci` | GitHub Actions CI for .NET / Vite-React / hybrid repos, plus Dependabot and CodeQL. |
+| `audit-ci` | Read-only audit of GitHub Actions CI/CD for one repo or a folder sweep, measured against a house standard — gaps, drift, cross-repo inconsistency, and a Blacksmith Docker layer-cache opportunity lens. Advisory; hands fixes to `scaffold-ci`. |
 | `scaffold-frontend` | Vite + React + TypeScript scaffolding with ESLint (sonarjs) and Vitest. |
 | `scaffold-minimal` | Convert ASP.NET controllers to minimal APIs with OpenAPI + Scalar. |
 | `scaffold-doc` | Author structured markdown docs (READMEs, audit reports, runbooks) in a consistent house style. |
