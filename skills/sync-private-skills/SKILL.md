@@ -80,8 +80,10 @@ manifest. The rule is by count of changed homes, not a per-combination table:
 | exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other homes **that already hold the skill** (a home missing the whole skill stays a curation call; a home that holds the skill but lacks *this one file* is a new-file add target — see below) |
 | two or more | **conflict** | surface diffs, do NOT auto-pick a winner |
 | none (differs but all match manifest — impossible unless manifest stale) | stale manifest | treat as conflict, surface |
+| **deletion** — a manifest-tracked file is now **absent** from one holding home, unchanged in the others | that home removed it (or it went missing) | a proposed **deletion**, NOT a copy — the "exactly one changed" copy rule does not apply (there is no source to copy from). Surface it; never copy from the nonexistent side, never auto-delete the other homes. Only act on an explicit choice |
 | **new file** — no manifest entry, present in one holding home, absent from the other holding homes | that home added it (feature commit) | propose **adding** it to the other holding homes (step-5a scan first); a plain add, not a conflict |
-| **new file** — no manifest entry, present in **two or more** holding homes, **hashes identical** | added independently / already mirrored, just untracked | already in sync — take no copy action, only **adopt** it into the manifest (step 8) |
+| **new file** — no manifest entry, present with **identical hashes in EVERY holding home** | added independently / already mirrored everywhere, just untracked | already in sync — take no copy action, only **adopt** it into the manifest (step 8) |
+| **new file** — no manifest entry, present (identical) in **some** holding homes but **absent** from others | partially replicated | NOT in sync — the present homes are the source; route each absent holding home through the one-sided **add** rule (step-5a scan first). Adopt into the manifest only once every holding home has it |
 | **new file** — no manifest entry, present in **two or more** holding homes, **hashes differ** | independent divergent adds — no baseline to arbitrate | **conflict** — surface the diffs and get an explicit choice; do NOT auto-pick, do NOT record a manifest hash until resolved |
 | (no manifest yet / first run) | unknown | treat every diff as a conflict to surface |
 
@@ -137,11 +139,17 @@ deliberate.
    servers (`icm`, `plugin_azure`, `semgrep-guardian`, `plan`, etc.) are
    registered per-host — a Codex or Antigravity copy calling one produces
    config-error noise, not a graceful skip, even when the skill text says "if
-   available". Flag any such reference found in a file proposed to copy
-   **into** `.agents`, `.gemini`, or `.kimi-code` (a `.claude`-only file
-   referencing its own MCP servers is fine and not flagged). Kimi has its own MCP
-   config (`~/.kimi-code/mcp.json`), so an `mcp__icm__…` call copied from Claude
-   fails on Kimi unless that server is registered there too. Do not silently strip or copy through —
+   available". Flag any such reference in a file proposed to copy into **any**
+   destination home whose MCP config does not register that server — the copy
+   **direction** is what matters, there is no fixed exempt home. MCP servers are
+   per-host: Claude Code registers `icm` / `plugin_azure` / `semgrep-guardian` /
+   `plan`; Kimi has its own (`~/.kimi-code/mcp.json`); Codex and Antigravity
+   theirs. An `mcp__icm__…` ref copied from `.claude` into Kimi fails on Kimi —
+   and, symmetrically, a Kimi- or Antigravity-specific `mcp__…__` ref copied
+   **into** `.claude` fails there just the same, so `.claude` is NOT exempt as a
+   destination. Exempt a target only when the referenced server is confirmed
+   registered on that destination host (a file staying in its own home,
+   referencing its own host's servers, is fine). Do not silently strip or copy through —
    surface it as a **held-back item** alongside the plan: which file, which
    `mcp__` reference, and that it needs either (a) stripping into a
    host-specific variant + a new `intentionally-divergent.md` entry, or (b) the
