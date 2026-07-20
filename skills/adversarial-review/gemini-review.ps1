@@ -98,6 +98,13 @@ if (-not (Get-Command gemini -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
+# A retry/repair can reuse the same -UsageSidecarPath at the same WorkDir (see
+# batch-review.ps1's chunk-repair flow). Clear any leftover from a prior invocation
+# BEFORE running: the sidecar write below is gated on $json.stats?.models, so a run
+# that succeeds but returns no stats this time would otherwise leave the previous
+# attempt's real numbers for run-review.ps1 to sum as if they were this run's.
+if ($UsageSidecarPath) { Remove-Item -LiteralPath $UsageSidecarPath -ErrorAction SilentlyContinue }
+
 function Read-InputFile([string] $path, [string] $label) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         Write-Error "$label not found: $path"

@@ -53,7 +53,7 @@
     judge row emitted (the run shows as "no judge").
 
 .EXAMPLE
-    pwsh -NoProfile -File aggregate-and-emit.ps1 -RunRoot <runRoot> -Repo ems-win-app -Summary 'QFService Final Audit'
+    pwsh -NoProfile -File aggregate-and-emit.ps1 -RunRoot <runRoot> -Repo your-repo -Summary 'Example Audit'
 #>
 [CmdletBinding()]
 param(
@@ -275,8 +275,13 @@ $rows = @()
 foreach ($key in $byReviewer.Keys) {
     $r = $byReviewer[$key]
     $acc = if ($accepted.ContainsKey($key)) { $accepted[$key] } else { 0 }
-    # The API enforces accepted <= raised; clamp defensively so a verdict
-    # attribution quirk cannot 400 the whole emit.
+    # The API enforces 0 <= accepted <= raised; clamp defensively at BOTH ends so a
+    # verdict-attribution quirk or a malformed/hand-edited accepted map cannot emit a
+    # nonsensical count (negative → a 400, or a bogus dashboard number).
+    if ($acc -lt 0) {
+        Write-Warning "accepted ($acc) < 0 for $key — clamping to 0."
+        $acc = 0
+    }
     if ($acc -gt $r.issuesRaised) {
         Write-Warning "accepted ($acc) > raised ($($r.issuesRaised)) for $key — clamping to raised."
         $acc = $r.issuesRaised

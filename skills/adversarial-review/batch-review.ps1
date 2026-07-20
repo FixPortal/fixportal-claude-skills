@@ -68,13 +68,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# NB: these fatal guards use `Write-Error -ErrorAction Continue; exit 2` on purpose.
+# With $ErrorActionPreference='Stop', a bare Write-Error is TERMINATING — it throws
+# before the explicit `exit 2` runs, so the intended exit code 2 never surfaces
+# (callers see an exception / exit 1 instead). -ErrorAction Continue keeps the
+# message non-terminating so `exit 2` is what actually determines the exit code.
 $scriptDir = Split-Path -Parent $PSCommandPath
 $spine = Join-Path $scriptDir 'run-review.ps1'
-if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script."; exit 2 }
+if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script." -ErrorAction Continue; exit 2 }
 
-if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest"; exit 2 }
+if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest" -ErrorAction Continue; exit 2 }
 $chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
-if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
+if (-not $chunks) { Write-Error "Chunk manifest is empty." -ErrorAction Continue; exit 2 }
 
 # Validate ids BEFORE any per-chunk work: each becomes a directory name joined to
 # RunRoot. A separator or '..' would let a chunk write outside the run root; a
@@ -86,13 +91,13 @@ $ids = @($chunks | ForEach-Object { $_.id })
 # so 'C01.' and 'C01' would resolve to the SAME directory while reading as two
 # distinct ids -- two chunks racing one dir, or a double-counted metrics.json.
 $bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' -or $_ -match '[. ]$' })
-if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-], not be all dots, and not end in '.' or space: $($bad -join ', ')"; exit 2 }
+if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-], not be all dots, and not end in '.' or space: $($bad -join ', ')" -ErrorAction Continue; exit 2 }
 $dupes = @($ids | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
-if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')"; exit 2 }
+if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')" -ErrorAction Continue; exit 2 }
 
 if (-not $RepoPath) {
     $top = (& git rev-parse --show-toplevel 2>$null)
-    if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.'; exit 2 }
+    if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.' -ErrorAction Continue; exit 2 }
     $RepoPath = $top.Trim()
 }
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path

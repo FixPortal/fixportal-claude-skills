@@ -406,11 +406,11 @@ before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
 Phase 1, the first line matching `F#:` in Phase 2 — and keep from there. The
 narration is never part of a finding, so this is lossless. Apply it to Reviewer
-B and F; the Gemini and OpenAI reviewer output rarely needs it but check the
-same way.
+B and F; the Gemini, OpenAI (Codex) and Kimi reviewer output rarely needs it but
+check the same way.
 
-Collect the four finding sets verbatim (post-strip). Do not merge or edit them
-yet.
+Collect the five finding sets verbatim (post-strip) — B, F, G, X, K. Do not merge
+or edit them yet.
 
 ### 2. Phase 2 — cross-examination
 
