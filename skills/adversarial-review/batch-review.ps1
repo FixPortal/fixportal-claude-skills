@@ -70,15 +70,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $PSCommandPath
 $spine = Join-Path $scriptDir 'run-review.ps1'
-# -ErrorAction Continue on every fatal Write-Error below: $ErrorActionPreference is
-# 'Stop', under which Write-Error throws a terminating ActionPreferenceStopException
-# and the `exit <n>` after it never runs — so each distinct exit code was dead and
-# every failure surfaced as a bare exit 1. Print, then exit with the real code.
-if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script." -ErrorAction Continue; exit 2 }
+if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script."; exit 2 }
 
-if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest" -ErrorAction Continue; exit 2 }
+if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest"; exit 2 }
 $chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
-if (-not $chunks) { Write-Error "Chunk manifest is empty." -ErrorAction Continue; exit 2 }
+if (-not $chunks) { Write-Error "Chunk manifest is empty."; exit 2 }
 
 # Validate ids BEFORE any per-chunk work: each becomes a directory name joined to
 # RunRoot. A separator or '..' would let a chunk write outside the run root; a
@@ -90,13 +86,13 @@ $ids = @($chunks | ForEach-Object { $_.id })
 # so 'C01.' and 'C01' would resolve to the SAME directory while reading as two
 # distinct ids -- two chunks racing one dir, or a double-counted metrics.json.
 $bad = @($ids | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' -or $_ -match '^\.+$' -or $_ -match '[. ]$' })
-if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-], not be all dots, and not end in '.' or space: $($bad -join ', ')" -ErrorAction Continue; exit 2 }
+if ($bad) { Write-Error "Invalid chunk id(s) — must match [A-Za-z0-9._-], not be all dots, and not end in '.' or space: $($bad -join ', ')"; exit 2 }
 $dupes = @($ids | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
-if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')" -ErrorAction Continue; exit 2 }
+if ($dupes) { Write-Error "Duplicate chunk id(s): $($dupes -join ', ')"; exit 2 }
 
 if (-not $RepoPath) {
     $top = (& git rev-parse --show-toplevel 2>$null)
-    if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.' -ErrorAction Continue; exit 2 }
+    if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Error 'Not in a git repo and no -RepoPath given.'; exit 2 }
     $RepoPath = $top.Trim()
 }
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
@@ -170,8 +166,7 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -Parallel {
 
     $a = @('-NoProfile', '-File', $spine, '-Target', $Target, '-RepoPath', $RepoPath, '-WorkDir', $chunkDir)
     if ($c.pathspec) { $a += @('-Pathspec', ((@($c.pathspec)) -join ';')) }
-    $ctxPaths = @($ContextPath | Where-Object { $_ })
-    if ($ctxPaths) { $a += @('-ContextPath', ($ctxPaths -join ';')) }
+    foreach ($cp in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $cp) }
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $out = (& pwsh @a 2>&1 | Out-String)
@@ -274,8 +269,3 @@ Write-Host "  3. pwsh -NoProfile -File `"$scriptDir\aggregate-and-emit.ps1`" -Ru
 # `chunks` is what THIS invocation ran; `runChunks` is what the RunRoot now holds
 # in total, which is the number aggregate-and-emit.ps1 will emit as ChunkCount.
 [pscustomobject]@{ runRoot = $RunRoot; runId = $RunId; chunks = $results.Count; runChunks = $summaryRows.Count; failed = $failed.Count } | ConvertTo-Json -Compress
-
-# Fail loud: a chunk that errored out contributes no metrics, so a caller that only
-# checks $LASTEXITCODE (e.g. run-review.ps1's single-vendor Die) must see this as a
-# failure, not a clean exit 0 that happens to warn.
-if ($failed) { exit 1 }

@@ -59,8 +59,8 @@
     reviewers.json. Defaults to the copy beside this script.
 
 .PARAMETER MaxParallel
-    Reviewer concurrency. Default 4 (one per default-panel reviewer:
-    Fable + Sonnet + Gemini + GPT).
+    Reviewer concurrency. Default 5 (one per default-panel reviewer:
+    Sonnet + Fable + Codex + Kimi + Gemini).
 
 .OUTPUTS
     Writes all artefacts into WorkDir and prints a JSON status object plus a
@@ -80,7 +80,7 @@ param(
     [string] $RepoPath,
     [string] $WorkDir,
     [string] $ManifestPath,
-    [int] $MaxParallel = 4
+    [int] $MaxParallel = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,13 +88,10 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $scriptDir = Split-Path -Parent $PSCommandPath
 $emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
-# Normalize Pathspec/ContextPath: when called via pwsh -File from a subprocess, multi-element
-# arrays can't be passed as separate tokens without binding errors. Callers join with ';' instead.
+# Normalize Pathspec: when called via pwsh -File from a subprocess, multi-element arrays
+# can't be passed as separate tokens without binding errors. Callers join with ';' instead.
 if ($Pathspec.Count -eq 1 -and $Pathspec[0] -match ';') {
     $Pathspec = $Pathspec[0] -split ';'
-}
-if ($ContextPath.Count -eq 1 -and $ContextPath[0] -match ';') {
-    $ContextPath = $ContextPath[0] -split ';'
 }
 
 function Die([string] $msg, [int] $code = 1) {
@@ -260,15 +257,7 @@ function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool
     $thisDiff = if ($compactDiffFile -and -not $r.repoAccess) { $compactDiffFile } else { $diffFile }
     $a = @('-Instruction', $instruction, '-DiffPath', $thisDiff, '-Model', $r.model)
     if ($withFindings) { $a += @('-FindingsPath', $pooledFile) }
-    # ONE ';'-joined token, not repeated -ContextPath flags: the wrapper runs via a
-    # child `pwsh -File` (below), and PowerShell's -File binder rejects a named flag
-    # specified more than once ("parameter ... specified more than once"), so 2+
-    # context paths made every reviewer wrapper call fail. Every wrapper already
-    # splits its -ContextPath on ';' for exactly this reason (see gemini-review.ps1
-    # et al.) — matches the same normalization batch-review.ps1 uses to forward
-    # ContextPath to THIS script (§ line ~96).
-    $ctx = @($ContextPath | Where-Object { $_ })
-    if ($ctx) { $a += @('-ContextPath', ($ctx -join ';')) }
+    foreach ($c in @($ContextPath | Where-Object { $_ })) { $a += @('-ContextPath', $c) }
     if ($caps -contains 'Effort' -and $r.effort) { $a += @('-Effort', $r.effort) }
     if ($caps -contains 'RepoPath' -and $r.repoAccess) { $a += @('-RepoPath', $RepoPath) }
     # Wrappers that expose -UsageSidecarPath (G, X) write exact {inputTokens,
@@ -292,13 +281,32 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
     $jobs = foreach ($r in $reviewers) {
         $wrapper = Resolve-Wrapper $r
         $instruction = if ($withFindings) { $phase2 } else { $phase1 }
+        # Subscription-first, API-fallback: if the reviewer declares a
+        # fallbackWrapper (e.g. codex -> openai), resolve it and pre-build its
+        # args so the parallel round can retry through it when the primary
+        # (sub-backed CLI) exits non-zero — sub down / not logged in / lapsed.
+        $fbWrapper = $null; $fbArgs = $null
+        if ($r.fallbackWrapper) {
+            $fbFile = $manifest.wrappers.($r.fallbackWrapper)
+            if ($fbFile) {
+                $fbPath = Join-Path $scriptDir $fbFile
+                if (Test-Path -LiteralPath $fbPath) {
+                    $fbWrapper = $fbPath
+                    $fbArgs = (Build-Args $r $fbPath $instruction $withFindings $phaseLabel)
+                } else {
+                    Write-Warning "Reviewer '$($r.id)' fallbackWrapper '$($r.fallbackWrapper)' not found at $fbPath — no fallback."
+                }
+            }
+        }
         [pscustomobject]@{
-            Id      = $r.id
-            Label   = $r.label
-            Vendor  = $r.vendor
-            Wrapper = $wrapper
-            Args    = (Build-Args $r $wrapper $instruction $withFindings $phaseLabel)
-            OutFile = Join-Path $WorkDir ("{0}-{1}.txt" -f $phaseLabel, $r.id)
+            Id             = $r.id
+            Label          = $r.label
+            Vendor         = $r.vendor
+            Wrapper        = $wrapper
+            Args           = (Build-Args $r $wrapper $instruction $withFindings $phaseLabel)
+            FallbackWrapper = $fbWrapper
+            FallbackArgs   = $fbArgs
+            OutFile        = Join-Path $WorkDir ("{0}-{1}.txt" -f $phaseLabel, $r.id)
         }
     }
 
@@ -309,8 +317,17 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
         # Per-reviewer wall-clock for the metrics sidecar (telemetry duration).
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $out = (& pwsh -NoProfile -File $j.Wrapper @a 2>&1 | Out-String)
+        $ec = $LASTEXITCODE
+        $degraded = $false
+        # Fall back to the API wrapper if the sub-backed primary failed.
+        if (($ec -ne 0 -or [string]::IsNullOrWhiteSpace($out)) -and $j.FallbackWrapper) {
+            $fb = $j.FallbackArgs
+            $out = (& pwsh -NoProfile -File $j.FallbackWrapper @fb 2>&1 | Out-String)
+            $ec = $LASTEXITCODE
+            $degraded = $true
+        }
         $sw.Stop()
-        [pscustomobject]@{ Id = $j.Id; Label = $j.Label; Vendor = $j.Vendor; OutFile = $j.OutFile; Out = $out; Exit = $LASTEXITCODE; ElapsedMs = $sw.ElapsedMilliseconds }
+        [pscustomobject]@{ Id = $j.Id; Label = $j.Label; Vendor = $j.Vendor; OutFile = $j.OutFile; Out = $out; Exit = $ec; ElapsedMs = $sw.ElapsedMilliseconds; Degraded = $degraded }
     }
 
     $ok = @()
@@ -320,6 +337,9 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
             Set-Content -LiteralPath $res.OutFile -Value "[reviewer unavailable: exit $($res.Exit)]`n$($res.Out)" -Encoding utf8
         }
         else {
+            if ($res.Degraded) {
+                Write-Warning "[$phaseLabel] reviewer $($res.Id) ($($res.Label)) degraded to API fallback — the subscription-backed CLI failed."
+            }
             $clean = Strip-Preamble $res.Out $startPattern
             Set-Content -LiteralPath $res.OutFile -Value $clean -Encoding utf8
             $ok += $res
@@ -399,6 +419,10 @@ try {
         $p1res = $p1ok | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
         $p2res = $p2ok | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
         $durationMs = [long](($p1res.ElapsedMs ?? 0) + ($p2res.ElapsedMs ?? 0))
+        # Record whether this reviewer's sub-backed primary failed and the API
+        # fallback carried the phase, in either phase — so degraded-to-API state
+        # is durable in metrics.json, not just a transient warning.
+        $degraded = [bool](($p1res.Degraded) -or ($p2res.Degraded))
 
         $p1File = Join-Path $WorkDir ("p1-{0}.txt" -f $r.id)
         $raised = if (Test-Path -LiteralPath $p1File) {
@@ -414,10 +438,10 @@ try {
         # It must record zeros, not an estimate. The old code fell straight into
         # the sidecar-less branch below and billed it $estTokens * 2 — the DIFF's
         # own token estimate — so a dead reviewer was indistinguishable from a
-        # live one, and a chunk whose cross-vendor call failed logged the exact
-        # same figure as the reviewers that actually ran. Fabricated metrics for
-        # a reviewer that never spoke are worse than no metrics: they make a
-        # broken panel read as a working one.
+        # live one, and a chunk whose OpenAI call 401'd logged the exact same
+        # figure as the two Claude reviewers (observed: 23760 three times over).
+        # Fabricated metrics for a reviewer that never spoke are worse than no
+        # metrics: they make a broken panel read as a working one.
         $phasesRun = @(@($p1res, $p2res) | Where-Object { $_ }).Count
 
         if ($phasesRun -eq 0) {
@@ -430,6 +454,7 @@ try {
                 costUsd          = 0.0
                 costEstimated    = $false
                 failed           = $true
+                degraded         = $degraded
                 reviewDurationMs = $durationMs
                 issuesRaised     = 0
             }
@@ -444,6 +469,11 @@ try {
                 # the real figures it has but is flagged putative rather than exact,
                 # so the missing phase's cost is not silently presented as complete.
                 $estimated = ($sidecars.Count -lt $phasesRun)
+                # A sidecar that reports zero tokens (e.g. Kimi — its stream-json
+                # carries no usage) is not exact usage, it is unavailable: flag it
+                # estimated so the dashboard does not present a flat-rate ~0 as a
+                # measured figure.
+                if ($inTok -eq 0 -and $outTok -eq 0) { $estimated = $true }
             } else {
                 # No sidecar (Claude wrapper) — estimate from proxies and the blended
                 # rate. Input ≈ the diff once per phase ACTUALLY RUN (P1 full, P2 with
@@ -469,6 +499,7 @@ try {
                 costUsd          = [Math]::Round($cost, 6)
                 costEstimated    = $estimated
                 failed           = $false
+                degraded         = $degraded
                 reviewDurationMs = $durationMs
                 issuesRaised     = $raised
             }

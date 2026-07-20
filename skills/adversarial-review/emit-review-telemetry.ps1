@@ -10,19 +10,20 @@
     individual reviewer wrappers (gemini-review.ps1, openai-review.ps1).
 
     Called by the host agent (Claude Code or any other host) at the end of Phase 4
-    in the adversarial-review skill procedure -- four calls in parallel, one per
-    participant (three reviewers + one judge).
+    in the adversarial-review skill procedure -- five calls in parallel, one per
+    participant (four vendor reviewers -- anthropic, google, openai, moonshot --
+    plus one judge).
 
     Silently no-ops when OBSERVATORY_API_KEY or OBSERVATORY_URL is absent.
     When both vars are set, HTTP failures surface via Write-Error and exit 1 --
     callers must check $LASTEXITCODE and report failures to the operator.
 
 .PARAMETER RunId
-    UTC timestamp slug that ties all three reviewer events for one run together,
+    UTC timestamp slug that ties all five participant events for one run together,
     e.g. "20260614T143022Z". Use the workdir's own timestamp.
 
 .PARAMETER Reviewer
-    Vendor id of the reviewer: anthropic | google | openai.
+    Vendor id of the reviewer: anthropic | google | openai | moonshot.
 
 .PARAMETER Role
     The participant's role in the panel: reviewer | judge. REQUIRED -- the API
@@ -37,7 +38,7 @@
 .PARAMETER Summary
     Operator-assigned run name shown as the dashboard card title. Optional —
     only set when the invocation gave a naming directive (e.g. "...name it
-    'Verifying adjusted formatting'"). Same value on all four calls of a run.
+    'Verifying adjusted formatting'"). Same value on all five calls of a run.
     Capped at 80 chars server-side.
 
 .PARAMETER Model
@@ -62,7 +63,7 @@
     Number of chunks aggregated into this participant row for a chunked/batched
     review (large diff split into cohesive chunks, each a full panel run, summed
     per participant). Omit (or 0) for a single-diff run — the field is then sent
-    as null and the dashboard shows no aggregate badge. Same value on all four
+    as null and the dashboard shows no aggregate badge. Same value on all five
     calls of a run. Normally set by aggregate-and-emit.ps1, not by hand.
 
 .PARAMETER IssuesRaised
@@ -85,7 +86,7 @@ param(
     [string] $RunId,
 
     [Parameter(Mandatory)]
-    [ValidateSet('anthropic', 'google', 'openai')]
+    [ValidateSet('anthropic', 'google', 'openai', 'moonshot')]
     [string] $Reviewer,
 
     [Parameter(Mandatory)]
@@ -130,8 +131,8 @@ $body = @{
     issuesAccepted   = $IssuesAccepted
     runId            = $RunId
     role             = $Role
-    repo             = ($Repo    ? $Repo    : $null)
-    summary          = ($Summary ? $Summary : $null)
+    repo             = $Repo
+    summary          = $Summary
     # null for a single-diff run; a positive count flags an aggregated batch run.
     chunkCount       = ($ChunkCount -gt 0 ? $ChunkCount : $null)
 } | ConvertTo-Json -Compress

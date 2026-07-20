@@ -10,13 +10,23 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
 
 ---
 
-- `adversarial-review/reviewers.json` — panel composition is host-specific, and
-  that part is deliberate: the Claude Code copy honours the global "Opus needs
-  explicit approval" rule (Opus parked in `alternates`, Gemini active); the
-  Codex copy keeps Opus active as a reviewer; the Antigravity copy keeps Opus in
-  `alternates` and warns against pairing a Gemini reviewer with a Gemini-backed
-  (`agy`) adjudication — same-vendor judge re-correlates the error the panel
-  exists to decorrelate. Reconciling those would break a host.
+- `adversarial-review/reviewers.json` — panel composition is host-specific, but
+  the v2 all-frontier roster (2026-07-19) collapsed most of the old divergence:
+  the 5-reviewer / 4-vendor panel (Sonnet B, Fable F, Codex X, Kimi K, Gemini G;
+  Opus parked as Phase-3 judge) is now the SAME across `.claude`, `.agents` and
+  `.gemini`. Retired divergences (obsolete under v2, do NOT reinstate): the Codex
+  copy used to keep Opus **active as a reviewer** — under v2 that is a
+  reviewer==judge collapse (Opus is the judge), not a valid divergence, so
+  `.agents` now matches canonical byte-for-byte. The old per-host X-via-`openai`
+  wrapper is also gone: canonical X runs `codex` (sub-backed) with `openai` as
+  `fallbackWrapper`, which works on every home. The ONLY surviving deliberate
+  divergence is the `.gemini` (Antigravity) copy's **judge-vendor caution** in the
+  `roles._comment`: that host may adjudicate with a Gemini-backed model (`agy`),
+  so it carries a note to disable the Gemini reviewer if the Phase-3 judge is
+  swapped to Gemini — same-vendor judge re-correlates the error the panel exists
+  to decorrelate. `.agents` = canonical; `.gemini` = canonical + that one added
+  caution sentence. Reconciling the `.gemini` caution away would lose a host
+  guard; everything else in reviewers.json now syncs normally.
   **What is NOT divergent-by-design: the wrapper each reviewer runs through.**
   Corrected 2026-07-12 — the `.agents`/`.gemini` copies still routed the OpenAI
   reviewer through the `copilot` wrapper, which is dead on that account (the

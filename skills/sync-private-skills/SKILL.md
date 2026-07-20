@@ -77,14 +77,23 @@ manifest. The rule is by count of changed homes, not a per-combination table:
 
 | Homes changed vs manifest | Meaning | Action |
 |---|---|---|
-| exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other homes **that already hold the skill** (an absent home stays a curation call, never an auto-copy target) |
+| exactly one (`.claude` **or** `.agents` **or** `.gemini` **or** `.kimi-code`) | that home was edited | propose copy from the changed home → the other homes **that already hold the skill** (a home missing the whole skill stays a curation call; a home that holds the skill but lacks *this one file* is a new-file add target — see below) |
 | two or more | **conflict** | surface diffs, do NOT auto-pick a winner |
 | none (differs but all match manifest — impossible unless manifest stale) | stale manifest | treat as conflict, surface |
+| **new file** — no manifest entry, present in one holding home, absent from the other holding homes | that home added it (feature commit) | propose **adding** it to the other holding homes (step-5a scan first); a plain add, not a conflict |
 | (no manifest yet / first run) | unknown | treat every diff as a conflict to surface |
 
-A home that does not hold the skill at all is simply excluded from its
-comparison — a mirror-set file present in three homes is reconciled across those
-three; the fourth is a curation call, not a diff.
+Distinguish **whole-skill absence** from **single-file absence** — conflating
+them IS the new-file-blindness bug:
+- A home that does **not hold the skill at all** is excluded from that skill's
+  comparison — adding the whole skill to it is a curation call, not a diff.
+- A home that **holds the skill but is missing a file** the manifest or another
+  holding home has is a **one-sided new-file add**, NOT a curation skip. If the
+  file is present in the changed home (usually `.claude`) and absent from a
+  holding mirror, **propose adding it** there, subject to the step-5a
+  vendor-lock-in scan. Treat an absence as a *delete* only when the manifest
+  shows the file existed at last sync and the **source** home removed it — surface
+  that as a conflict, never auto-delete.
 
 mtime is shown only as a secondary *hint* next to the diff — never as the basis
 for an automatic overwrite.
@@ -105,8 +114,16 @@ deliberate.
    Compute the **mirror set** (present in at least two homes) and the **single-home-only** list (present in only one home).
    Report the single-home list; take no action on it.
 2. **Load** `.last-sync-manifest.json` (may be absent) and `intentionally-divergent.md`.
-3. **Compare every file** in each mirrored skill (SKILL.md + all supporting
-   files) by content hash. Identical both sides → in sync, skip.
+3. **Compare every file** in each mirrored skill by content hash. Enumerate the
+   file set as the **union** of every file that exists in ANY home holding the
+   skill, **plus** every manifest key for that skill — never just one home's
+   listing. This is load-bearing: a file a feature commit ADDED in one home
+   (e.g. a new `.claude` wrapper) is absent from the others, so iterating a
+   single mirror's existing files alone never sees it and the reconciler goes
+   **new-file-blind** — exactly how the v2 `adversarial-review` wrappers
+   `codex-review.ps1` / `kimi-review.ps1` (and `briefs/phase3.5-judge-audit.txt`)
+   silently never propagated for a week while every already-present file synced
+   fine. Identical across all holding homes → in sync, skip.
 4. **Skip registered divergences** — report them, don't touch.
 5. **Classify each remaining diff** via the manifest table above into:
    one-sided (propose the copy in the changed→unchanged direction) or
@@ -135,9 +152,13 @@ deliberate.
 7. **Apply confirmed copies** with a plain `Copy-Item` (recurse for whole new
    files), preserving bytes/encoding — no transform. For a conflict, only act on
    the direction the user explicitly chooses.
-8. **Update the manifest** with the new post-sync hashes for every reconciled
-   file. Report what synced, what was skipped (identical / intentional /
-   curation), and any conflict left unresolved.
+8. **Update the manifest** to the **full current fileset**, not just the files
+   touched this run: write the post-sync hash for every file now present across
+   the holding homes (including newly-added ones), and **drop** keys for files no
+   longer present anywhere. Rewriting only reconciled entries lets the manifest
+   carry a stale fileset forward — which is what hid the missing v2 files. Report
+   what synced, what was skipped (identical / intentional / curation), and any
+   conflict left unresolved.
 
 ## Common Mistakes
 
@@ -149,6 +170,8 @@ deliberate.
 | `Copy-Item -Force` straight from the plan | Show the diff, name the changed side, confirm. Then copy. |
 | Clobbering an intentionally per-host file (reviewers.json) | Honour `intentionally-divergent.md`. When unsure if a divergence is deliberate, surface it — don't resolve it. |
 | Applying the sanitisation map | That's `sync-public-skills`. Private↔private is a verbatim copy. |
+| Enumerating only one mirror's existing files (or only manifest keys) | Walk the **union** across all holding homes + manifest (step 3). A file a feature commit ADDED in `.claude` is absent from the mirrors — iterate one home's listing and it stays invisible (v2 `codex-review.ps1`/`kimi-review.ps1` silently never propagated). |
+| Treating a `.claude`-new file's absence in a mirror as a curation skip | Single-file absence in a home that HOLDS the skill is a new-file **add**, not curation. Curation is only for a whole-skill-absent home. |
 | Copying a file with an `mcp__icm__`/`mcp__plugin_azure__`/etc. reference straight into `.agents`/`.gemini`/`.kimi-code` | Claude-only MCP servers aren't registered on other hosts (Kimi has its own `~/.kimi-code/mcp.json`) — the "if available" gate in the skill text doesn't stop config-error noise. Run the step-5a scan, hold the file back, get a decision. (Bit `recap`/`close` — ICM calls mirrored into Codex/Antigravity, fixed 2026-07-08.) |
 
 ## Red Flags — STOP
@@ -159,3 +182,6 @@ deliberate.
 - You decided a divergence is "intentional" or "stale" by reading the content
   instead of checking the manifest / registry / asking.
 - You skipped reading `intentionally-divergent.md` this run.
+- You enumerated files from one home (or the manifest) instead of the **union**
+  of all holding homes + manifest — new files added in another home are invisible
+  to that, and the reconciler reports "in sync" while silently missing them.

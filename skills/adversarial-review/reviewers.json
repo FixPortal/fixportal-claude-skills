@@ -1,19 +1,21 @@
 {
-  "_comment": "Adversarial-review panel composition, as data. The driver (run-review.ps1 / run_review.py) reads this to know which reviewers to run, with which wrapper, model, and reasoning effort. Swap or add reviewers HERE, not in code. INVARIANT: the active (enabled) reviewer set must span at least `minVendors` distinct vendors — uncorrelated error across vendors is the entire point of the panel. A panel of same-vendor reviewers is just self-review.",
+  "_comment": "Adversarial-review panel composition, as data. The driver (run-review.ps1) reads this to know which reviewers to run, with which wrapper, model, and reasoning effort. Swap or add reviewers HERE, not in code. INVARIANT: the active (enabled) reviewer set must span at least `minVendors` distinct vendors -- uncorrelated error across vendors is the entire point of the panel. v2: all vendors are subscription-backed CLIs (see `wrapper`); the metered-API wrappers are retained as `fallbackWrapper` for when a subscription is unavailable. See docs/METHODOLOGY-v2.md.",
 
   "minVendors": 2,
 
   "wrappers": {
-    "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction -DiffPath [-FindingsPath] [-ContextPath...] -Model, returning the review text on stdout and a non-zero exit on failure. `effort` and `repoAccess` are honoured only by wrappers that declare the matching parameter (-Effort / -RepoPath); the driver introspects each wrapper and silently omits a flag the wrapper does not support. Today only claude-review.ps1 exposes both — Copilot and Gemini CLIs do not surface a clean reasoning-effort flag, so `effort` is a no-op for them.",
+    "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction/-InstructionPath -DiffPath [-FindingsPath] [-ContextPath] -Model [-Effort] [-RepoPath] [-OutPath] [-UsageSidecarPath], returning the review text on stdout and a non-zero exit on failure. Subscription-backed CLI wrappers (claude/codex/kimi/gemini) are primary; api wrappers (openai) are fallbacks. `effort` and `repoAccess` are honoured only where the underlying CLI supports them; the driver introspects each wrapper and omits a flag it does not declare.",
     "claude": "claude-review.ps1",
-    "copilot": "external-review.ps1",
+    "codex": "codex-review.ps1",
+    "kimi": "kimi-review.ps1",
     "gemini": "gemini-review.ps1",
-    "openai": "openai-review.ps1"
+    "openai": "openai-review.ps1",
+    "copilot": "external-review.ps1"
   },
 
   "reviewers": [
     {
-      "_comment": "Anthropic reviewer slot #1 (Sonnet). Set to `sonnet` (not `opus`) deliberately: the Phase-3 judge is Opus (see `roles.judge`), so a Sonnet reviewer keeps reviewer != judge model, preserving the panel's decorrelation. An Opus reviewer would collapse the anthropic axis to the judge's model seen twice. The Opus judge + Phase-4 verifiers carry the heavy reasoning. TWO-ANTHROPIC-REVIEWER CAVEAT: since 2026-07-02 there is a second Anthropic reviewer (Fable, id `F`, below) enabled while Fable 5 is available for a limited time. Fable + Sonnet share a vendor, so their errors correlate — they are NOT two independent votes. The Phase-3 brief therefore weights consensus by VENDOR, not reviewer headcount (Fable+Sonnet agreeing = one Anthropic vote), and the Observatory telemetry sums both into one `anthropic/reviewer` row (the dashboard tracks the vendor axis). When Fable's limited-time window closes, disable id `F` and this reverts to a single Anthropic reviewer.",
+      "_comment": "Anthropic reviewer #1 (Sonnet). Subscription-backed via Claude Code (Agent tool in-process) or `claude -p` (claude-review.ps1) on other hosts. Repo-aware and hard read-only (--permission-mode plan). Reviewer != judge: the Phase-3 judge is Opus, so a Sonnet reviewer keeps the anthropic axis decorrelated from the adjudicator.",
       "id": "B",
       "label": "Claude Sonnet",
       "wrapper": "claude",
@@ -24,7 +26,7 @@
       "enabled": true
     },
     {
-      "_comment": "Anthropic reviewer slot #2 (Fable 5). Added 2026-07-02 while Fable 5 is available for a limited time. Same vendor as reviewer B — see the two-anthropic caveat on B: this is a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. `model: fable` is the CLI alias (claude-review.ps1 --model / the Agent tool both accept it); the canonical id for telemetry is `claude-fable-5`. Disable this (enabled:false) when the Fable window closes to return to a single Anthropic reviewer.",
+      "_comment": "Anthropic reviewer #2 (Fable 5). Same vendor as B -- a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Fable is now available in perpetuity on the Claude subscription. Canonical telemetry id: claude-fable-5.",
       "id": "F",
       "label": "Claude Fable 5",
       "wrapper": "claude",
@@ -35,6 +37,30 @@
       "enabled": true
     },
     {
+      "_comment": "OpenAI reviewer. PRIMARY = Codex CLI (codex-review.ps1), subscription-backed via a ChatGPT Pro login -- no metered credits. FALLBACK = openai-review.ps1 (direct Chat Completions API) for when no subscription is available; the driver falls back on primary non-zero exit and flags the run degraded-to-API. Repo-aware and HARD read-only (codex exec --sandbox read-only). Note: codex model ids differ from the API model id below; the codex wrapper uses the subscription's default model unless the id is codex-native, and records `model` for telemetry grouping only.",
+      "id": "X",
+      "label": "GPT (Codex)",
+      "wrapper": "codex",
+      "fallbackWrapper": "openai",
+      "model": "gpt-5.6-sol",
+      "vendor": "openai",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "_comment": "Moonshot reviewer. Subscription-backed via the Kimi Code CLI (kimi-review.ps1), Allegretto OAuth login -- no API fallback (sub-only). Model is kimi-code/kimi-for-coding (K2.7 Coding, Standard) -- the CLI's own default_model. NOTE: kimi-for-coding-highspeed bills ~3x the credits of Standard for equivalent review output (the highspeed multiplier, not extra work), so a modest panel run burned ~30% of the weekly allowance; Standard is the credit-sane default. Do NOT confuse Standard with kimi-code/k3 -- K3 is a distinct 1M-context model (freshly launched, capacity-congested as of mid-Jul 2026), not the Standard tier of K2.7. Swap to kimi-code/k3 here only if a chunk genuinely needs the 1M window; swap to kimi-code/kimi-for-coding-highspeed only if speed is worth the 3x credit burn. repoAccess is FALSE by default deliberately: Kimi Code has no per-invocation read-only flag and its global default_permission_mode is typically 'yolo' (auto-approve writes/bash), so the wrapper runs it hermetically (throwaway scratch cwd + copied context, repo NOT in the workspace). It is still a strong 4th vendor blind+context. To enable repo-aware call-path tracing, set repoAccess=true -- the wrapper then adds the repo via --add-dir, guarded by a read-only prompt + the git working tree (accidental writes are detectable/revertable), NOT a hard sandbox. Canonical telemetry id: kimi-for-coding.",
+      "id": "K",
+      "label": "Kimi (standard)",
+      "wrapper": "kimi",
+      "model": "kimi-code/kimi-for-coding",
+      "vendor": "moonshot",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": true
+    },
+    {
+      "_comment": "Google reviewer (Gemini). Subscription-backed via the Gemini CLI on the user's Google One entitlement. Diff-only (repo-blind): pass the key repo files via -ContextPath. The wrapper pins gemini-2.5-pro.",
       "id": "G",
       "label": "Gemini",
       "wrapper": "gemini",
@@ -43,22 +69,12 @@
       "effort": "high",
       "repoAccess": false,
       "enabled": true
-    },
-    {
-      "id": "X",
-      "label": "GPT-5.6 Sol (via OpenAI API)",
-      "wrapper": "openai",
-      "model": "gpt-5.6-sol",
-      "vendor": "openai",
-      "effort": "high",
-      "repoAccess": false,
-      "enabled": true
     }
   ],
 
   "alternates": [
     {
-      "_comment": "Opus is reserved as judge (Phase 3) and verifier — not a blind reviewer. Do NOT pair a Gemini reviewer with a Gemini-backed host adjudicating the same finding — same-vendor reviewer-and-judge re-correlates the error the panel exists to decorrelate.",
+      "_comment": "Opus is reserved as judge (Phase 3) and verifier (Phase 4) -- not a blind reviewer. Do NOT enable as a reviewer: reviewer==judge collapses the anthropic axis to the adjudicator's model seen twice.",
       "id": "O",
       "label": "Claude Opus",
       "wrapper": "claude",
@@ -71,9 +87,10 @@
   ],
 
   "roles": {
-    "_comment": "Judgment roles the host runs after the driver's blind+cross-examine spine. Under Claude Code these may instead run as in-process Agent-tool calls; the driver and SKILL.md describe both paths. effort/repoAccess apply as above.",
+    "_comment": "Judgment roles the host runs after the driver's blind+cross-examine spine. Phase 3 (adjudicate) is a single Opus judge for one coherent voice. Phase 3.5 (judge-audit, opt-in) is a cross-vendor sanity check on the adjudicated report -- default a non-Anthropic vendor. Phase 4 (verify) draws from a CROSS-VENDOR pool (Sonnet/Kimi/Codex), rotated by vendor, so verification is not an Anthropic monoculture.",
     "judge": { "wrapper": "claude", "model": "opus", "effort": "max", "repoAccess": true },
-    "verifier": { "wrapper": "claude", "model": "sonnet", "effort": "high", "repoAccess": true },
+    "judgeAudit": { "pool": ["kimi", "codex"], "effort": "high", "repoAccess": true },
+    "verifier": { "pool": ["claude:sonnet", "kimi", "codex"], "effort": "high", "repoAccess": true },
     "synthesis": { "wrapper": "claude", "model": "opus", "effort": "high", "repoAccess": false }
   }
 }

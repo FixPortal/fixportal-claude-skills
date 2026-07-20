@@ -98,17 +98,6 @@ if (-not (Get-Command gemini -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
-# Clear any sidecar left by a previous attempt in this same work dir BEFORE
-# calling gemini. batch-review.ps1 reuses the chunk work dir across retries, and
-# every early exit below (CLI failure, unparsable JSON, empty response) returns
-# without ever reaching the sidecar write further down -- leaving a stale sidecar
-# in place would let the host (run-review.ps1) sum a FAILED retry's telemetry as
-# if it were this attempt's, silently inflating cost with numbers from a call
-# that never happened this time.
-if ($UsageSidecarPath -and (Test-Path -LiteralPath $UsageSidecarPath)) {
-    Remove-Item -LiteralPath $UsageSidecarPath -Force -ErrorAction SilentlyContinue
-}
-
 function Read-InputFile([string] $path, [string] $label) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         Write-Error "$label not found: $path"
@@ -230,13 +219,6 @@ if ([string]::IsNullOrWhiteSpace($response)) {
 # The JSON envelope's stats block carries real per-model token usage; without
 # this post, headless gemini reviews are invisible to the AI Observatory (no
 # hook covers the plain gemini CLI).
-# Accumulate this call's usage so it can be written to the sidecar (host reads
-# it for the adversarial-review outcome event) regardless of Observatory posting.
-# Computed and written OUTSIDE the `stats.models` gate below: a retry whose
-# response lacks stats must overwrite a stale sidecar from the previous call
-# with zeros, not leave it un-touched (the sidecar has no other invalidation).
-$sumIn = 0L; $sumOut = 0L; $sumCost = 0.0
-
 if ($json.stats?.models) {
     # USD per million tokens: input / output / thoughts (0.00 = no thinking tier)
     # Rates from https://ai.google.dev/gemini-api/docs/pricing (2025-06-19)
@@ -250,8 +232,11 @@ if ($json.stats?.models) {
         'gemini-2.5-flash-lite'  = @( 0.10,  0.40, 0.00)
         'gemini-2.5-flash'       = @( 0.30,  2.50, 3.50)
     }
-    $observatoryUrl = $env:OBSERVATORY_URL
+    $observatoryUrl = $env:OBSERVATORY_URL ?? 'https://fpaiobs-api.azurewebsites.net'
     $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()
+    # Accumulate this call's usage so it can be written to the sidecar (host reads
+    # it for the adversarial-review outcome event) regardless of Observatory posting.
+    $sumIn = 0L; $sumOut = 0L; $sumCost = 0.0
 
     foreach ($mProp in $json.stats.models.PSObject.Properties) {
         try {
@@ -273,7 +258,7 @@ if ($json.stats?.models) {
 
             # Post to the general usage pipeline (Overview) only when configured;
             # the sidecar below is written independently for the adv-review event.
-            if ($env:OBSERVATORY_API_KEY -and $observatoryUrl) {
+            if ($env:OBSERVATORY_API_KEY) {
                 # cacheWriteTokens carries thinking tokens (observatory hook convention).
                 $obsBody = @{
                     provider         = 'Google'
@@ -302,19 +287,25 @@ if ($json.stats?.models) {
             }
         } catch { }
     }
-}
 
-if ($UsageSidecarPath) {
-    try {
-        @{ inputTokens = $sumIn; outputTokens = $sumOut; costUsd = [Math]::Round($sumCost, 8) } |
-            ConvertTo-Json -Compress | Set-Content -LiteralPath $UsageSidecarPath -Encoding UTF8
-    } catch { }
+    if ($UsageSidecarPath) {
+        try {
+            @{ inputTokens = $sumIn; outputTokens = $sumOut; costUsd = [Math]::Round($sumCost, 8) } |
+                ConvertTo-Json -Compress | Set-Content -LiteralPath $UsageSidecarPath -Encoding UTF8
+        } catch { }
+    }
 }
 
 # Emit the review: to -OutPath when set (keeps the caller free of a '> file'
 # redirect), otherwise to stdout.
 if ($OutPath) {
-    $response.TrimEnd() | Set-Content -LiteralPath $OutPath -Encoding utf8
+    try {
+        $response.TrimEnd() | Set-Content -LiteralPath $OutPath -Encoding utf8 -ErrorAction Stop
+    }
+    catch {
+        Write-Error "Failed to write review output to '$OutPath': $($_.Exception.Message)"
+        exit 1
+    }
 }
 else {
     $response.TrimEnd()
