@@ -42,12 +42,6 @@
     (e.g. gpt-5.4) may differ from the canonical API model id -- verify against
     https://api.openai.com/v1/models before setting.
 
-.PARAMETER UsageSidecarPath
-    Optional. When set, the script writes a JSON sidecar with the API usage
-    (inputTokens, outputTokens, costUsd) so the host agent can pass accurate
-    metrics to emit-review-telemetry.ps1 rather than defaulting to zero.
-    Pass only for Phase 1 (the blind review call).
-
 .OUTPUTS
     The model's review text on stdout. Non-zero exit code on failure.
 
@@ -155,15 +149,15 @@ $requestBody = @{
     )
 } | ConvertTo-Json -Depth 10 -Compress
 
-# A transient failure here silently costs the panel an entire vendor for the whole
+# Transient failures here silently cost the panel an entire vendor for the whole
 # chunk: the caller records "[reviewer unavailable]" and the run reads as a valid
-# 2-vendor degrade rather than an error. This has been observed with HTTP 401
-# ("insufficient permissions") firing intermittently on payloads that succeed
-# unchanged on retry -- bisecting one such payload showed it failing twice and then
-# succeeding byte-identical, while a smaller slice of the same diff failed. So it is
-# neither size-related nor deterministic. Retry the retryable codes before giving up.
-# 401 is included deliberately: it is normally a genuine auth error (and a real one
-# still fails after the retries), but some accounts emit it spuriously under load.
+# 2-vendor degrade. Observed 401 "insufficient permissions" firing intermittently
+# on payloads that succeed unchanged on retry -- bisected: an identical 62,822-byte
+# diff failed twice, then succeeded at 14,577 prompt tokens, while a smaller 15k
+# slice failed. Not size-related, not deterministic. So retry the retryable codes
+# before giving up. 401 is included deliberately: it is normally an auth error
+# (and a real one still fails after the retries), but this account also emits it
+# spuriously under load.
 $retryableStatus = @(401, 408, 429, 500, 502, 503, 504)
 $maxAttempts = 4
 $response = $null
@@ -261,8 +255,8 @@ if ($UsageSidecarPath -and $response.usage) {
 # Usage is in the response body directly -- no post-hoc session-state sweep.
 # Reasoning tokens (o1/o3/o4) are stored in cacheWriteTokens by convention,
 # matching the Gemini wrapper's treatment of thinking tokens.
-if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
-    $observatoryUrl = $env:OBSERVATORY_URL
+if ($env:OBSERVATORY_API_KEY -and $response.usage) {
+    $observatoryUrl = $env:OBSERVATORY_URL ?? 'https://fpaiobs-api.azurewebsites.net'
     $sessionId      = [Guid]::NewGuid().ToString()
     $usage          = $response.usage
 
@@ -301,11 +295,14 @@ if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
     }
 }
 
-# Emit the review: to -OutPath when set (keeps the caller free of a '> file'
-# redirect), otherwise to stdout.
 if ($OutPath) {
-    $text.TrimEnd() | Set-Content -LiteralPath $OutPath -Encoding utf8
-}
-else {
+    try {
+        $text.TrimEnd() | Set-Content -LiteralPath $OutPath -Encoding utf8 -ErrorAction Stop
+    }
+    catch {
+        Write-Error "Failed to write review output to '$OutPath': $($_.Exception.Message)"
+        exit 1
+    }
+} else {
     $text.TrimEnd()
 }

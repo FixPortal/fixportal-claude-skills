@@ -8,35 +8,52 @@ description: Use when the user requests an adversarial review, cross-vendor / mu
 ## Overview
 
 `adversarial-review` runs a code review as a multi-model panel whose value
-comes from *uncorrelated* error: models across three vendors — Claude (Fable 5
-and Sonnet), Google Gemini, and GPT-5.6 Sol (via the OpenAI Chat Completions API) —
-review the same change, then attack each other's findings, then a judge
-(Claude Opus) reconciles. NOTE: as of 2026-07-02 the panel runs FOUR reviewers
-across three vendors — Claude Fable 5 was re-added as a second Anthropic
-reviewer alongside Claude Sonnet while Fable 5 is available for a limited time
-(it had been unreachable from 2026-06-13 under US Commerce Dept access
-restrictions). Fable and Sonnet share a vendor, so their errors CORRELATE — they
-are not two independent votes. Two consequences follow and are enforced
-throughout: (1) the judge measures consensus by VENDOR, not reviewer headcount
-(Fable+Sonnet agreeing = one Anthropic vote — see the Phase-3 brief); (2) the
-Observatory telemetry sums both Anthropic reviewers into one `anthropic/reviewer`
-row (the dashboard tracks the vendor axis). The Sonnet/Fable reviewers are kept
-distinct from the Opus judge so the Anthropic Phase-1 voice and the adjudicator
-stay decorrelated; an Opus reviewer would collapse that axis to the judge's model
-seen twice. When Fable's limited-time window closes, disable reviewer `F` in
-`reviewers.json` and the panel reverts to a single Anthropic reviewer.
+comes from *uncorrelated* error: models across FOUR vendors review the same
+change, then attack each other's findings, then a judge (Claude Opus) reconciles.
+The v2 panel is FIVE reviewers across FOUR vendors, every one subscription-backed
+(no metered API credits by default — see **Prerequisites** and
+`docs/METHODOLOGY-v2.md`):
 
-The pipeline has four phases, and the invariants matter more than the tools:
+- **Anthropic** — Claude Sonnet (`B`) and Claude Fable 5 (`F`), both repo-aware
+  (hard read-only via `--permission-mode plan`). Fable is available in perpetuity
+  on the Claude subscription.
+- **OpenAI** — GPT via the Codex CLI (`X`), ChatGPT-Pro-backed, repo-aware (hard
+  read-only via `codex exec --sandbox read-only`). Falls back to the metered
+  Chat Completions API (`openai-review.ps1`) only if the CLI is unavailable.
+- **Moonshot** — Kimi K2.7 Standard (`K`, model `kimi-code/kimi-for-coding`;
+  `-highspeed` bills ~3x the credits, `kimi-code/k3` is the deeper 1M variant),
+  Allegretto-backed. Diff-blind by default (Kimi Code has no hard read-only mode;
+  run hermetically).
+- **Google** — Gemini (`G`), Google-One-backed, diff-blind (feed it `-ContextPath`).
+
+Fable and Sonnet share a vendor, so their errors CORRELATE — they are not two
+independent votes. Two consequences are enforced throughout: (1) the judge
+measures consensus by VENDOR, not reviewer headcount (Fable+Sonnet agreeing = one
+Anthropic vote — see the Phase-3 brief); (2) the Observatory telemetry sums both
+Anthropic reviewers into one `anthropic/reviewer` row (the dashboard tracks the
+vendor axis). The reviewers are kept distinct from the Opus judge so the Phase-1
+voices and the adjudicator stay decorrelated; an Opus reviewer would collapse an
+axis to the judge's model seen twice. Swap or disable any reviewer in
+`reviewers.json` — the driver enforces the ≥`minVendors` diversity invariant.
+
+The pipeline has four phases (plus an opt-in judge-audit), and the invariants
+matter more than the tools:
 
 1. **Blind** — each reviewer sees the diff and nothing else, never another
    reviewer's output. Independence is what keeps their mistakes uncorrelated.
 2. **Cross-examine** — each reviewer sees the *pooled, unattributed* findings
    and is told to attack them: false positives, overstatements, gaps.
-3. **Adjudicate** — a separate judge reconciles into one ranked report and
-   surfaces disagreement instead of averaging it away.
+3. **Adjudicate** — a separate judge (Opus) reconciles into one ranked report
+   and surfaces disagreement instead of averaging it away.
+   - **3.5 Judge-audit (opt-in)** — a cross-vendor pass (default a non-Anthropic
+     vendor) that checks the judge's report against its own inputs for dropped
+     findings, mis-ratings, and consensus mislabels. Off unless requested
+     (`-JudgeAudit`); the judge's inputs are already multi-vendor.
 4. **Verify** — every High and every contested finding is checked against the
-   live code before the report is published. A blind panel over-rates severity
-   — it labels things High that turn out unreachable — so a finding that
+   live code before the report is published, by a fresh agent drawn from a
+   **cross-vendor pool** (Sonnet / Kimi / Codex, rotated by vendor) so
+   verification is not a single-vendor monoculture. A blind panel over-rates
+   severity — it labels things High that turn out unreachable — so a finding that
    survives a deliberate attempt to refute it is worth far more than one that
    merely sounded plausible. This phase is where roughly half of over-rated
    Highs are caught.
@@ -79,28 +96,33 @@ resolves all of this in full.
 ## Prerequisites
 
 - A git repository — the change under review lives here.
-- The native panel spans three vendors across four reviewers: **Claude Fable 5**
-  and **Claude Sonnet** (both spawned in-process via the `Agent` tool),
-  **Google Gemini** (`gemini-review.ps1`), and **GPT-5.6 Sol** (`openai-review.ps1`,
-  via the OpenAI Chat Completions API). The two non-Claude reviewers run as
-  subprocess wrappers because no `Agent` tool exists for non-Claude vendors.
-  Fable and Sonnet are the same vendor (Anthropic) — see the Overview: consensus
-  is vendor-weighted and their telemetry is merged into one Anthropic row.
-- `$env:OPENAI_API_KEY` set to an OpenAI key with Chat Completions access (for
-  the GPT reviewer), and the Gemini CLI installed and authenticated (`gemini` on
-  PATH), drawing on the user's Google quota.
-- `openai-review.ps1` and `gemini-review.ps1` (beside this file) wrap those
-  two calls. If a wrapper exits non-zero — not authenticated, quota exhausted,
-  model unavailable — report that reviewer as unavailable and continue, **as
-  long as at least two vendors still ran** (e.g. Sonnet + Gemini, or Sonnet + GPT).
-  A two-vendor panel is degraded, not broken; do not abort. But only a
-  single-vendor panel is self-review — if **both** non-Claude reviewers fail,
-  say so and stop rather than pass a Claude-only run off as adversarial.
-- `claude-review.ps1` (Claude tiers via `claude -p`) shares the same contract and
-  exists for non-Claude-Code hosts that lack the `Agent` tool, and for swapping
-  the panel via `reviewers.json` (see **Cross-host operation**). The native
-  Claude Code path does not need it — it spawns the Sonnet reviewer with the
-  `Agent` tool directly.
+- The v2 panel spans FOUR vendors across FIVE reviewers, all subscription-backed
+  via CLIs — no API keys required by default:
+  - **Anthropic** — Claude Sonnet + Fable 5, spawned in-process via the `Agent`
+    tool under Claude Code (or `claude -p` on other hosts). Claude Max login.
+  - **OpenAI** — GPT via the **Codex** CLI (`codex-review.ps1`), authenticated by
+    a ChatGPT login (`codex login` → "Logged in using ChatGPT"). Metered fallback
+    `openai-review.ps1` needs `$env:OPENAI_API_KEY`.
+  - **Moonshot** — Kimi (K2.7 Standard) via the **Kimi Code** CLI (`kimi-review.ps1`), `kimi
+    login` (OAuth). No API fallback.
+  - **Google** — Gemini via the **Gemini** CLI (`gemini-review.ps1`), Google One /
+    Google login.
+  The two Anthropic reviewers share a vendor — consensus is vendor-weighted and
+  their telemetry merges into one Anthropic row (see the Overview).
+- Ensure each CLI is on PATH and logged in: `claude`, `codex`, `kimi`, `gemini`.
+  Subscription CLIs are flat-rate, so per-token cost is reported **putative**
+  (the treatment Claude already used). The OpenAI API fallback is the only path
+  that needs a key.
+- Degradation: if a reviewer's primary (sub-backed) wrapper exits non-zero, the
+  driver falls back to its `fallbackWrapper` (OpenAI only) and flags the run
+  degraded-to-API. If a reviewer has no fallback (Kimi/Gemini) or the fallback
+  also fails, report it unavailable and continue **as long as at least two
+  vendors still ran** — a two-vendor panel is degraded, not broken. A
+  single-vendor panel is self-review: if diversity drops below `minVendors`, stop
+  rather than pass a same-vendor run off as adversarial.
+- `claude-review.ps1` (Claude tiers via `claude -p`) shares the same contract for
+  non-Claude-Code hosts that lack the `Agent` tool. The native Claude Code path
+  does not need it — it spawns the Claude reviewers with the `Agent` tool directly.
 
 ## Cross-host operation (manifest + driver)
 
@@ -173,7 +195,7 @@ ask the operator a single question before running — e.g. *"Would you like to n
 this review for the Observatory dashboard? (optional — it becomes the run's card
 title; press enter / say skip for none)"* — and capture their answer as the run
 name. A blank/declined answer means no name (unchanged behaviour). Carry the
-captured name to the §3a telemetry step as `-Summary` on all four emit calls.
+captured name to the §3a telemetry step as `-Summary` on all five emit calls.
 Ask only once; never block the review on it.
 
 The skill argument has the form `[<target>] [-- <pathspec>…]`: the part before
@@ -301,7 +323,7 @@ each chunk is a full run (see Cost).
 
 ### 1. Phase 1 — blind independent review
 
-Run all four reviewers **in parallel, in a single message**. Each is given the
+Run all five reviewers **in parallel, in a single message**. Each is given the
 Phase 1 brief and the diff; none is given anything from the others.
 
 **Audit mode:** when the target is an `audit`, the diff is the empty tree vs
@@ -319,11 +341,11 @@ really are new.
   repo access.
 - **Reviewer F** — `Agent` tool, `subagent_type: general-purpose`,
   `model: fable` (Claude Fable 5). Same prompt and repo access as Reviewer B —
-  it is the second Anthropic reviewer (enabled while Fable 5 is available). It is
-  the SAME vendor as B, so it is not an independent fourth vote: consensus is
+  the second Anthropic reviewer (available in perpetuity on the subscription). It
+  is the SAME vendor as B, so it is not an independent vote: consensus is
   vendor-weighted at adjudication (Fable+Sonnet = one Anthropic vote) and its
   telemetry merges with B's into one Anthropic row (§3a). Spawn it in the same
-  parallel message as B, G, and X.
+  parallel message as G, X, and K.
 - **Reviewer G** — the Gemini wrapper. Write the Phase 1 brief to a file in the
   working directory first; the wrapper reads it inlined. Invoke via
   `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist. In every
@@ -336,13 +358,21 @@ really are new.
   The wrapper pins `gemini-2.5-pro`. `-UsageSidecarPath` writes Gemini's exact
   summed `{inputTokens,outputTokens,costUsd}` for the §3a outcome event (Phase 1
   only, same as Reviewer X).
-- **Reviewer X** — the OpenAI wrapper, same pattern:
-  `pwsh -NoProfile -File "<skill-dir>/openai-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>/usage-X.json"`
-  The model is `gpt-5.6-sol` as configured in `reviewers.json`. Pass `-UsageSidecarPath` for Phase 1 only — the
-  sidecar captures exact token counts from the API response so the host agent
-  can pass real figures to `emit-review-telemetry.ps1` rather than zeros.
+- **Reviewer X** — the OpenAI vote via the **Codex** wrapper (ChatGPT-Pro sub),
+  same pattern; Codex is repo-aware (hard read-only sandbox), so pass `-RepoPath`:
+  `pwsh -NoProfile -File "<skill-dir>/codex-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -RepoPath "<repo>" -Model "gpt-5.6-sol" -UsageSidecarPath "<workdir>/usage-X.json"`
+  The Codex wrapper draws token/putative-cost from `codex exec --json`. If the
+  Codex CLI is unavailable, fall back to `openai-review.ps1` (metered API, needs
+  `$env:OPENAI_API_KEY`) — the driver does this automatically via
+  `fallbackWrapper`. Pass `-UsageSidecarPath` for Phase 1 only.
+- **Reviewer K** — the Moonshot vote (Kimi, K2.7 Standard) via the **Kimi** wrapper
+  (Allegretto sub), same pattern. Diff-blind by default (Kimi Code has no hard
+  read-only mode; the wrapper runs it hermetically), so feed it `-ContextPath`
+  like Gemini rather than `-RepoPath`:
+  `pwsh -NoProfile -File "<skill-dir>/kimi-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -Model "kimi-code/kimi-for-coding" -UsageSidecarPath "<workdir>/usage-K.json"`
+  Kimi's stream-json carries no token usage, so its cost is putative-from-zero.
 
-  **Neither cross-vendor reviewer (G or X) sees the repository** — unlike B,
+  **Reviewers G and K are repo-blind** — unlike B, F, and X (Codex),
   they work only from the files you hand them. That blindness is their main
   weakness: a repo-blind reviewer withholds ("needs evidence") on any finding
   whose mechanism — a
@@ -389,7 +419,7 @@ attribution** — no reviewer names, no per-reviewer grouping — and give each
 finding a stable id (`F1`, `F2`, …). Anonymity is load-bearing: a reviewer must
 judge a finding on its merits, not defer to whoever raised it.
 
-Run the same four reviewers again, in parallel, each given the Phase 2 brief,
+Run the same five reviewers again, in parallel, each given the Phase 2 brief,
 the diff, and the pooled findings:
 
 - Reviewer B — a fresh `Agent` call (`model: sonnet`); have it read both
@@ -400,11 +430,14 @@ the diff, and the pooled findings:
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
   files you gave it in Phase 1:
   `pwsh -NoProfile -File "<skill-dir>/gemini-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
-- Reviewer X — `openai-review.ps1` with the Phase 2 brief and **both**
-  files, the pooled findings passed as `-FindingsPath`. Pass the **same**
-  `-ContextPath` files you gave it in Phase 1, so it can still check the
-  mechanisms the diff does not show when it attacks the pooled findings:
-  `pwsh -NoProfile -File "<skill-dir>/openai-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+- Reviewer X — the **Codex** wrapper (subscription-first, same as Phase 1;
+  `openai-review.ps1` is the automatic fallback via `fallbackWrapper`), with the
+  Phase 2 brief, the diff, the pooled findings, and the **same** `-RepoPath` you
+  gave it in Phase 1 so it retains repo access when attacking the pooled findings:
+  `pwsh -NoProfile -File "<skill-dir>/codex-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -RepoPath "<repo>" -Model "gpt-5.6-sol"`
+- Reviewer K — the **Kimi** wrapper, with the Phase 2 brief, the diff, the pooled
+  findings, and the **same** `-ContextPath` files you gave it in Phase 1:
+  `pwsh -NoProfile -File "<skill-dir>/kimi-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>" -Model "kimi-code/kimi-for-coding"`
 
 ### 3. Phase 3 — adjudication
 
@@ -433,16 +466,20 @@ runs *after* §5 synthesis and *before* §4 answer / §6 persist.
 Why this phase exists: a blind panel systematically over-rates severity, so a
 non-trivial share of Highs do not survive contact with the live code. Leaving
 that to manual follow-up means publishing a report that is partly wrong. Verify
-before you publish. (Canonical example: a contested High where a verification
-pass found the sole call site already guards the null return, so it was
-by-design and downgraded to cosmetic. That is exactly the work this phase
-formalises.)
+before you publish. (Canonical example: the `your-repo` run's contested
+High `H6` — a verification pass found the sole call site already guards the null
+return, so it was by-design and downgraded to cosmetic. That is exactly the work
+this phase formalises.)
 
 Verify **every finding rated Critical or High, and every `[contested]` finding**
-(any severity). For each, spawn a fresh `Agent` (`subagent_type:
-general-purpose`, `model: sonnet`; use `opus` only for a genuinely subtle
-mechanism) that took no part in producing the report. Run them in parallel, like
-the reviewers. Give each the repository path, the one finding to test (its
+(any severity). Draw verifiers from the **cross-vendor pool** in `reviewers.json`
+`roles.verifier.pool` (default `claude:sonnet`, `kimi`, `codex`), **rotating by
+vendor** — assign finding *i* to `pool[i % pool.Count]` — so verification is not
+a single-vendor monoculture and each pool member participates. For the Claude
+member spawn a fresh `Agent` (`subagent_type: general-purpose`, `model: sonnet`;
+`opus` only for a genuinely subtle mechanism); for the `kimi`/`codex` members
+call their wrappers with `-RepoPath`. Each verifier took no part in producing the
+report. Run them in parallel, like the reviewers. Give each the repository path, the one finding to test (its
 location, claimed mechanism, and claimed trigger), and the verification brief.
 The verifier's job is to **refute**: open the code, trace the real call path,
 construct the input that triggers the defect — or establish that no such path
@@ -480,32 +517,32 @@ vendor-weighted-consensus model: the dashboard tracks the vendor axis. So SUM
 Reviewer B and Reviewer F into a single Anthropic emit call (token, cost,
 duration, issues-raised, issues-accepted all summed — details per field below).
 
-Call `emit-review-telemetry.ps1` (beside this file) **four times in parallel —
-the three VENDOR reviewer rows (Anthropic = B+F merged, Google = G, OpenAI = X)
-AND the Phase-3 judge** (omit the judge only if the panel ran without
-adjudication). All four MUST share the same `-RunId` so the
+Call `emit-review-telemetry.ps1` (beside this file) **five times in parallel —
+the four VENDOR reviewer rows (Anthropic = B+F merged, Google = G, OpenAI = X,
+Moonshot = K) AND the Phase-3 judge** (omit the judge only if the panel ran
+without adjudication). All five MUST share the same `-RunId` so the
 dashboard groups them as one run; a run missing the judge row shows as
 "no judge", and a run whose participants carry different `runId`s fragments into
 several one-reviewer "incomplete" runs (the canonical failure that left the
-dashboard showing every run as `1 of 3 reviewers`). Pass:
+dashboard showing every run as `1 of 4 reviewers`). Pass:
 
 - **`-RunId`** — the workdir's UTC timestamp slug (e.g. `20260614T143022Z`).
-  **Identical for all four calls.**
+  **Identical for all five calls.**
 - **`-Reviewer`** — vendor: reviewers `B` **and** `F` → one merged `anthropic`
-  row, `G` → `google`, `X` → `openai`; the judge → the judge's vendor
-  (`anthropic` for the Opus judge in the default roster).
-- **`-Role`** — `reviewer` for the three Phase-1 vendor rows (Anthropic merged,
-  Google, OpenAI), `judge` for the
+  row, `G` → `google`, `X` → `openai`, `K` → `moonshot`; the judge → the judge's
+  vendor (`anthropic` for the Opus judge in the default roster).
+- **`-Role`** — `reviewer` for the four Phase-1 vendor rows (Anthropic merged,
+  Google, OpenAI, Moonshot), `judge` for the
   adjudicator. **REQUIRED** — the API rejects (HTTP 400) any event without a
   valid role and the failure is swallowed silently, so an omitted role means the
   whole run vanishes. (This is exactly what broke capture once the API made role
   mandatory.)
 - **`-Repo`** — the repository name (basename of `git rev-parse --show-toplevel`,
-  e.g. `your-repo`), same value for all four.
+  e.g. `your-repo`), same value for all five.
 - **`-Summary`** — OPTIONAL operator-assigned run name → becomes the dashboard
   card title. Set it ONLY when the invocation carried a naming/summarise
   directive (e.g. "…name it 'Verifying adjusted formatting'", "…summarise it as
-  X", "…call this run X"); pass the **same** literal string on all four calls.
+  X", "…call this run X"); pass the **same** literal string on all five calls.
   No such directive → omit the flag entirely and the card title stays the run
   timestamp (unchanged behaviour). Capped at 80 chars server-side; keep it short
   so it fits the card title bar.
@@ -566,24 +603,19 @@ dashboard showing every run as `1 of 3 reviewers`). Pass:
 The script silently skips when either `$env:OBSERVATORY_API_KEY` or
 `$env:OBSERVATORY_URL` is absent. When both are present it surfaces HTTP errors
 via `Write-Error` and exits non-zero — check `$LASTEXITCODE` after each call.
-Run all four PowerShell calls in a single message so they execute in parallel.
+Run all five PowerShell calls in a single message so they execute in parallel.
 If Phase 4 was skipped, still emit — `issuesAccepted` will reflect the Phase 3
 adjudicated report as-is.
 
-**Verify after emitting.** Once all four calls complete, confirm the rows landed
-by fetching the run from the Observatory:
+**Verify after emitting.** Once all five calls complete, confirm the rows landed
+by fetching the run from the Observatory. Run this single line directly in a
+`pwsh` session (no `-Command` wrapper, no backtick continuations):
 
 ```powershell
-pwsh -NoProfile -Command "
-  Invoke-RestMethod \`
-    -Uri \"\$env:OBSERVATORY_URL/api/adversarial-review/runs?runId=<RunId>\" \`
-    -Headers @{ 'X-Observatory-Key' = \$env:OBSERVATORY_API_KEY } \`
-    -ErrorAction Stop |
-  Select-Object reviewer, role
-"
+Invoke-RestMethod -Uri "$env:OBSERVATORY_URL/api/adversarial-review/runs?runId=<RunId>" -Headers @{ 'X-Observatory-Key' = $env:OBSERVATORY_API_KEY } | Select-Object reviewer, role
 ```
 
-Count the returned rows — expect 4 (three `reviewer` rows + one `judge` row). If
+Count the returned rows — expect 5 (four `reviewer` rows + one `judge` row). If
 any are missing, note which reviewer/role was absent and include the backfill
 `emit-review-telemetry.ps1` command in the §4 answer so the operator can re-run
 it. Report the capture status in §4 regardless of outcome (see §4 below).
@@ -591,7 +623,7 @@ it. Report the capture status in §4 regardless of outcome (see §4 below).
 **Run naming (optional).** If the operator's invocation assigned the run a name
 — a naming/summarise directive such as "run a review over X and name it
 'Verifying adjusted formatting'" — capture that literal string at invocation
-time and thread it through as `-Summary` on all four emit calls above. A plain
+time and thread it through as `-Summary` on all five emit calls above. A plain
 invocation with no such directive assigns no name and changes nothing. The name
 is the dashboard card title, so keep it pithy.
 
@@ -607,8 +639,8 @@ and the durable Obsidian vault copy (§6).
 
 **Always end with an Observatory capture line**, even when all rows landed:
 
-- Success: `Observatory: 4/4 captured (RunId: 20260628T000000Z)`
-- Partial: `Observatory: N/4 captured — missing <reviewer>/<role> pairs. Re-emit with:` followed by the backfill command for each missing `(Reviewer, Role)` tuple — e.g. if only the judge landed: missing B (anthropic/reviewer), G (google/reviewer), X (openai/reviewer). If the judge is the missing row: missing judge (anthropic/judge).
+- Success: `Observatory: 5/5 captured (RunId: 20260628T000000Z)`
+- Partial: `Observatory: N/5 captured — missing <reviewer>/<role> pairs. Re-emit with:` followed by the backfill command for each missing `(Reviewer, Role)` tuple — e.g. missing K (moonshot/reviewer), or the judge (anthropic/judge).
 - Skipped (env vars absent): `Observatory: skipped (OBSERVATORY_API_KEY / OBSERVATORY_URL not set)`
 
 For a multi-chunk audit, do **not** answer after each chunk — run every chunk,
@@ -760,7 +792,7 @@ project: your-repo
 run-name: QF Service Rewrite (NewOrderList, FX Tests)  # only if the run was named (the -Summary)
 review-type: adversarial-audit
 date: 2026-05-29
-reviewers: [Claude Fable 5, Claude Sonnet, Gemini, GPT-5.6 Sol]
+reviewers: [Claude Sonnet, Claude Fable 5, GPT (Codex), Kimi (standard), Gemini]
 remediation-branch: reviewer-findings-batch1        # only if a fix pass followed
 remediation-pr: 25 (rebase-merged to main as <sha>) # only if a fix pass followed
 deferred: H-1 / H-2 (themes T-1/T-2) — skip-marked tests  # only if work was deferred
@@ -770,8 +802,8 @@ tags: [fix, adversarial-review, code-audit, <repo>]
 # your-repo — Adversarial Audit (2026-05-29)
 
 Whole-repo cross-vendor audit of `<repo>`, run as N functionally-cohesive
-chunks (four reviewers across three vendors per chunk: Claude Fable 5, Claude
-Sonnet, Gemini, GPT-5.6 Sol (via OpenAI API) → blind review → cross-examination →
+chunks (five reviewers across four vendors per chunk: Claude Sonnet, Claude
+Fable 5, GPT (Codex), Kimi (standard), Gemini → blind review → cross-examination →
 adjudication), then synthesised into one repo-level report.
 
 - **Consolidated report:** [[report]]
@@ -1089,21 +1121,25 @@ the code shows. Output only the verdict and evidence — no preamble.
 
 ## Cost
 
-One run (one chunk) is 5 Claude subagent calls — the Sonnet and Fable reviewers
-each in Phase 1 and Phase 2 (4 calls), plus the Opus judge — alongside 2 Gemini
-calls and 2 OpenAI API calls (Phase 1 and Phase 2). Adding Fable as a second
-Anthropic reviewer adds 2 Claude subagent calls per chunk over the old
-three-reviewer panel. Gemini calls draw on the user's Google quota; OpenAI calls
-are billed per-token at the model's rate (see the pricing table in
-`openai-review.ps1`). A multi-chunk audit multiplies this by the chunk count and
-adds one Claude synthesis call — e.g. a 6-chunk audit is ~31 Claude subagent
-calls, 12 Gemini calls, and 12 OpenAI API calls.
+The v2 panel is subscription-backed, so per-token cost is ~£0 (flat-rate subs);
+cost telemetry is putative. What a run *consumes* is CLI/subagent calls, not
+credits. One run (one chunk) is: 5 Claude subagent calls (Sonnet + Fable each in
+Phase 1 and Phase 2, plus the Opus judge), 2 Codex CLI calls (OpenAI, ChatGPT
+sub), 2 Kimi CLI calls (Moonshot sub), and 2 Gemini CLI calls (Google sub) — the
+four vendors each reviewing twice, plus the judge. The only path that bills
+per-token is the OpenAI API fallback (`openai-review.ps1`), used only if the
+Codex CLI is unavailable. A multi-chunk audit multiplies per chunk and adds one
+Claude synthesis call.
 
-Phase 4 verification adds one more Claude subagent call **per High/contested
-finding**, run once on the published report (not per chunk) and defaulting to
-Sonnet — usually a handful (e.g. a 6-chunk audit surfacing ~6 Highs).
-So budget roughly "+ one Sonnet call per High/contested finding" on top of the
-figures above; verification adds no OpenAI calls. State the projected cost when
+Phase 4 verification adds **one verifier call per High/contested finding**, run
+once on the published report (not per chunk). Each such call comes from the
+cross-vendor verifier pool (Sonnet / Kimi / Codex, rotated by vendor), so the
+call lands on whichever pool member the rotation selects — a Claude subagent, a
+Kimi CLI call, or a Codex CLI call — not always Sonnet. Usually a handful (the
+6-chunk your-repo audit had 6 Highs). Budget "+ one pool call per
+High/contested finding" on top of the figures above; all pool members are
+subscription-backed (no per-token cost unless Codex falls back to the OpenAI
+API). State the projected cost when
 presenting the chunk plan (§0a), and mention it too if the skill is being run
 repeatedly in quick succession.
 
@@ -1125,10 +1161,16 @@ before treating Observatory figures as authoritative for billing purposes.
 - **Averaging away disagreement.** A contested critical finding stays in the
   report, marked contested. The disagreement is the signal the panel exists to
   produce.
+- **Dropping below `minVendors`.** A reviewer's sub-CLI failure first falls back
+  to its `fallbackWrapper` (OpenAI only); if that also fails or there is none,
+  degrade to the surviving reviewers — but only while at least `minVendors`
+  distinct vendors still ran. A single-vendor panel is self-review; stop rather
+  than pass it off as adversarial.
 - **Aborting when one cross-vendor reviewer fails.** Degrade to the surviving
-  reviewers and say so, as long as at least two vendors still ran (e.g. Sonnet +
-  Gemini). Never silently collapse to a single vendor — a Claude-only panel is
-  self-review, not adversarial; if both non-Claude reviewers fail, stop.
+  reviewers and say so, as long as at least `minVendors` distinct vendors still
+  ran (default 2, e.g. Sonnet + Gemini). Never let the run drop below
+  `minVendors` — a single-vendor panel is self-review, not adversarial; if too
+  many vendors fail to hold the threshold, stop.
 - **Auditing a whole repo in one run.** A multi-thousand-line `audit` diff
   dilutes every finding and overruns the GPT reviewer. Size the diff and
   chunk it (§0a); scope each chunk to one cohesive area with a pathspec.
