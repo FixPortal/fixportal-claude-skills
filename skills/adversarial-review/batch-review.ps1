@@ -78,7 +78,14 @@ $spine = Join-Path $scriptDir 'run-review.ps1'
 if (-not (Test-Path -LiteralPath $spine)) { Write-Error "run-review.ps1 not found beside this script." -ErrorAction Continue; exit 2 }
 
 if (-not (Test-Path -LiteralPath $ChunkManifest)) { Write-Error "Chunk manifest not found: $ChunkManifest" -ErrorAction Continue; exit 2 }
-$chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
+try {
+    $chunks = @(Get-Content -LiteralPath $ChunkManifest -Raw | ConvertFrom-Json)
+} catch {
+    # ConvertFrom-Json throws (terminating under Stop) on malformed JSON — catch it
+    # so a bad manifest surfaces as the same exit 2 as the missing/empty cases, not
+    # an unhandled exception.
+    Write-Error "Chunk manifest is not valid JSON: $($_.Exception.Message)" -ErrorAction Continue; exit 2
+}
 if (-not $chunks) { Write-Error "Chunk manifest is empty." -ErrorAction Continue; exit 2 }
 
 # Validate ids BEFORE any per-chunk work: each becomes a directory name joined to

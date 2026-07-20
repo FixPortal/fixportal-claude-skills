@@ -103,7 +103,12 @@ if (-not (Get-Command gemini -ErrorAction SilentlyContinue)) {
 # BEFORE running: the sidecar write below is gated on $json.stats?.models, so a run
 # that succeeds but returns no stats this time would otherwise leave the previous
 # attempt's real numbers for run-review.ps1 to sum as if they were this run's.
-if ($UsageSidecarPath) { Remove-Item -LiteralPath $UsageSidecarPath -ErrorAction SilentlyContinue }
+if ($UsageSidecarPath -and (Test-Path -LiteralPath $UsageSidecarPath)) {
+    # Fail CLOSED: if a leftover sidecar can't be removed (e.g. locked), do not run —
+    # a surviving stale file is the exact misattribution this clear exists to prevent.
+    try { Remove-Item -LiteralPath $UsageSidecarPath -ErrorAction Stop }
+    catch { Write-Error "Could not clear stale usage sidecar '$UsageSidecarPath': $($_.Exception.Message). Refusing to run so its numbers aren't misattributed."; exit 2 }
+}
 
 function Read-InputFile([string] $path, [string] $label) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
