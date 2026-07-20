@@ -71,9 +71,9 @@
 
 .PARAMETER IssuesAccepted
     Count of surviving (non-REFUTED) findings in the published report attributed
-    to this reviewer via consensus tags: [unanimous] = credit all three;
+    to this reviewer via consensus tags: [unanimous] = credit all four vendors;
     [majority] = credit all except the named dissenter; [contested] findings
-    that survived Phase 4 as CONFIRMED or INDETERMINATE = credit all three.
+    that survived Phase 4 as CONFIRMED or INDETERMINATE = credit all four vendors.
 
 .EXAMPLE
     pwsh -NoProfile -File emit-review-telemetry.ps1 `
