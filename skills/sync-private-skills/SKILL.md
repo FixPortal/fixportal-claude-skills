@@ -81,6 +81,8 @@ manifest. The rule is by count of changed homes, not a per-combination table:
 | two or more | **conflict** | surface diffs, do NOT auto-pick a winner |
 | none (differs but all match manifest — impossible unless manifest stale) | stale manifest | treat as conflict, surface |
 | **new file** — no manifest entry, present in one holding home, absent from the other holding homes | that home added it (feature commit) | propose **adding** it to the other holding homes (step-5a scan first); a plain add, not a conflict |
+| **new file** — no manifest entry, present in **two or more** holding homes, **hashes identical** | added independently / already mirrored, just untracked | already in sync — take no copy action, only **adopt** it into the manifest (step 8) |
+| **new file** — no manifest entry, present in **two or more** holding homes, **hashes differ** | independent divergent adds — no baseline to arbitrate | **conflict** — surface the diffs and get an explicit choice; do NOT auto-pick, do NOT record a manifest hash until resolved |
 | (no manifest yet / first run) | unknown | treat every diff as a conflict to surface |
 
 Distinguish **whole-skill absence** from **single-file absence** — conflating
@@ -152,13 +154,23 @@ deliberate.
 7. **Apply confirmed copies** with a plain `Copy-Item` (recurse for whole new
    files), preserving bytes/encoding — no transform. For a conflict, only act on
    the direction the user explicitly chooses.
-8. **Update the manifest** to the **full current fileset**, not just the files
-   touched this run: write the post-sync hash for every file now present across
-   the holding homes (including newly-added ones), and **drop** keys for files no
-   longer present anywhere. Rewriting only reconciled entries lets the manifest
-   carry a stale fileset forward — which is what hid the missing v2 files. Report
-   what synced, what was skipped (identical / intentional / curation), and any
-   conflict left unresolved.
+8. **Update the manifest** to reflect the **full current fileset**, not just the
+   files touched this run — but only record a hash where there is a single agreed
+   value to record:
+   - **Converged / already-in-sync / intentionally-divergent** files → write the
+     post-sync hash (for a divergent file, its agreed canonical baseline). This
+     includes newly-added files that are now identical across the holding homes.
+   - **Unresolved conflicts** (contents still differ across homes) → do **not**
+     write a new hash. Keep the file's **previous** manifest baseline if it had
+     one, and leave a newly-introduced conflicted path **unrecorded** — recording
+     either home's hash would silently anoint one side as the baseline and mask
+     the conflict next run.
+   - **Drop** keys for files no longer present in any home.
+   Rewriting only the files touched this run lets the manifest carry a stale
+   fileset forward — which is what hid the missing v2 files — but baselining an
+   unresolved conflict is the opposite failure, so do neither. Report what synced,
+   what was skipped (identical / intentional / curation), and any conflict left
+   unresolved.
 
 ## Common Mistakes
 
