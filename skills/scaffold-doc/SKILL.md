@@ -132,6 +132,21 @@ READMEs differ from audit reports: no actions-taken ledger, no Azure ID appendix
 
 **Quick start must be copy-pasteable** — install command → minimal `Program.cs` → minimal config. No prose preamble. Reader reaches a working state in under 60 seconds.
 
+**Contributing commands for a C# repository using the pinned CSharpier tool** —
+include this sequence, adapted to the real solution name:
+
+```powershell
+dotnet tool restore
+dotnet csharpier format .
+dotnet build <solution>.slnx --configuration Release
+dotnet test <solution>.slnx --configuration Release --no-build
+```
+
+Explain that CI runs `dotnet csharpier check .`, which validates without rewriting
+files. Format-on-save may be recommended but remains optional. Do not document a
+global CSharpier install, `CSharpier.MsBuild`, or a mandatory editor extension; the
+repository-local manifest is authoritative.
+
 **Trim from README**: executive summary (replace with orientation blockquote), actions-taken ledger (omit entirely), recommendations section (omit — README is documentation, not an audit verdict). Mermaid diagrams: include only if architecture or data flow is genuinely non-obvious — the load-bearing bar is higher for a README.
 
 ### ADR (Architecture Decision Record)
@@ -209,6 +224,7 @@ Full report-style, in order. README and ADR use their own sub-templates above.
 | Using report skeleton for a README | README has its own sub-template — no ledger, no executive summary, no appendix of infra IDs |
 | `author` in a repo-committed README | Author is vault-doc convention; omit it from anything in source control |
 | No `tags` in vault doc frontmatter | Add a `tags` array; vault docs without tags are invisible in Obsidian graph view |
+| CSharpier repo documents only `check`, or a global install | Give contributors `dotnet tool restore` then `dotnet csharpier format .`; describe the read-only CI check separately. |
 | Plain `>` for warnings/notes/important caveats (audit/report/runbook/ADR, or vault docs) | Use `> [!WARNING]` / `> [!NOTE]` / `> [!IMPORTANT]` callout blocks — rendered by both GitHub and Obsidian. Exception: a README rendered by the NuGet gallery (§*README sub-template*) stays plain `>` — that renderer doesn't support GFM alerts; a non-package repo README may use callouts |
 | Actions-taken ledger in a new package README | Ledger is for post-hoc audit reports; omit from READMEs authored fresh |
 
@@ -239,3 +255,4 @@ Full report-style, in order. README and ADR use their own sub-templates above.
 - [ ] No actions-taken ledger
 - [ ] Troubleshooting section (symptom → cause) if package has known footguns
 - [ ] Appendix carries install commands and package IDs
+- [ ] For C# repos using CSharpier, Contributing includes tool restore, format, Release build/test, and names the read-only CI check

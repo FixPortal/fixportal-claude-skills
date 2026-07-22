@@ -28,6 +28,9 @@ Apply standard .NET project and solution preferences when creating new projects 
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
   - `.editorconfig` — thin formatter stub (copied from `~/.claude/resources/dotnet-thin.editorconfig`) with layout settings plus documented Roslyn formatter-compatibility preferences; analyzer/style **rules** remain owned by `<YourOrg.CodeStyle>` — see *Code Style and Analysis* below
+  - `.gitattributes` — `*.cs text eol=crlf`, so CSharpier sees the same line endings on every runner
+  - `.csharpierignore` — excludes XML-family files; CSharpier formats C# only
+  - `.config/dotnet-tools.json` — repository-local tools, including CSharpier `1.3.0`
   - `.gitignore` (copied from `~/.claude/resources/.gitignore`)
   - `nuget.config` (maps the <your-org> GitHub Packages feed — see Code Style and Analysis)
   - `.github/workflows/` folder
@@ -60,6 +63,32 @@ The package ships a global AnalyzerConfig (every rule + severity), sets
 `EnforceCodeStyleInBuild=true`, and bundles `SonarAnalyzer.CSharp` (pinned). One
 reference makes the whole house style build-enforced, and a rule change ships as a
 package version bump instead of N hand-edits to drift-prone copies.
+
+**CSharpier owns physical C# formatting** (whitespace, wrapping, and layout).
+`<YourOrg.CodeStyle>` continues to own semantic style, naming, and analyzer
+diagnostics. Use a package release that disables the competing IDE0055 formatter
+diagnostic; do not add a repository-local IDE0055 override once that release is in use.
+
+- Pin CSharpier `1.3.0` in `.config/dotnet-tools.json`. If the manifest already
+  contains Stryker or another tool, merge the `csharpier` entry into it; never
+  overwrite the manifest. The entry is:
+
+  ```json
+  "csharpier": {
+    "version": "1.3.0",
+    "commands": ["dotnet-csharpier"],
+    "rollForward": false
+  }
+  ```
+
+- Add `.gitattributes` with `*.cs text eol=crlf`.
+- Add `.csharpierignore` containing `*.csproj`, `*.props`, `*.targets`, `*.xml`,
+  `*.config`, `*.slnx`, `*.xaml`, and `*.axaml`. Do not add a separate
+  `.csharpierrc.json`; the shared `.editorconfig` is the single printer config.
+- Run `dotnet tool restore` and `dotnet csharpier format .` after scaffolding.
+  For an existing repository, commit this mechanical formatting separately from
+  configuration or semantic changes. Do not add `CSharpier.MsBuild`, a pre-commit
+  hook, or a mandatory editor extension; `scaffold-ci` owns the required check.
 
 - Add to `Directory.Build.props` so it applies to every project:
 
@@ -106,7 +135,7 @@ package version bump instead of N hand-edits to drift-prone copies.
   independent of `TreatWarningsAsErrors`. Sonar S-rules stay advisory (warning,
   non-blocking). Do not rename existing projects.
 - After adding the package to an **existing** project, run `dotnet format` once to apply
-  the rules mechanically, then build + test before committing.
+  semantic rules, then run CSharpier, build, and test before committing.
 
 #### GitHub Packages auth (required to restore)
 
@@ -231,5 +260,7 @@ When scaffolding or normalizing a .NET project, verify:
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
 - [ ] Thin `.editorconfig` in place (copied from `~/.claude/resources/dotnet-thin.editorconfig`, not the full `~/.claude/resources/.editorconfig`); only documented formatter-compatibility preferences repeat package-owned values
+- [ ] CSharpier `1.3.0` merged into `.config/dotnet-tools.json`; `.gitattributes` and `.csharpierignore` added
+- [ ] `dotnet tool restore` and `dotnet csharpier format .` completed; initial formatting isolated from semantic changes
 - [ ] `.gitignore` copied from resources
 - [ ] No projects renamed

@@ -64,6 +64,11 @@ These are the deltas an unaided agent gets wrong. Get them right:
 5. **Backend job is npm-free.** The frontend build runs only on `dotnet publish`
    (gated by an MSBuild target), so ordinary `build`/`test` never invokes npm. Do NOT add
    Node setup or a publish step to the backend CI job. The frontend has its own job.
+6. **C# formatting is a separate, read-only gate.** In every .NET backend job, restore
+   repository-local tools and run `dotnet csharpier check .` immediately after .NET setup,
+   before NuGet restore/build/test. CSharpier is pinned by `scaffold-dotnet`; merge its
+   entry into an existing tool manifest rather than replacing Stryker. CI checks only—it
+   never runs `format`. Publish/deploy jobs depend on the backend gate and do not repeat it.
 
 ### Pinned action versions (current house standard)
 
@@ -129,6 +134,10 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
+      - name: Restore local tools
+        run: dotnet tool restore
+      - name: Check C# formatting
+        run: dotnet csharpier check .
       - name: Restore
         run: dotnet restore YourSolution.sln
       - name: Build
@@ -314,8 +323,10 @@ jobs:
 ```
 
 **Support files** (copy from `templates/`, then adapt names):
-- `.config/dotnet-tools.json` — pins `dotnet-stryker` with `rollForward: false`. If a
-  manifest already exists, add the tool to it rather than overwriting.
+- `.config/dotnet-tools.json` — pins `dotnet-stryker` and CSharpier with
+  `rollForward: false`. If a manifest already exists, merge missing tools into it rather
+  than overwriting. `scaffold-dotnet` owns the CSharpier version and repository config;
+  this skill consumes it for CI.
 - `stryker-config.json` (repo root) — house defaults: `test-runner: mtp`,
   `mutation-level: Standard`, `coverage-analysis: off`, `concurrency: 4`,
   `thresholds: { high: 80, low: 70, break: 0 }` (break 0 = never fail the run),
@@ -524,6 +535,8 @@ if explicitly asked:
 | Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
 | No actionlint step | First validation step of every job, immediately after `actions/checkout`. |
 | Node added to backend job | Backend CI is npm-free; frontend build is publish-only. |
+| No CSharpier gate, or CI runs `format` | After .NET setup run `dotnet tool restore`, then `dotnet csharpier check .`; never mutate source in CI. |
+| Formatting repeated in publish/deploy | Make those jobs depend on the backend gate; check once. |
 | Stryker as a `ci.yml` job or an unmeasured per-PR gate | Separate `mutation.yml`; start manual-only, then apply the measured cadence. |
 | Job/step `continue-on-error` to keep score informational | Remove it and use `break: 0`; execution/report failures must be red. |
 | Missing report only warns | Make the summary throw and set report upload `if-no-files-found: error`. |
