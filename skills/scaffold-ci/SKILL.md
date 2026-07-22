@@ -241,16 +241,33 @@ section so scaffold and classifier stay in sync.
 
 ## `mutation.yml` (Stryker.NET) — a SEPARATE workflow
 
-Not part of `ci.yml`. Runs on push-to-main + manual dispatch, `continue-on-error: true`
-(mutation score is informational, not a gate), `fetch-depth: 0`.
+Not part of `ci.yml`. Mutation score is informational, but execution and report failures
+are real failures. Use `break: 0`; never use job- or step-level `continue-on-error` to
+hide restore failures, tool crashes, invalid baselines, or missing reports.
+
+### Measured cadence policy
+
+1. A new, repaired, or materially changed mutation workflow starts **manual-only**.
+2. Collect three-to-five valid runs that execute Stryker and produce the report.
+3. At or below 10 minutes: enable change-driven execution. Prefer a path-filtered PR
+   trigger or proven diff mode such as `--since`; otherwise use push-to-main.
+4. Above 10 minutes: retain manual dispatch and add a staggered nightly UTC schedule.
+   Choose an estate-specific slot rather than copying a cron value from another repo.
+5. Reassess using the latest three-to-five valid runs after scope or tool changes. Do not
+   blend fast failed/skipped history into the runtime.
+
+The manual-only skeleton below is the safe starting point. Add the measured trigger after
+the first valid sample. Use per-ref concurrency to cancel a superseded manual/scheduled run.
 
 ```yaml
 name: mutation
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -258,7 +275,6 @@ permissions:
 jobs:
   stryker:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
@@ -294,6 +310,7 @@ jobs:
         with:
           name: mutation-report
           path: StrykerOutput/**
+          if-no-files-found: error
 ```
 
 **Support files** (copy from `templates/`, then adapt names):
@@ -507,8 +524,10 @@ if explicitly asked:
 | Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
 | No actionlint step | First validation step of every job, immediately after `actions/checkout`. |
 | Node added to backend job | Backend CI is npm-free; frontend build is publish-only. |
-| Stryker as a `ci.yml` job / per-PR gate | Separate `mutation.yml`, push-to-main + dispatch, `continue-on-error`. |
-| `break: 50` or cron schedule for Stryker | `break: 0`, triggered on push-to-main + dispatch. |
+| Stryker as a `ci.yml` job or an unmeasured per-PR gate | Separate `mutation.yml`; start manual-only, then apply the measured cadence. |
+| Job/step `continue-on-error` to keep score informational | Remove it and use `break: 0`; execution/report failures must be red. |
+| Missing report only warns | Make the summary throw and set report upload `if-no-files-found: error`. |
+| Copying another repo's mutation cron | Stagger nightly UTC slots across the estate. |
 | npm dependabot `directory: /` | Point at the actual package.json folder. |
 | Committing a `codeql.yml` | Enable default setup via the Security tab / `gh api`. |
 | PR base `branches: [main]` when mainline differs | Check `git symbolic-ref refs/remotes/origin/HEAD`. |
