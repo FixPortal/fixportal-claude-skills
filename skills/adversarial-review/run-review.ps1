@@ -4,14 +4,14 @@
     Deterministic spine of the adversarial-review panel: resolve the diff, run
     the blind review (Phase 1) and cross-examination (Phase 2) across the
     manifest's reviewers, pool and anonymise findings, and assemble the judge
-    packet. Host-agnostic — runnable from Claude Code, Antigravity (`agy`), the
-    Gemini CLI, or a bare shell.
+    packet. Host-agnostic — runnable from Claude Code, Antigravity (`agy`), or a
+    bare shell.
 
 .DESCRIPTION
     This script does the mechanical 80% of an adversarial review that is
     identical on every host: it forwards the diff to each reviewer wrapper
-    (claude-review.ps1 / external-review.ps1 / gemini-review.ps1, selected by
-    reviewers.json), captures their findings, strips preamble, pools and
+    (claude-review.ps1 / codex-review.ps1 / kimi-review.ps1 / agy-review.ps1,
+    selected by reviewers.json), captures their findings, strips preamble, pools and
     re-ids them anonymously, then runs the cross-examination round and lays out
     everything a judge needs.
 
@@ -204,8 +204,8 @@ if ($addedLines -gt 2000) {
         'Consider splitting into cohesive chunks and running this driver once per chunk, then synthesising.')
 }
 
-# Transport gate: OpenAI has a ~30k tokens-per-request cap; Gemini CLI hangs
-# on oversized input. Keep 25k as a headroom margin. When over the gate,
+# Transport gate: OpenAI has a ~30k tokens-per-request cap. Keep 25k as a
+# headroom margin and a comprehension bound. When over the gate,
 # generate a compact (-U4) diff for the repo-blind cross-vendor reviewers;
 # Reviewer B (Claude, repo access) keeps the full diff.
 $tokenGate      = 25000
@@ -585,7 +585,5 @@ Write-Host "Judge packet: $packetFile"
 Write-Host "Next: adjudicate -> verify -> [synthesise] -> persist (see status.json / SKILL.md)."
 $status | ConvertTo-Json -Depth 6
 
-# Observatory telemetry: real usage is captured per reviewer instead of a
-# zero-token marker here -- gemini-review.ps1 posts its own stats, and Copilot
-# headless sessions are swept from ~/.copilot/session-state by
-# ~/.claude/hooks/observe-sweep.ps1.
+# Observatory telemetry: wrapper sidecars carry usage where available and
+# explicit zeros where a subscription CLI (agy/kimi) does not expose it.

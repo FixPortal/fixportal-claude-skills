@@ -71,8 +71,19 @@ param(
 
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
+# Kimi Code's installer adds ~/.kimi-code/bin to the interactive shell's PATH, but a
+# non-interactive / sandboxed pwsh (e.g. spawned by an agent harness) may not inherit it,
+# so `Get-Command kimi` misses even when Kimi is installed and logged in. Fall back to the
+# known install location before giving up, so the Moonshot vote isn't silently dropped.
 if (-not (Get-Command kimi -ErrorAction SilentlyContinue)) {
-    Write-Error 'kimi CLI not found on PATH. Install Kimi Code and run `kimi login`. Moonshot has no API fallback.'
+    $kimiBin = Join-Path $HOME '.kimi-code/bin'
+    if (Test-Path -LiteralPath (Join-Path $kimiBin 'kimi.exe')) {
+        $env:PATH = $kimiBin + [IO.Path]::PathSeparator + $env:PATH
+    }
+}
+
+if (-not (Get-Command kimi -ErrorAction SilentlyContinue)) {
+    Write-Error 'kimi CLI not found on PATH or at ~/.kimi-code/bin. Install Kimi Code and run `kimi login`. Moonshot has no API fallback.'
     exit 2
 }
 

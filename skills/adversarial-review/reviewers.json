@@ -4,10 +4,11 @@
   "minVendors": 2,
 
   "wrappers": {
-    "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction/-InstructionPath -DiffPath [-FindingsPath] [-ContextPath] -Model [-Effort] [-RepoPath] [-OutPath] [-UsageSidecarPath], returning the review text on stdout and a non-zero exit on failure. Subscription-backed CLI wrappers (claude/codex/kimi/gemini) are primary; api wrappers (openai) are fallbacks. `effort` and `repoAccess` are honoured only where the underlying CLI supports them; the driver introspects each wrapper and omits a flag it does not declare.",
+    "_comment": "Each wrapper is a sibling .ps1 with a uniform contract: -Instruction/-InstructionPath -DiffPath [-FindingsPath] [-ContextPath] -Model [-Effort] [-RepoPath] [-OutPath] [-UsageSidecarPath], returning the review text on stdout and a non-zero exit on failure. Subscription-backed CLI wrappers (claude/codex/kimi/agy) are primary; the retired Gemini CLI and metered OpenAI path remain available for deliberate fallback use. `effort` and `repoAccess` are honoured only where the underlying CLI supports them; the driver introspects each wrapper and omits a flag it does not declare.",
     "claude": "claude-review.ps1",
     "codex": "codex-review.ps1",
     "kimi": "kimi-review.ps1",
+    "agy": "agy-review.ps1",
     "gemini": "gemini-review.ps1",
     "openai": "openai-review.ps1",
     "copilot": "external-review.ps1"
@@ -60,11 +61,11 @@
       "enabled": true
     },
     {
-      "_comment": "Google reviewer (Gemini). Subscription-backed via the Gemini CLI on the user's Google One entitlement. Diff-only (repo-blind): pass the key repo files via -ContextPath. The wrapper pins gemini-2.5-pro.",
+      "_comment": "Google reviewer (Gemini). Subscription-backed via Antigravity CLI (agy-review.ps1) on the user's paid Google plan. Diff-only (repo-blind): pass the key repo files via -ContextPath. The wrapper pins gemini-3.1-pro-high and runs in read-only plan mode.",
       "id": "G",
       "label": "Gemini",
-      "wrapper": "gemini",
-      "model": "gemini-2.5-pro",
+      "wrapper": "agy",
+      "model": "gemini-3.1-pro-high",
       "vendor": "google",
       "effort": "high",
       "repoAccess": false,

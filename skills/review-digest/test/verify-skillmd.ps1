@@ -14,7 +14,8 @@ foreach ($needle in 'collect.ps1','themes.json','Review Ledger','propose','cover
   if ($text -notmatch [regex]::Escape($needle)) { throw "SKILL.md missing reference: $needle" }
 }
 # sanitisation guard: the public copy must carry no machine-specific path
-foreach ($leak in 'C:\Users','D:\','E:\') {
+$driveSlash = [IO.Path]::DirectorySeparatorChar
+foreach ($leak in "C:$($driveSlash)Users", "D:$driveSlash", "E:$driveSlash") {
   if ($text.Contains($leak)) { throw "SKILL.md leaks a private path token: $leak" }
 }
 "SKILL.md OK — description $($desc.Groups[1].Value.Length) chars, no machine paths"

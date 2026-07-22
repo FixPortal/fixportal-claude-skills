@@ -6,8 +6,8 @@
 .DESCRIPTION
     Emits one adversarial-review outcome event per panel participant after Phase 4
     verification completes. Captures review OUTCOMES (findings raised and accepted)
-    rather than token economics -- those are already emitted per-call by the
-    individual reviewer wrappers (gemini-review.ps1, openai-review.ps1).
+    rather than token economics -- those are captured per-call by wrapper
+    sidecars where the underlying CLI exposes them.
 
     Called by the host agent (Claude Code or any other host) at the end of Phase 4
     in the adversarial-review skill procedure -- five calls in parallel, one per

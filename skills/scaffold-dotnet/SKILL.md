@@ -27,7 +27,7 @@ Apply standard .NET project and solution preferences when creating new projects 
 - A **Solution Items** solution folder containing:
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
-  - `.editorconfig` — thin **formatter-only** stub (copied from `~/.claude/resources/dotnet-thin.editorconfig`, a severity-free subset of the full house style at `~/.claude/resources/.editorconfig`); all analyzer/style **rules** come from the `<YourOrg.CodeStyle>` package, not this file — see *Code Style and Analysis* below
+  - `.editorconfig` — thin formatter stub (copied from `~/.claude/resources/dotnet-thin.editorconfig`) with layout settings plus documented Roslyn formatter-compatibility preferences; analyzer/style **rules** remain owned by `<YourOrg.CodeStyle>` — see *Code Style and Analysis* below
   - `.gitignore` (copied from `~/.claude/resources/.gitignore`)
   - `nuget.config` (maps the <your-org> GitHub Packages feed — see Code Style and Analysis)
   - `.github/workflows/` folder
@@ -76,16 +76,18 @@ package version bump instead of N hand-edits to drift-prone copies.
   up the newest release automatically during development, run:
   `dotnet add package <YourOrg.CodeStyle>` — this resolves and pins the latest.
 
-- Copy a genuinely **thin, formatter-only `.editorconfig`** to the solution root —
+- Copy a genuinely **thin formatter `.editorconfig`** to the solution root —
   `~/.claude/resources/dotnet-thin.editorconfig`, saved as `.editorconfig`. It carries only
-  whitespace/layout settings (charset, indent, EOL, spacing, wrapping) — every key **without**
-  a `:severity` suffix. That is the real formatter/rule boundary: a key with `:severity` is a
-  Roslyn diagnostic (IDExxxx/CAxxxx), which `EnforceCodeStyleInBuild` can enforce from a
-  NuGet-shipped global config; a bare whitespace key (`indent_size`, `charset`, `end_of_line`,
+  whitespace/layout settings (charset, indent, EOL, spacing, wrapping) plus the documented
+  IDE0011/IDE0049 compatibility preferences. Analyzer rules and severities still belong to
+  the NuGet-shipped global config; however, `dotnet format` 10.0.204 does not activate those
+  two fixers from a packaged global config alone, so their package-owned values are repeated
+  locally. A bare whitespace key (`indent_size`, `charset`, `end_of_line`,
   `trim_trailing_whitespace`) is not a diagnostic at all — `dotnet format`/the IDE read it only
   from a real `.editorconfig` on disk, so no NuGet package can deliver it. That is the whole
   reason a project-local `.editorconfig` still exists once `<YourOrg.CodeStyle>` is referenced.
-  **Do not copy `~/.claude/resources/.editorconfig`** (no `-thin` suffix) into a project — that
+  These compatibility entries do not create a second rule source. **Do not copy
+  `~/.claude/resources/.editorconfig`** (no `-thin` suffix) into a project — that
   file is the **full** house style (every analyzer/naming/CA/IDE severity, pre-`<YourOrg.CodeStyle>`
   legacy — see *Resource Files* below) and copying it wholesale reproduces the exact
   rule-duplication this section exists to avoid. Do **not** use `<YourOrg.CodeStyle>`'s
@@ -193,7 +195,7 @@ different jobs — do not confuse them:
 
 | File | Role | Source | Destination |
 |------|------|--------|-------------|
-| `dotnet-thin.editorconfig` | Formatter-only (no `:severity` keys) — what actually gets copied into a new scaffold | `~/.claude/resources/dotnet-thin.editorconfig` | Solution root, as `.editorconfig` |
+| `dotnet-thin.editorconfig` | Formatter layout plus documented IDE0011/IDE0049 compatibility preferences — what gets copied into a new scaffold | `~/.claude/resources/dotnet-thin.editorconfig` | Solution root, as `.editorconfig` |
 | `.editorconfig` | **Full** house style (formatting + naming + every analyzer/CA/IDE severity) — pre-`<YourOrg.CodeStyle>` legacy; the master the package's global config is generated from | `~/.claude/resources/.editorconfig` | Not copied into a project that references `<YourOrg.CodeStyle>` — see below |
 | `.gitignore` | — | `~/.claude/resources/.gitignore` | Solution root |
 | `dependabot.yml` | — | `~/.claude/resources/dependabot.yml` | `.github/dependabot.yml` |
@@ -205,9 +207,11 @@ different jobs — do not confuse them:
 > `<YourOrg.CodeStyle>` at all — that repo copies it in full, with no package dependency. For
 > any project that **does** reference the package, only `dotnet-thin.editorconfig` is copied;
 > copying the full file too would duplicate every rule the package already build-enforces. When
-> house style changes: edit the master (`.editorconfig`) and mirror any change to a
-> non-severity key into `dotnet-thin.editorconfig`; for any change to a `:severity` key,
-> regenerate the package's global config from the master and release a new package version.
+> house style changes: edit the master (`.editorconfig`) and mirror formatter-layout changes
+> into `dotnet-thin.editorconfig`; for analyzer rules, regenerate the package's global config
+> and release a new package version. Mirror a rule preference into the thin file only when a
+> regression test proves its fixer requires a hierarchical `.editorconfig`, and document it as
+> a compatibility entry.
 
 ## Checklist
 
@@ -226,6 +230,6 @@ When scaffolding or normalizing a .NET project, verify:
 - [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
 - [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
 - [ ] All NuGet packages updated to latest .NET 10-compatible versions
-- [ ] `.editorconfig` formatter-only stub in place (copied from `~/.claude/resources/dotnet-thin.editorconfig`, not the full `~/.claude/resources/.editorconfig`); rules NOT duplicated locally
+- [ ] Thin `.editorconfig` in place (copied from `~/.claude/resources/dotnet-thin.editorconfig`, not the full `~/.claude/resources/.editorconfig`); only documented formatter-compatibility preferences repeat package-owned values
 - [ ] `.gitignore` copied from resources
 - [ ] No projects renamed
