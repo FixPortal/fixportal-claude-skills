@@ -104,13 +104,12 @@ for an automatic overwrite.
 
 ## Intentional divergence registry
 
-Some files differ **by design per host** (e.g. `adversarial-review/reviewers.json`
-— the panel composition is host-specific: Claude honours the Opus-approval rule,
-the Codex copy warns against a same-vendor Gemini judge). List such paths in
-`intentionally-divergent.md` (this skill's directory). Files listed there are
-reported as "intentionally divergent — skipped" and are **never** synced or
-re-flagged. Add to it (with a reason) whenever the user confirms a divergence is
-deliberate.
+Some files differ **by design per host**. List such paths in the authoritative
+`~/.claude/skills/sync-private-skills/intentionally-divergent.md`. An unqualified
+path applies to every holding home; append `[homes: kimi]` (or a comma-separated
+list) when only those homes diverge. Qualified homes are skipped while the
+remaining homes continue to reconcile normally. Add a reason whenever the user
+confirms a divergence is deliberate.
 
 ## Procedure
 
@@ -128,7 +127,9 @@ deliberate.
    `codex-review.ps1` / `kimi-review.ps1` (and `briefs/phase3.5-judge-audit.txt`)
    silently never propagated for a week while every already-present file synced
    fine. Identical across all holding homes → in sync, skip.
-4. **Skip registered divergences** — report them, don't touch.
+4. **Skip registered divergences** — for a qualified entry, exclude only its
+   named homes and continue comparing the canonical group; for an unqualified
+   entry, skip the file entirely. Report every skip.
 5. **Classify each remaining diff** via the manifest table above into:
    one-sided (propose the copy in the changed→unchanged direction) or
    two-sided **conflict** (surface only).
@@ -188,7 +189,7 @@ deliberate.
 | "Claude is the source of truth for everything that differs" | Direction is **per file**, detected via the manifest. The user edits both homes. |
 | Inferring intent from file contents to decide direction | Use the manifest (who changed), not a guess about what the change means. |
 | `Copy-Item -Force` straight from the plan | Show the diff, name the changed side, confirm. Then copy. |
-| Clobbering an intentionally per-host file (reviewers.json) | Honour `intentionally-divergent.md`. When unsure if a divergence is deliberate, surface it — don't resolve it. |
+| Treating one host's variant as a whole-file freeze | Use `[homes: ...]` so canonical homes still reconcile; leave it unqualified only when every holding home intentionally differs. |
 | Applying the sanitisation map | That's `sync-public-skills`. Private↔private is a verbatim copy. |
 | Enumerating only one mirror's existing files (or only manifest keys) | Walk the **union** across all holding homes + manifest (step 3). A file a feature commit ADDED in `.claude` is absent from the mirrors — iterate one home's listing and it stays invisible (v2 `codex-review.ps1`/`kimi-review.ps1` silently never propagated). |
 | Treating a `.claude`-new file's absence in a mirror as a curation skip | Single-file absence in a home that HOLDS the skill is a new-file **add**, not curation. Curation is only for a whole-skill-absent home. |

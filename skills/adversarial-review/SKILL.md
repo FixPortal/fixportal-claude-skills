@@ -24,7 +24,7 @@ The v2 panel is FIVE reviewers across FOUR vendors, every one subscription-backe
   `-highspeed` bills ~3x the credits, `kimi-code/k3` is the deeper 1M variant),
   Allegretto-backed. Diff-blind by default (Kimi Code has no hard read-only mode;
   run hermetically).
-- **Google** — Gemini (`G`), Google-One-backed, diff-blind (feed it `-ContextPath`).
+- **Google** — Gemini via Antigravity (`G`), paid-plan-backed, diff-blind (feed it `-ContextPath`).
 
 Fable and Sonnet share a vendor, so their errors CORRELATE — they are not two
 independent votes. Two consequences are enforced throughout: (1) the judge
@@ -105,8 +105,8 @@ resolves all of this in full.
     `openai-review.ps1` needs `$env:OPENAI_API_KEY`.
   - **Moonshot** — Kimi (K2.7 Standard) via the **Kimi Code** CLI (`kimi-review.ps1`), `kimi
     login` (OAuth). No API fallback.
-  - **Google** — Gemini via the **Gemini** CLI (`gemini-review.ps1`), Google One /
-    Google login.
+  - **Google** — Gemini via **Antigravity** (`agy-review.ps1`), authenticated by
+    the user's paid Google plan. The retired Gemini CLI remains a dormant legacy path.
   The two Anthropic reviewers share a vendor — consensus is vendor-weighted and
   their telemetry merges into one Anthropic row (see the Overview).
 - Ensure each CLI is on PATH and logged in: `claude`, `codex`, `kimi`, `gemini`.
@@ -128,7 +128,7 @@ resolves all of this in full.
 
 This skill runs natively under Claude Code using the `Agent` tool (the procedure
 below). It is **also** runnable from any shell-capable host — Antigravity
-(`agy`), the Gemini CLI, a bare terminal — through three portability pieces that
+(`agy`) or a bare terminal — through three portability pieces that
 live beside this file:
 
 - **`reviewers.json`** — the panel as *data*. Each reviewer is `{ id, label,
@@ -137,8 +137,8 @@ live beside this file:
   file: the enabled set must span at least `minVendors` (default 2) distinct
   vendors, or a run aborts — a same-vendor panel is self-review, not adversarial.
 - **Uniform reviewer wrappers** — `claude-review.ps1` (Claude tiers via
-  `claude -p`), `openai-review.ps1` (GPT via the OpenAI API), `gemini-review.ps1`
-  (Gemini). All share one contract: `-Instruction -DiffPath [-FindingsPath]
+  `claude -p`), `codex-review.ps1` (GPT via Codex), `kimi-review.ps1` (Kimi),
+  and `agy-review.ps1` (Gemini via Antigravity). All share one contract: `-Instruction -DiffPath [-FindingsPath]
   [-ContextPath…] -Model [-Effort] [-RepoPath]`, returning the review on stdout
   and a non-zero exit on failure. Each runs read-only and hermetic.
 - **`run-review.ps1`** — the deterministic spine: resolves the diff (§0), fans
@@ -164,21 +164,17 @@ live beside this file:
   invariants (blind independence, anonymised pooling, surfaced disagreement,
   verify-before-publish) are identical; only the spawning mechanism differs.
 
-**Antigravity (`agy`) needs a real terminal.** Its headless print mode
-(`agy -p '…' --dangerously-skip-permissions`) returns correctly when run
-interactively in a terminal — verified executing a `pwsh -File <script>` and
-handing back its output — but hangs silently, emitting nothing and ignoring
-`--print-timeout`, when stdout is redirected to a file or the call is
-backgrounded (no TTY). Run it in a terminal, not through a captured/background
-pipe. Keep the prompt single-quoted with no inner double quotes (have `agy` run
-a script file rather than an inline `-Command`) so the host shell does not
-mangle the quoting.
+**Antigravity (`agy`) works headless with captured stdout.** Run it through
+`agy-review.ps1`, which uses `agy -p --mode plan`, a short driving prompt, and a
+throwaway workspace containing the brief, diff, findings, and context files.
+Do not add `--dangerously-skip-permissions`: plan mode is the read-only control,
+and the dangerous flag is unnecessary and may be blocked by the host.
 
 **Reasoning effort is not uniform across vendors.** `--effort`
 (low|medium|high|xhigh|max) is real on `claude -p` and the wrappers honour the
-manifest's `effort` for Claude reviewers. The OpenAI and Gemini wrappers expose
-no clean reasoning-effort flag, so `effort` is a no-op for them — the driver
-introspects each wrapper and silently omits a flag it does not declare. Do not
+manifest's `effort` for Claude reviewers. Antigravity accepts low/medium/high;
+`agy-review.ps1` honours a model's effort suffix first and otherwise maps xhigh/max to high. The driver introspects each wrapper and
+silently omits effort where unsupported. Do not
 plan to "dial the scanners down to save cost": for a panel whose whole value is
 catching what a shallow pass misses, default the reviewers to depth.
 
@@ -276,11 +272,10 @@ is fixed by retrying):
   the TPM window, not a transient rate-limit that clears. (The 30k figure is
   account/tier-specific; read it as "this tier's per-request cap", not a
   universal constant.) The ~25k-token gate above keeps headroom under it.
-- **The Gemini reviewer — large-input CLI hang.** The Gemini CLI **hangs
-  indefinitely** (0 bytes out, no error, no timeout honoured) on oversized
-  stdin/prompt input. This is not a token cap — trivial prompts still answer in
-  ~15s — but a CLI-robustness limit. The same oversized diff that 429'd the
-  OpenAI reviewer hung the Gemini reviewer twice.
+- **The Google reviewer — file-backed input.** `agy-review.ps1` copies the diff
+  into a throwaway workspace and gives Antigravity a short prompt, so the diff
+  does not cross the Windows command-line boundary. The comprehension budget
+  still applies even though the retired Gemini CLI's stdin hang does not.
 
 **Mitigation — a compact diff for the cross-vendor reviewers.** When the full
 `-U15` diff exceeds the token gate but is still within the comprehension budget
@@ -346,18 +341,17 @@ really are new.
   vendor-weighted at adjudication (Fable+Sonnet = one Anthropic vote) and its
   telemetry merges with B's into one Anthropic row (§3a). Spawn it in the same
   parallel message as G, X, and K.
-- **Reviewer G** — the Gemini wrapper. Write the Phase 1 brief to a file in the
-  working directory first; the wrapper reads it inlined. Invoke via
+- **Reviewer G** — the Antigravity wrapper. Write the Phase 1 brief to a file in
+  the working directory first; the wrapper copies all inputs into a throwaway workspace. Invoke via
   `pwsh -NoProfile -File` so it stays inside the `pwsh` allowlist. In every
   command below, `<skill-dir>` is the **absolute** directory this SKILL.md was
   loaded from (shown as "Base directory for this skill" when the skill loads) —
   substitute it literally. Do **not** write `~/...`: `pwsh -File` does not expand
   `~`, and a hardcoded `~/.claude` would point at the wrong home when this skill
   runs from Antigravity or Codex. Forward slashes work on every host:
-  `pwsh -NoProfile -File "<skill-dir>/gemini-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -UsageSidecarPath "<workdir>/usage-G.json"`
-  The wrapper pins `gemini-2.5-pro`. `-UsageSidecarPath` writes Gemini's exact
-  summed `{inputTokens,outputTokens,costUsd}` for the §3a outcome event (Phase 1
-  only, same as Reviewer X).
+  `pwsh -NoProfile -File "<skill-dir>/agy-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -ContextPath "<file1>;<file2>" -Model "gemini-3.1-pro-high" -UsageSidecarPath "<workdir>/usage-G.json"`
+  The wrapper pins `gemini-3.1-pro-high` and reports zero token/cost values
+  because `agy -p` exposes plain text, not usage telemetry.
 - **Reviewer X** — the OpenAI vote via the **Codex** wrapper (ChatGPT-Pro sub),
   same pattern; Codex is repo-aware (hard read-only sandbox), so pass `-RepoPath`:
   `pwsh -NoProfile -File "<skill-dir>/codex-review.ps1" -InstructionPath "<workdir>/phase1-brief.txt" -DiffPath "<workdir>/review-diff.txt" -RepoPath "<repo>" -Model "gpt-5.6-sol" -UsageSidecarPath "<workdir>/usage-X.json"`
@@ -396,7 +390,7 @@ output — return only the findings (Phase 1) / verdicts and gaps (Phase 2), no
 narration or thinking-aloud preamble.` The brief already says "no narration",
 but a subagent treats its final message as a human-facing summary unless told
 otherwise, and will prepend "Let me verify…" reasoning that pollutes the saved
-artefact. The Gemini and OpenAI wrappers do not need this — they return only
+artefact. The Antigravity and OpenAI wrappers do not need this — they return only
 the model's answer.
 
 **Then strip any surviving preamble mechanically — do not rely on the
@@ -406,8 +400,8 @@ before the first finding. When you capture each reviewer's output, discard
 everything before the first finding block — the first line beginning `### ` in
 Phase 1, the first line matching `F#:` in Phase 2 — and keep from there. The
 narration is never part of a finding, so this is lossless. Apply it to Reviewer
-B and F; the Gemini, OpenAI (Codex) and Kimi reviewer output rarely needs it but
-check the same way.
+B and F; the Antigravity, OpenAI (Codex), and Kimi reviewer output rarely needs
+it but check the same way.
 
 Collect the five finding sets verbatim (post-strip) — B, F, G, X, K. Do not merge
 or edit them yet.
@@ -426,10 +420,10 @@ the diff, and the pooled findings:
   `review-diff.txt` and `pooled-findings.txt`.
 - Reviewer F — a fresh `Agent` call (`model: fable`); same as B (read both
   files). Second Anthropic reviewer.
-- Reviewer G — `gemini-review.ps1` with the Phase 2 brief and **both** files,
+- Reviewer G — `agy-review.ps1` with the Phase 2 brief and **both** files,
   the pooled findings passed as `-FindingsPath`, and the **same** `-ContextPath`
   files you gave it in Phase 1:
-  `pwsh -NoProfile -File "<skill-dir>/gemini-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>"`
+  `pwsh -NoProfile -File "<skill-dir>/agy-review.ps1" -InstructionPath "<workdir>/phase2-brief.txt" -DiffPath "<workdir>/review-diff.txt" -FindingsPath "<workdir>/pooled-findings.txt" -ContextPath "<same ;-joined files as Phase 1>" -Model "gemini-3.1-pro-high"`
 - Reviewer X — the **Codex** wrapper (subscription-first, same as Phase 1;
   `openai-review.ps1` is the automatic fallback via `fallbackWrapper`), with the
   Phase 2 brief, the diff, the pooled findings, and the **same** `-RepoPath` you
@@ -466,7 +460,7 @@ runs *after* §5 synthesis and *before* §4 answer / §6 persist.
 Why this phase exists: a blind panel systematically over-rates severity, so a
 non-trivial share of Highs do not survive contact with the live code. Leaving
 that to manual follow-up means publishing a report that is partly wrong. Verify
-before you publish. (Canonical example: the `your-repo` run's contested
+before you publish. (Canonical example: a `your-repo` run's contested
 High `H6` — a verification pass found the sole call site already guards the null
 return, so it was by-design and downgraded to cosmetic. That is exactly the work
 this phase formalises.)
@@ -576,9 +570,9 @@ dashboard showing every run as `1 of 4 reviewers`). Pass:
   - **Reviewer X (OpenAI)** — read `<workdir>/usage-X.json` (Phase 1
     `-UsageSidecarPath`); exact `inputTokens`/`outputTokens`/`costUsd` from the
     API response.
-  - **Reviewer G (Gemini)** — read `<workdir>/usage-G.json` (Phase 1
-    `-UsageSidecarPath`); the wrapper writes the exact summed
-    `inputTokens`/`outputTokens`/`costUsd` it already computes from its rate card.
+  - **Reviewer G (Gemini via Antigravity)** — read `<workdir>/usage-G.json`
+    (Phase 1 `-UsageSidecarPath`); values are zero because `agy -p` does not
+    expose token usage. Cost remains putative-from-zero.
   - **Reviewers B and F, and the judge (Claude via Agent tool)** — the Agent
     result's `<usage>` block carries `subagent_tokens` (a single COMBINED in+out
     count). Sum it across the phases that reviewer ran (B: Phase 1 + Phase 2;
@@ -596,7 +590,7 @@ dashboard showing every run as `1 of 4 reviewers`). Pass:
   in ms. The Agent tool **does** expose this: each `Agent` result ends with a
   `<usage>` block containing `duration_ms` — use it for Reviewers B and F and the
   judge. For the merged Anthropic row, sum B's and F's `duration_ms`.
-  For the Gemini and OpenAI wrappers, wrap the Phase-1 `pwsh` call in
+  For the Antigravity and OpenAI wrappers, wrap the Phase-1 `pwsh` call in
   `Measure-Command` (or capture start/end) and pass the elapsed ms. Pass `0` only
   if a value genuinely was not captured.
 
@@ -789,7 +783,7 @@ note, the `working/` pointer, and — when remediation followed — a
 ```markdown
 ---
 project: your-repo
-run-name: QF Service Rewrite (NewOrderList, FX Tests)  # only if the run was named (the -Summary)
+run-name: Example Service Rewrite (Order Flow, Integration Tests)  # only if the run was named (the -Summary)
 review-type: adversarial-audit
 date: 2026-05-29
 reviewers: [Claude Sonnet, Claude Fable 5, GPT (Codex), Kimi (standard), Gemini]
@@ -1125,7 +1119,7 @@ The v2 panel is subscription-backed, so per-token cost is ~£0 (flat-rate subs);
 cost telemetry is putative. What a run *consumes* is CLI/subagent calls, not
 credits. One run (one chunk) is: 5 Claude subagent calls (Sonnet + Fable each in
 Phase 1 and Phase 2, plus the Opus judge), 2 Codex CLI calls (OpenAI, ChatGPT
-sub), 2 Kimi CLI calls (Moonshot sub), and 2 Gemini CLI calls (Google sub) — the
+sub), 2 Kimi CLI calls (Moonshot sub), and 2 Antigravity CLI calls (Google sub) — the
 four vendors each reviewing twice, plus the judge. The only path that bills
 per-token is the OpenAI API fallback (`openai-review.ps1`), used only if the
 Codex CLI is unavailable. A multi-chunk audit multiplies per chunk and adds one
@@ -1136,7 +1130,7 @@ once on the published report (not per chunk). Each such call comes from the
 cross-vendor verifier pool (Sonnet / Kimi / Codex, rotated by vendor), so the
 call lands on whichever pool member the rotation selects — a Claude subagent, a
 Kimi CLI call, or a Codex CLI call — not always Sonnet. Usually a handful (the
-6-chunk your-repo audit had 6 Highs). Budget "+ one pool call per
+6-chunk example audit had 6 Highs). Budget "+ one pool call per
 High/contested finding" on top of the figures above; all pool members are
 subscription-backed (no per-token cost unless Codex falls back to the OpenAI
 API). State the projected cost when

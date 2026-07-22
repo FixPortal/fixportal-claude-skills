@@ -6,11 +6,13 @@ divergent — skipped" and **never** syncs or re-flags them. Add a row (with a
 reason) whenever a divergence is confirmed deliberate; remove one to let the file
 sync again.
 
-Format: one entry per line — `<skill>/<relative-path>` — then a reason.
+Format: one entry per line — `<skill>/<relative-path>` with optional
+`[homes: kimi]` — then a reason. A qualifier excludes only those homes;
+unqualified entries apply to every holding home.
 
 ---
 
-- `adversarial-review/reviewers.json` — panel composition is host-specific, but
+- `adversarial-review/reviewers.json` [homes: gemini] — panel composition is host-specific, but
   the v2 all-frontier roster (2026-07-19) collapsed most of the old divergence:
   the 5-reviewer / 4-vendor panel (Sonnet B, Fable F, Codex X, Kimi K, Gemini G;
   Opus parked as Phase-3 judge) is now the SAME across `.claude`, `.agents` and
@@ -29,7 +31,7 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
   guard; everything else in reviewers.json now syncs normally.
   **What is NOT divergent-by-design: the wrapper each reviewer runs through.**
   Corrected 2026-07-12 — the `.agents`/`.gemini` copies still routed the OpenAI
-  reviewer through the `copilot` wrapper, which is dead on that account (the
+  reviewer through the `copilot` wrapper, which is dead on this account (the
   Copilot CLI rejects every explicit `--model` id). That reviewer silently
   produced nothing. This did not trip the manifest-level `minVendors` invariant
   (`run-review.ps1` ~line 125) — that check runs against the *enabled* reviewer
@@ -63,3 +65,26 @@ Format: one entry per line — `<skill>/<relative-path>` — then a reason.
 - `close/SKILL.md` — same reason as `recap/SKILL.md`: the "ICM (belts and
   braces)" mirror-to-ICM paragraph in step 3 is Claude-only and stripped from
   `.agents`/`.gemini`. Do not resync this file wholesale.
+- `scaffold-dotnet/SKILL.md` [homes: kimi] — Kimi keeps a compact prompt-native
+  variant; Claude, Agents, and Gemini share the full canonical scaffold guide.
+- `audit-dotnet-analyzers/SKILL.md` [homes: kimi] — Kimi carries prompt metadata
+  and Kimi-specific execution notes.
+- `audit-tests/SKILL.md` [homes: kimi] — same Kimi prompt-metadata adaptation.
+- `azure-cost-sweep/SKILL.md` [homes: kimi] — same Kimi prompt-metadata adaptation.
+- `document-architecture/SKILL.md` [homes: kimi] — same Kimi prompt-metadata adaptation.
+- `ef-core/SKILL.md` [homes: kimi] — Kimi keeps a compact prompt-native variant;
+  the other homes share the full EF Core reference.
+- `endgame-review/SKILL.md` [homes: kimi] — Kimi carries host-specific instruction
+  and hook paths.
+- `hone/SKILL.md` [homes: kimi] — Kimi lacks Claude's Workflow tool and carries a
+  host-specific manual-orchestration note.
+- `observe/SKILL.md` [homes: kimi] — telemetry and session paths are host-specific.
+- `optimise-web/SKILL.md` [homes: kimi] — Kimi uses its own notes path and prompt metadata.
+- `react-doctor/SKILL.md` [homes: kimi] — Kimi lacks Claude's PostToolUse hook and
+  carries the manual persistence path.
+- `wolverine-messaging/SKILL.md` [homes: kimi] — Kimi keeps a compact prompt-native
+  variant; the other homes share the full runtime-trap catalogue.
+- `sync-private-skills/SKILL.md` [homes: kimi] — Kimi mirrors the full reconciliation
+  logic but uses generic MCP examples because those servers are not registered there.
+- `sync-private-skills/intentionally-divergent.md` [homes: agents, gemini, kimi] —
+  the authoritative registry lives in `.claude`; other copies are inert snapshots.

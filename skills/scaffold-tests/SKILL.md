@@ -18,7 +18,8 @@ Create and maintain xUnit test projects that mirror the `src/` structure, using 
 
 ## Test Project Structure
 
-- Each `src/{ProjectName}` gets a corresponding `tests/{ProjectName}.UnitTests`
+- New test projects use `tests/{ProjectName}.UnitTests`
+- When normalizing an existing repository, preserve its established test-project names
 - Test projects use `Microsoft.NET.Sdk`
 - Test projects must reference their corresponding source project via `ProjectReference`
 - Test projects are added to the solution under the `tests` solution folder
@@ -36,7 +37,7 @@ Create and maintain xUnit test projects that mirror the `src/` structure, using 
 
 ## Naming Conventions
 
-- Test project: `{ProjectName}.UnitTests`
+- New test project: `{ProjectName}.UnitTests`; preserve established names in existing repositories
 - Test class: `{ClassName}Tests` (e.g., `CompanyEndpointsTests`)
 - Test method: `MethodName_Scenario_ExpectedResult` (e.g., `GetDatabase_WithValidName_ReturnsCompany`)
 
@@ -66,9 +67,11 @@ public void GetByName_WithNonExistent_ReturnsNull() { /* ... */ }
 
 ### Documentation
 
-Every test method must have an XML doc comment explaining:
+Every new test method must have an XML doc comment explaining:
 1. What the test validates
 2. Why this test is a valid choice (what risk it mitigates or behavior it confirms)
+
+Do not retrofit XML comments across existing tests during repository normalization.
 
 ```csharp
 /// <summary>
@@ -161,13 +164,13 @@ If the solution uses central package management (`Directory.Packages.props`), ad
 
 When scaffolding test projects, verify:
 
-- [ ] Each `src/` project has a corresponding `tests/{Name}.UnitTests` project
+- [ ] New test projects use `tests/{Name}.UnitTests`; established names are preserved when normalizing existing repositories
 - [ ] Test projects added to solution under `tests` solution folder
 - [ ] Test projects reference their source project via `ProjectReference`
 - [ ] All required packages added (`xunit.v3`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `NSubstitute`, `AwesomeAssertions`); xUnit major version matches the solution
 - [ ] Packages use central package management if `Directory.Packages.props` exists
 - [ ] `[Theory]`/`[InlineData]` used instead of `[Fact]` where inputs vary
-- [ ] Each test method has an XML doc comment explaining what and why
+- [ ] Each new test method has an XML doc comment explaining what and why; existing tests are not retrofitted
 - [ ] No redundant tests — brevity maintained with meaningful coverage
 - [ ] AwesomeAssertions used for all assertions (no `Assert.*`)
 - [ ] NSubstitute used for all mocking
