@@ -31,8 +31,9 @@ runs a review and never branches or commits to the scanned repos.
 
 ## 1. Collect
 
-Run once:
-`pwsh -NoProfile -File ~/.claude/skills/review-digest/collect.ps1 -Path <path>`
+Resolve the directory containing this loaded `SKILL.md`, then run its sibling
+`collect.ps1` once with `pwsh -NoProfile -File <skill-dir>\collect.ps1 -Path
+<path>`
 (defaults `-OutFile` to `%TEMP%\review-digest-data.json`). It exits non-zero on a
 bad path or a folder with no git repos — STOP and report if so. Read the JSON;
 each repo carries `git` (reviewCommits — each entry has `{ sha, date, subject,
@@ -110,8 +111,7 @@ and the hand-off report:
 
 ## 2. Classify against themes.json
 
-Read `themes.json` (it lives beside this skill at
-`~/.claude/skills/review-digest/themes.json`; it ships **empty** — `{}` — and this skill
+Read `themes.json` beside this loaded `SKILL.md`; it ships **empty** — `{}` — and this skill
 populates it per-user over successive runs). For each repo's review commits + vault report
 findings, match the described bug-classes against theme `aliases` (case-insensitive,
 substring). Record which themes each repo exhibits. For a genuinely-new recurring
@@ -190,9 +190,8 @@ Write `<vault>\Claude\Review Ledger\<today>.md` (today =
 7. **Coverage gaps** — neither-bucket repos; plus a sub-list of `outsideScanPath` repos.
 8. **Prevention candidates** — recurring theme -> suggested home. **PROPOSE-ONLY.**
 
-Then write `themes.json` back (same path:
-`~/.claude/skills/review-digest/themes.json`) with merged `seen` +
-any new themes.
+Then write the merged `seen` values and any new themes back to that same
+`themes.json`.
 
 ## 7. Hand-off scope report
 

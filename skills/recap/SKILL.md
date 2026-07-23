@@ -23,26 +23,21 @@ Before gathering, it does a quick, **safe** housekeeping pass on the local repo
 elsewhere, never touching uncommitted, unpushed, or stashed work (step 2).
 
 Behind that answer is a defined, multi-source gathering process, so the answer
-is consistent and well-sourced every time. A per-repo journal under
-`~/.claude/recap/` backs the skill — it stores a marker so each recap analyses
-only the delta since the last one, and keeps a readable history. The journal is
-**internal plumbing**: the user never triggers, stages, reviews, or is nagged
-about it. You maintain it silently. It lives under `~/.claude/`, never inside
-the user's repository.
+is consistent and well-sourced every time. A shared per-repo journal under
+`~/.agents/recap/` backs the skill — it stores a marker so each recap analyses
+only the delta since the last one, and keeps a readable history across runtimes.
+The journal is **internal plumbing**: the user never triggers, stages, reviews,
+or is nagged about it. You maintain it silently outside the user's repository.
 
 ## Procedure
 
 ### 0. Re-anchor on the user's standing instructions
 
-Before anything else, **re-read the global `~/.claude/CLAUDE.md` in full** with
-the Read tool — do not rely on the copy already in context, which may be
-summarised, truncated, or stale. Read it, take it in, and treat every rule it
-carries as binding for the rest of the session: tool selection on Windows, shell
-discipline, the review-worktree workflow and its numbering, rebase-merge
-cleanup, the date/time and unit-testing conventions, configuration scope, the
-PR-vs-push rules, and the Azure/CI and .NET-runtime trap docs it points at.
-Where CLAUDE.md tells you to consult a notes file before a class of work, that
-obligation is live for this session.
+Before anything else, **re-read the active runtime's user-level instruction file
+in full**, if that runtime has one. Resolve it from the current host; do not
+read another host's policy file or rely on a copy already in context, which may
+be summarised, truncated, or stale. Treat every rule it carries, including
+linked notes, as binding for the rest of the session.
 
 The recap is the moment work resumes, so it is the moment to reload these rules
 and recommit to them. The recurring cost of skipping this is exactly what the
@@ -67,7 +62,7 @@ Compute the key identifying this repo + branch:
   HEAD), use `detached-` followed by `git rev-parse --short HEAD`.
 - **sanitised branch** — in the branch string, replace every character that is
   not a letter, digit, `.`, `_`, or `-` with `-`.
-- **journal path** — `~/.claude/recap/<root12>__<sanitised-branch>.md` (two
+- **journal path** — `~/.agents/recap/<root12>__<sanitised-branch>.md` (two
   underscores between the parts).
 
 ### 2. Tidy the local repo — if safe
@@ -253,10 +248,10 @@ keep it tight, and do not narrate the steps you took.
   **Information Only** the tersest — it is the section most likely to become
   noise.
 
-End the digest with a single confirmation line that you have re-read and will
-follow the global instructions — e.g. `✓ Re-read global CLAUDE.md — standing
-house rules in force for this session.` One line only; do not list the rules.
-This line is the user's proof that step 0 happened.
+End the digest with a single confirmation line that you re-read and will follow
+the active runtime's global instructions — e.g. `✓ Re-read active global
+instructions — standing house rules in force for this session.` One line only;
+do not list the rules. This line is the user's proof that step 0 happened.
 
 ### 7. Update the journal — silently
 
@@ -264,7 +259,7 @@ Plumbing. Do it quietly — no announcement, no "I have saved this", no stalenes
 remark, no commit.
 
 - **If `<marker>..HEAD` contains new commits** — prepend a new entry (format
-  below) to the journal file, creating the `~/.claude/recap/` directory and the
+  below) to the journal file, creating the `~/.agents/recap/` directory and the
   file if they do not exist. A new file begins with a
   `# Recap Journal — <repo name>` title (`<repo name>` is the basename of
   `git rev-parse --show-toplevel`), then on the next line the comment
@@ -328,11 +323,11 @@ Commit list, file-change stats, caveats — the fuller record.
 
 ## Common mistakes
 
-- **Skipping the re-anchor (step 0).** Re-reading the global `CLAUDE.md` is the
-  first thing a recap does and the most likely thing to get rationalised away
-  ("it's already in context", "I know the rules"). Don't — read the file fresh
-  every time and end the digest with the one-line confirmation. The whole point
-  is to stop re-litigating settled, already-logged decisions.
+- **Skipping the re-anchor (step 0).** Re-reading the active runtime's global
+  instructions is the first thing a recap does and the most likely thing to get
+  rationalised away ("it's already in context", "I know the rules"). Don't —
+  read the file fresh every time and end the digest with the one-line
+  confirmation.
 - **Over-eager tidying.** The step-2 tidy deletes only branches that are *both*
   provably merged (rebase-merge fingerprint / `git branch --merged`) *and*
   remote-gone, plus already-dead worktrees. A `gone` upstream alone is **not**
@@ -347,7 +342,7 @@ Commit list, file-change stats, caveats — the fuller record.
 - **Running the test suite.** Too slow — use static code signals only.
 - **Treating a missing source as an error.** No planning docs, no PR, no
   memories — each is skipped silently.
-- **Writing into the user's repo.** The journal lives under `~/.claude/recap/`,
+- **Writing into the user's repo.** The journal lives under `~/.agents/recap/`,
   never in the repository.
 - **A wall of text.** Each section is capped at 7 bullets; detail belongs inside
   `<details>`. Keep **Information Only** the tersest.
