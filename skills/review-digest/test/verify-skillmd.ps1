@@ -13,6 +13,9 @@ foreach ($needle in 'collect.ps1','themes.json','Review Ledger','propose','cover
                      'handoff','risk','graphify','boundarySha','since the last review') {
   if ($text -notmatch [regex]::Escape($needle)) { throw "SKILL.md missing reference: $needle" }
 }
+if ($text -match '(?i)\.claude[\\/]+skills[\\/]+review-digest') {
+  throw "SKILL.md must resolve support files from its loaded skill directory"
+}
 # sanitisation guard: the public copy must carry no machine-specific path
 $driveSlash = [IO.Path]::DirectorySeparatorChar
 foreach ($leak in "C:$($driveSlash)Users", "D:$driveSlash", "E:$driveSlash") {
