@@ -248,10 +248,11 @@ keep it tight, and do not narrate the steps you took.
   **Information Only** the tersest — it is the section most likely to become
   noise.
 
-End the digest with a single confirmation line that you re-read and will follow
-the active runtime's global instructions — e.g. `✓ Re-read active global
-instructions — standing house rules in force for this session.` One line only;
-do not list the rules. This line is the user's proof that step 0 happened.
+End the digest with one confirmation line. If the active runtime has a
+user-level instruction file, confirm that you re-read and will follow it — e.g.
+`✓ Re-read active global instructions — standing house rules in force for this
+session.` If it has none, say `✓ No runtime-level instruction file for this host
+— none to re-read.` Do not list the rules. This line proves step 0 happened.
 
 ### 7. Update the journal — silently
 
