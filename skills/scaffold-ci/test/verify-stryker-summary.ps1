@@ -121,10 +121,25 @@ try {
     Assert-Value $none.Summary.valid 0 'no-valid valid'
     Assert-Value $none.Summary.score 0 'no-valid score'
 
-    # --- Hotspots still rank by surviving mutants so the summary stays actionable.
+    # --- Hotspots rank by undetected mutants so the summary stays actionable.
     $hotspots = @($all.Summary.hotspots)
-    if ($hotspots.Count -lt 1) { throw 'hotspots must list files with surviving mutants' }
+    if ($hotspots.Count -lt 1) { throw 'hotspots must list files with undetected mutants' }
     Assert-Value $hotspots[0].file 'Beta.cs' 'top hotspot'
+
+    # NoCoverage counts against the score even when no mutants survived.
+    $gap = Invoke-Summary (New-Report @{
+        'Covered.cs' = @('Killed', 'Killed', 'Killed', 'Killed')
+        'Uncovered.cs' = @('NoCoverage', 'NoCoverage', 'NoCoverage')
+    }) 'coverage-gap'
+    $gapHotspots = @($gap.Summary.hotspots)
+    if ($gapHotspots.Count -lt 1) { throw 'NoCoverage must be reported as a hotspot' }
+    Assert-Value $gapHotspots[0].file 'Uncovered.cs' 'no-coverage hotspot'
+    Assert-Value $gapHotspots[0].noCoverage 3 'no-coverage hotspot count'
+    Assert-Value $gapHotspots[0].survived 0 'no-coverage hotspot has no survivors'
+    if ($gap.Markdown -match 'No surviving mutants|No undetected mutants') {
+        throw 'the summary hid the no-coverage hotspot'
+    }
+    if ($gap.Markdown -notmatch 'No coverage') { throw 'the hotspot table needs its no-coverage column' }
 
     # --- Optional assurance preserves a client service repo's useful operational gate
     #     while every repository still receives the same canonical metric and script.
@@ -137,9 +152,10 @@ try {
     Assert-Value $timeoutDominated.ExitCode 1 'timeout-dominated assurance exit code'
     Assert-Value $timeoutDominated.Summary.assurancePassed $false 'timeout-dominated assurance verdict'
 
+    # RuntimeError is a non-viable final status, treated like CompileError.
     $runtimeError = Invoke-AssuredSummary (New-Report @{ 'Broken.cs' = @('Killed', 'RuntimeError') }) 'runtime-error'
-    Assert-Value $runtimeError.ExitCode 1 'runtime-error assurance exit code'
-    Assert-Value $runtimeError.Summary.assurancePassed $false 'runtime-error assurance verdict'
+    Assert-Value $runtimeError.ExitCode 0 'runtime-error assurance exit code'
+    Assert-Value $runtimeError.Summary.assurancePassed $true 'runtime-error assurance verdict'
 
     'summarize-stryker.ps1 OK - detected/valid score, timeout counted, compile/runtime/ignored/pending excluded'
 }
