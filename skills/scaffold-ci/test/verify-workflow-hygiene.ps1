@@ -351,6 +351,27 @@ runs:
         throw "an unpinned ref INSIDE a local composite action must fail:`n$($compositeBad.Output)"
     }
 
+    # An action directory can end in YAML syntax without being a workflow.
+    foreach ($suffix in '.yml', '.yaml') {
+        foreach ($revision in @('v2', $SHA)) {
+            $directoryAction = Invoke-Hygiene @{
+                '.github/workflows/ci.yml' = $clean -replace "raven-actions/actionlint@$SHA", "./.github/actions/setup$suffix"
+                ".github/actions/setup$suffix/action.yml" = @"
+name: setup
+runs:
+  using: composite
+  steps:
+    - uses: raven-actions/actionlint@$revision
+"@
+            }
+            $expected = if ($revision -eq $SHA) { 0 } else { 1 }
+            if ($directoryAction.Code -ne $expected -or
+                ($expected -eq 1 -and $directoryAction.Output -notmatch 'actionlint@v2')) {
+                throw "an action directory ending in $suffix must check its nested pins:`n$($directoryAction.Output)"
+            }
+        }
+    }
+
     $compositeMissing = Invoke-Hygiene @{ '.github/workflows/ci.yml' = @'
 on:
   pull_request:

@@ -307,7 +307,7 @@ jobs:
     # so the step runs unconditionally and never fails -- still passed, because the echo
     # matched. That is exactly the "guts only the aggregation step" neuter the checker
     # exists to catch, so it was blind to its own subject. Found by Gitar on
-    # fixportal-initiator#225.
+    # the upstream review.
     $echoOnly = Invoke-Gate @'
 jobs:
   build:
@@ -490,7 +490,7 @@ jobs:
     # at step-body indentation. A checker that scans every line for the STEP_IF_VALUE
     # shape, blind to whether it sits inside a preceding block scalar, reads that printed
     # text as the real condition and reports the gate as aggregating -- fail-open on a
-    # gate that aggregates nothing. Found by CodeRabbit on fixportal-quickfixn#68.
+    # gate that aggregates nothing. Found by CodeRabbit on the upstream review.
     $conditionInRunBody = Invoke-Gate @'
 jobs:
   build:
