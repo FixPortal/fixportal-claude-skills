@@ -20,6 +20,7 @@
   ],
   "version": 1,
   "high": [
+    ".github/scripts/assert_no_private_tokens.py",
     ".github/workflows/ci.yml",
     ".github/workflows/review-policy-guard.yml",
     ".github/scripts/assert_gate_coverage.py",

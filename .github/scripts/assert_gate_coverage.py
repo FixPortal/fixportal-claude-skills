@@ -35,6 +35,7 @@ out with CRLF got `set: pipefail: invalid option name` and a permanently red req
 check. Python does not care about CRLF, so the failure mode is designed out rather than
 patched per repo.
 """
+import json
 import os
 import re
 import sys
@@ -837,6 +838,177 @@ def parse_jobs(workflow_path):
     return set(jobs)
 
 
+# A repo-local script invoked from a `run:` body. Deliberately a small, closed set of
+# directory roots rather than "any path with a script extension": the point is to catch
+# a checker the repository authored and wired into the merge barrier, and widening this
+# to every path-shaped token would start matching tool arguments and report files.
+#
+# The candidate is only ever a CANDIDATE -- it must also exist on disk before anything
+# is asserted about it (see gate_script_paths). That existence test is what keeps a
+# script name inside an `echo` message, or a path that a later commit deleted, from
+# reddening a repository over a file it does not have.
+GATE_SCRIPT = re.compile(
+    r"""(?<![\w./-])\.?/?((?:\.github/scripts|scripts|build|tools)/[\w./-]*\.(?:ps1|py|sh))\b"""
+)
+# A `run:` key at any depth. Group 1 is everything before the key, so its LENGTH is the
+# key's own column -- which is what continuation_lines needs to find a block scalar's
+# body. Same reasoning as step_key_pattern, and the same dash-form hazard: a `- run: |`
+# opens at the key, two columns right of the dash.
+RUN_KEY = re.compile(r"""^(\s*(?:-\s+)?)(?:'run'|"run"|run)\s*:\s*(.*?)\s*$""")
+
+
+def glob_to_regex(pattern):
+    """A gitignore-style policy glob as an anchored regex.
+
+    A DELIBERATE MIRROR of glob_to_regex in the pr-review-policy hook, which is what
+    actually tiers a pull request:
+
+        **/  -> (.*/)?     **  -> .*     *  -> [^/]*     ?  -> [^/]
+
+    Mirrored rather than approximated because the two must agree exactly. A checker
+    stricter than the hook reports a false RED on a repository the hook already tiers
+    HIGH -- for instance one covering its scripts with `scripts/**` instead of naming
+    each file -- and a false RED on a required check is what gets a working control
+    deleted to make CI green.
+
+    Placeholders keep emitted output out of reach of later substitutions, for the same
+    reason the shell version uses them: rewriting `**/` to `(.*/)?` first and then
+    applying the `*` rule mangles the `*` that rule just emitted.
+    """
+    out = re.escape(pattern)
+    # re.escape escapes the glob metacharacters too, so match them in escaped form.
+    out = out.replace(r"\*\*/", "\x01").replace(r"\*\*", "\x02")
+    out = out.replace(r"\*", "\x03").replace(r"\?", "\x04")
+    out = out.replace("\x01", "(?:.*/)?").replace("\x02", ".*")
+    out = out.replace("\x03", "[^/]*").replace("\x04", "[^/]")
+    return re.compile(rf"^{out}$")
+
+
+def matches_any(path, patterns):
+    """The first pattern that tiers `path`, or None. Case-sensitive, like the hook."""
+    for pattern in patterns:
+        if glob_to_regex(pattern).match(path):
+            return pattern
+    return None
+
+
+def policy_root(workflow_path):
+    """The nearest ancestor directory holding `.claude/review-policy.json`, or None.
+
+    Resolved by walking UP from the workflow file rather than from the process's working
+    directory, so the check behaves the same whether CI runs it from the repository root
+    or a test runs it against a workflow in a temporary directory. None means no policy
+    is in scope and nothing is asserted -- a repository without a review policy tiers
+    everything NORMAL, and review-policy-guard.yml is what owns that absence.
+    """
+    for parent in Path(workflow_path).resolve().parents:
+        if (parent / ".claude" / "review-policy.json").is_file():
+            return parent
+    return None
+
+
+def gated_run_bodies(lines, jobs, needs, gate_job):
+    """Every `run:` body line belonging to a job that can fail the gate, with its job id.
+
+    Scoped to the gate's `needs:` plus the gate job itself, because that is exactly the
+    set whose failure blocks a merge. A script run only by an exempt, non-merge-blocking
+    job cannot neuter the barrier, so requiring it to be HIGH would be a cost with no
+    control behind it.
+    """
+    for job_id in sorted(set(needs) | {gate_job}):
+        if job_id not in jobs:
+            continue
+        block = job_block(lines, jobs, job_id)
+        index = 0
+        while index < len(block):
+            match = RUN_KEY.match(block[index])
+            if not match:
+                index += 1
+                continue
+            value = strip_comment(match.group(2)).strip()
+            if BLOCK_SCALAR.match(match.group(2).strip()):
+                body, index = continuation_lines(block, index, len(match.group(1)))
+            else:
+                body, index = ([value] if value else []), index + 1
+            for body_line in body:
+                yield job_id, body_line
+
+
+def gate_script_paths(workflow_path, lines, jobs, needs, gate_job, root):
+    """Repo-local scripts a merge-blocking job runs from the checkout, path -> job id.
+
+    Only paths that EXIST under `root` are returned. Nothing is asserted about a
+    candidate that does not resolve to a file: the repository does not have it, so it
+    cannot be edited to neuter anything.
+    """
+    found = {}
+    for job_id, body_line in gated_run_bodies(lines, jobs, needs, gate_job):
+        for match in GATE_SCRIPT.finditer(body_line):
+            relative = match.group(1)
+            if (root / relative).is_file():
+                found.setdefault(relative, job_id)
+    return found
+
+
+def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
+    """Every script a merge-blocking job runs must be tiered HIGH by the review policy.
+
+    THE HOLE THIS CLOSES. The gate runs the pull request's OWN checkout, so a script it
+    invokes decides what can merge in exactly the way the workflow does. The named-path
+    list in review-policy-guard.yml protects the control plane that every scaffolded
+    repository shares -- it cannot name a checker a single repository authored later,
+    because a hard-coded path would red every repository that does not have that file.
+    So a repo-authored gate script was protected by nothing: a pull request touching only
+    `scripts/**` tiered NORMAL, and its own edited copy of the script is what ran. Change
+    the failure path to `exit 0` and a neutered gate merges green.
+
+    Derived rather than enumerated, which is what makes it general: the requirement
+    follows from what the workflow actually invokes, so a gate script added to a
+    repository years after it was scaffolded is covered on the day it is wired in.
+
+    Verified in the field, not hypothesised: fixportal-fixatdl added
+    `scripts/assert-coverage-floor.ps1` as a merge gate on 2026-08-24 and it sat outside
+    both the policy and the guard until an adversarial review found it on 2026-09-08 --
+    the third recurrence of this class in that repository, after the same hole had been
+    closed for the two Python checkers three weeks earlier.
+    """
+    root = policy_root(workflow_path)
+    if root is None:
+        return
+    policy_path = root / ".claude" / "review-policy.json"
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # An unreadable or malformed policy is review-policy-guard.yml's failure to
+        # report, and it already does. Duplicating it here would print the same breach
+        # twice and, worse, make THIS check the one that fails on a repository whose
+        # actual problem is elsewhere.
+        return
+    high = policy.get("high")
+    if not isinstance(high, list):
+        return
+    high = [pattern for pattern in high if isinstance(pattern, str)]
+
+    scripts = gate_script_paths(workflow_path, lines, jobs, needs, gate_job, root)
+    unprotected = sorted(path for path in scripts if matches_any(path, high) is None)
+    if unprotected:
+        detail = "\n".join(
+            f"  {path}  (run by '{scripts[path]}')" for path in unprotected
+        )
+        sys.exit(
+            f"{workflow_path}: script(s) run by a job feeding '{gate_job}' are not tiered "
+            f"HIGH by {policy_path.name}:\n{detail}\n"
+            "Each decides what can merge and runs from the pull request's own checkout, so "
+            "an edit to one must draw the heavier review. Add each path to the policy's "
+            "'high' array (or a glob that covers them), or stop the gate depending on it."
+        )
+    if scripts:
+        print(
+            f"{workflow_path}: {len(scripts)} gate script(s) tiered HIGH: "
+            f"{', '.join(sorted(scripts))}."
+        )
+
+
 def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty="fail"):
     """Assert one file's full gate contract. Returns True when the file contains the
     gate job (and every assertion ran), False when it has no gate job at all.
@@ -880,6 +1052,7 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
         )
 
     assert_gate_semantics(workflow_path, lines, jobs, gate_job, needs)
+    assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job)
 
     print(
         f"{workflow_path}: all {len(jobs)} job(s) accounted for by '{gate_job}', "
