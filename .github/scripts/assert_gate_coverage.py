@@ -934,7 +934,7 @@ def gated_run_bodies(lines, jobs, needs, gate_job):
                 yield job_id, body_line
 
 
-def gate_script_paths(workflow_path, lines, jobs, needs, gate_job, root):
+def gate_script_paths(lines, jobs, needs, gate_job, root):
     """Repo-local scripts a merge-blocking job runs from the checkout, path -> job id.
 
     Only paths that EXIST under `root` are returned. Nothing is asserted about a
@@ -989,7 +989,7 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
         return
     high = [pattern for pattern in high if isinstance(pattern, str)]
 
-    scripts = gate_script_paths(workflow_path, lines, jobs, needs, gate_job, root)
+    scripts = gate_script_paths(lines, jobs, needs, gate_job, root)
     unprotected = sorted(path for path in scripts if matches_any(path, high) is None)
     if unprotected:
         detail = "\n".join(
