@@ -540,21 +540,41 @@ def strip_whitespace_outside_quotes(value):
     strings and gets False. Folding a conjunct to True drops it from failure_atoms'
     residual, crediting the atom beside it as real coverage for a step whose actual
     compound condition is always false. Found by CodeRabbit on the upstream review.
+
+    A double-quoted literal can itself contain an escaped quote (`_LITERAL` matches
+    `\\"(?:\\\\.|[^\\"])*\\"`, same as split_top_level/strip_inline_comment), and this
+    loop originally had no escape handling: `"a\\" b"` closed the string at the
+    escaped quote, re-entered quote mode at the bare quote that follows, and stripped
+    the space that was actually inside the literal -- `"a\\"b"`, comparing against
+    `ab` instead of the intended `a" b`. Skipping two characters on a backslash
+    inside a double-quoted span, exactly as those sibling functions do, is what
+    keeps the escape from being read as a close. Found by Gitar on the upstream
+    review.
     """
     out = []
     quote = None
-    for char in value:
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == '"' and char == BACKSLASH and index + 1 < len(value):
+            out.append(char)
+            out.append(value[index + 1])
+            index += 2
+            continue
         if quote is not None:
             out.append(char)
             if char == quote:
                 quote = None
+            index += 1
             continue
         if char in "'\"":
             quote = char
             out.append(char)
+            index += 1
             continue
         if char != " ":
             out.append(char)
+        index += 1
     return "".join(out)
 
 
