@@ -519,8 +519,35 @@ def normalise_condition(value):
         value = value[1:-1].strip()
     if value.startswith("${{") and value.endswith("}}"):
         value = value[3:-2]
-    value = value.replace(" ", "")
+    value = strip_whitespace_outside_quotes(value)
     return value.lower() if value.lower() in ("true", "false", "always()") else value
+
+
+def strip_whitespace_outside_quotes(value):
+    """Remove every space OUTSIDE a quoted span, leaving quoted content untouched.
+
+    A blanket `.replace(' ', '')` altered quoted literals too: `'not equal' ==
+    'notequal'` normalised to `'notequal'=='notequal'`, which static_truth then folds
+    to True as an identity comparison -- although GitHub compares the two DIFFERENT
+    strings and gets False. Folding a conjunct to True drops it from failure_atoms'
+    residual, crediting the atom beside it as real coverage for a step whose actual
+    compound condition is always false. Found by CodeRabbit on the upstream review.
+    """
+    out = []
+    quote = None
+    for char in value:
+        if quote is not None:
+            out.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            out.append(char)
+            continue
+        if char != " ":
+            out.append(char)
+    return "".join(out)
 
 
 def decode_yaml_scalar(value):
