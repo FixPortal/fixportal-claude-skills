@@ -510,13 +510,21 @@ def normalise_condition(value):
     correctly NOT equal to `always()` -- a gate that runs only sometimes is the defect
     being caught, not a spelling variant of the fix.
     """
-    # Strip a WRAPPING quote pair only. `.strip("'\"")` peeled any leading or trailing
-    # quote, so `needs.build.result == 'failure'` lost its closing quote and stopped
-    # matching FAILURE_CONDITION_ATOM -- a correct per-job gate then read as gating
-    # nothing, which is a false RED on the house shape.
+    # Strip a WRAPPING quote pair only, decoding YAML's doubled-single-quote escape
+    # as it goes. `.strip("'\"")` peeled any leading or trailing quote, so
+    # `needs.build.result == 'failure'` lost its closing quote and stopped matching
+    # FAILURE_CONDITION_ATOM -- a correct per-job gate then read as gating nothing,
+    # which is a false RED on the house shape. A plain `value[1:-1]` fixed that but
+    # missed the escape: `if: 'needs.build.result != ''success'''` left
+    # `needs.build.result != ''success''` behind, which ALSO fails to match. Reusing
+    # decode_yaml_scalar (already relied on for `run:` values) decodes the escape
+    # too, and it is a no-op whenever the whole value isn't quote-wrapped, which is
+    # every ordinary `if:` -- see its own guard. Found by CodeRabbit on the upstream
+    # review.
     value = strip_comment(value).strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        value = value[1:-1].strip()
+    decoded = decode_yaml_scalar(value)
+    if decoded != value:
+        value = decoded.strip()
     if value.startswith("${{") and value.endswith("}}"):
         value = value[3:-2]
     value = strip_whitespace_outside_quotes(value)
