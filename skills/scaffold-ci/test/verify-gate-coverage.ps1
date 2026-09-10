@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $script = Resolve-Path (Join-Path $PSScriptRoot '..' 'assets' 'assert_gate_coverage.py')
-$repoCopy = Resolve-Path (Join-Path $PSScriptRoot '..' '..' '.github' 'scripts' 'assert_gate_coverage.py')
+$repoCopy = Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..' '.github' 'scripts' 'assert_gate_coverage.py')
 if (([IO.File]::ReadAllText($script) -replace "\r\n?", "`n") -cne ([IO.File]::ReadAllText($repoCopy) -replace "\r\n?", "`n")) {
     throw '.github/scripts/assert_gate_coverage.py has drifted from the canonical scaffold-ci asset'
 }
