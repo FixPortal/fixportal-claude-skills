@@ -412,6 +412,14 @@ jobs:
         #     a second test inside the body can only re-decide it the wrong way.
         'a test guarding the exit with ||'               = '[ -z "$x" ] || exit 1'
         'a test guarding the exit with &&'               = 'test -n "$x" && exit 1'
+        # The `if <test>; then exit 1; fi` house forms were carried as a stated residual
+        # for exactly as long as a repo still shipped one. They exit ZERO when the test
+        # fails, which is the same fail-open as the `||`/`&&` spellings above.
+        'a test guarding the exit with if'               = 'if [ -z "$x" ]; then exit 1; fi'
+        # mask_quoted blanks the message, so a `.*` throw tail normalised this to
+        # `throw || true` and fullmatched -- while bash `-e` does not fire on a command
+        # whose status `||` consumes, so the step exits 0.
+        'a guarded pwsh throw'                           = 'throw "upstream failed" || true'
         # `\S+` as the redirect target swallowed the separator, so this fullmatched the
         # `false` arm while the step exits 0 on `true`.
         'a redirect target hiding a separator'           = 'false >/tmp/gate;true'
@@ -1229,10 +1237,205 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: if [ ${#x} -eq 0 ]; then exit 1; fi
+        run: echo len=${#x} && exit 1
 '@
     if ($parameterLength.Code -ne 0) {
         throw "a shell parameter length must not be stripped as a comment:`n$($parameterLength.Output)"
+    }
+
+    # --- the verdict is over the WHOLE body, not its first matching line ---------------
+    # Accepting any matching segment vouched for an `exit 1` the step never reaches: it
+    # exits ZERO on the earlier line while the checker reads the later one. Only MESSAGE
+    # lines may precede the failing command, because a message cannot re-decide the
+    # step's exit status.
+    $unreachable = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          exit 0
+          exit 1
+'@
+    if ($unreachable.Code -eq 0) {
+        throw "an unreachable exit 1 behind exit 0 must not be vouched for:`n$($unreachable.Output)"
+    }
+
+    $messagePrefix = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::an upstream job did not succeed"
+          exit 1
+'@
+    if ($messagePrefix.Code -ne 0) {
+        throw "message lines before the failing command must stay accepted:`n$($messagePrefix.Output)"
+    }
+
+    # EVERY preceding line is tested, not just the first, and _MESSAGE admits the whole
+    # message vocabulary: `printf` as well as `echo`, and a leading redirection as well as
+    # a trailing one. A regression narrowing the prefix loop to its first line, or the
+    # pattern to bare `echo`, passes the single-message case above. (Gitar, PR #176.)
+    $messagePrefixes = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::an upstream job did not succeed"
+          printf '%s\n' "collecting upstream results"
+          >&2 echo "see the job summary"
+          exit 1
+'@
+    if ($messagePrefixes.Code -ne 0) {
+        throw "consecutive echo/printf/redirected message lines must stay accepted:`n$($messagePrefixes.Output)"
+    }
+
+    # The prefix rule is what makes the whole-body verdict mean anything: a non-message
+    # line before the failing command can re-decide the exit status, so it must be
+    # refused however ordinary it looks.
+    $nonMessagePrefix = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::an upstream job did not succeed"
+          trap 'exit 0' EXIT
+          exit 1
+'@
+    if ($nonMessagePrefix.Code -eq 0) {
+        throw "a non-message line before the failing command must be refused:`n$($nonMessagePrefix.Output)"
+    }
+
+    # `set -euo pipefail` is the house prefix on run: blocks here, and it cannot decide
+    # the exit status -- the final line still has to be an accepted failing form. The
+    # message-prefix rule refused it, which is a false RED on a gate that does fail.
+    # (CodeRabbit, PR #176.)
+    $shellOptionPrefix = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          set -euo pipefail
+          echo "::error::an upstream job did not succeed"
+          exit 1
+'@
+    if ($shellOptionPrefix.Code -ne 0) {
+        throw "a set -euo pipefail prefix must stay accepted:`n$($shellOptionPrefix.Output)"
+    }
+
+    # NOT EVERY SHELL OPTION IS INERT. `set -n` (noexec) and `set -t` (onecmd) stop the
+    # shell before the final command, so the `exit 1` the checker can see never runs and
+    # the step exits ZERO. Both arms are pinned: the unsafe options refused, the safe
+    # ones accepted -- an allowlist narrowed by accident would pass the first half of
+    # this alone. (CodeRabbit, PR #176.)
+    foreach ($case in @(
+        @('set -n', $false),
+        @('set -o noexec', $false),
+        @('set -t', $false),
+        @('set -o onecmd', $false),
+        @('set -e', $true),
+        @('set -x', $true),
+        @('set -o nounset', $true),
+        @('set -o errexit', $true)
+    )) {
+        $option, $accepted = $case
+        $optionGate = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          $option
+          echo "::error::an upstream job did not succeed"
+          exit 1
+"@
+        if ($accepted -and $optionGate.Code -ne 0) {
+            throw "an inert shell option must stay accepted ($option):`n$($optionGate.Output)"
+        }
+        if (-not $accepted -and $optionGate.Code -eq 0) {
+            throw "an execution-disabling shell option must be refused ($option):`n$($optionGate.Output)"
+        }
+    }
+
+    # A command subexpression exits the step before the failing command under pwsh, and
+    # mask_quoted blanks it to a bare `echo` that reads as an ordinary message. Refused
+    # quoted and unquoted -- what it does cannot be read from the file. This one is
+    # older than the whole-body rule: the any-line rule vouched for the same body on its
+    # `throw` alone. (CodeRabbit, PR #176.)
+    foreach ($subexpression in @('echo "$(exit 0)"', 'echo $(exit 0)')) {
+        $subexpressionGate = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: |
+          $subexpression
+          throw "upstream failed"
+"@
+        if ($subexpressionGate.Code -eq 0) {
+            throw "a command subexpression must be refused ($subexpression):`n$($subexpressionGate.Output)"
+        }
+    }
+
+    # The gate this repository actually ships interpolates a GitHub expression into its
+    # message. `${{ ... }}` is not `$(`, and refusing it would red every house gate.
+    $githubExpression = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "Upstream results: ${{ join(needs.*.result, ', ') }}"
+          exit 1
+'@
+    if ($githubExpression.Code -ne 0) {
+        throw "a GitHub expression in the gate message must stay accepted:`n$($githubExpression.Output)"
     }
 
     foreach ($case in @(
