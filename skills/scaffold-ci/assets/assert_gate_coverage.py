@@ -1549,7 +1549,16 @@ def delegated_run_bodies(root, ref, visited):
         return
     visited.add(key)
     lines = target.read_text(encoding="utf-8").splitlines()
-    using = re.search(r"^\s+using:\s*['\"]?([^\s#'\"]+)", "\n".join(lines), re.MULTILINE)
+    # The KEY may be quoted too, not just the value. `'using': javascript` did not match,
+    # so `using` came back None, the guard below was skipped, and a non-composite action
+    # was followed as though it were composite -- fail-open, and inconsistent with the
+    # rest of this file, whose own success line advertises that it handles quoted keys.
+    # (CodeRabbit, fixportal-claude-skills#110.)
+    using = re.search(
+        r"""^\s+(?:'using'|"using"|using)\s*:\s*['"]?([^\s#'"]+)""",
+        "\n".join(lines),
+        re.MULTILINE,
+    )
     if using and using.group(1) != "composite":
         raise ValueError(
             f"{target}: local action uses runs.using {using.group(1)}; "
