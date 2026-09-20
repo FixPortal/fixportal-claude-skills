@@ -339,7 +339,38 @@ jobs:
 
     # The real shape -- gating condition AND diagnostic echo together -- must still pass,
     # or the tightening would red every gate the scaffold ships.
+    #
+    # The expression lives in `env:`, not in the body. The checker refuses any `${{ }}`
+    # inside a gate `run:` body, because GitHub substitutes it textually before the shell
+    # parses the line and it can splice a separator or an early exit into an otherwise
+    # inert message. This fixture carried the pre-hoist spelling and so began failing the
+    # moment the hardened checker became canonical -- the house shape it exists to protect
+    # had moved, and the fixture had not.
     $conditionAndEcho = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any upstream job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ join(needs.*.result, ', ') }}
+        run: |
+          echo "Upstream results: $RESULTS"
+          exit 1
+'@
+    if ($conditionAndEcho.Code -ne 0) {
+        throw "the shipped gate shape (step if: plus diagnostic echo) must pass:`n$($conditionAndEcho.Output)"
+    }
+
+    # And the PRE-HOIST spelling must now be REFUSED, which is the property the migration
+    # rests on. Without this, the fixture above could be hoisted to make the suite green
+    # while the checker quietly went back to accepting an interpolated body.
+    $inlineInterpolation = Invoke-Gate @'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -354,8 +385,8 @@ jobs:
           echo "Upstream results: ${{ join(needs.*.result, ', ') }}"
           exit 1
 '@
-    if ($conditionAndEcho.Code -ne 0) {
-        throw "the shipped gate shape (step if: plus diagnostic echo) must pass:`n$($conditionAndEcho.Output)"
+    if ($inlineInterpolation.Code -eq 0) {
+        throw "a `${{ }} interpolation inside a gate run: body must be refused:`n$($inlineInterpolation.Output)"
     }
 
     # --- ordinary failing spellings must be ACCEPTED --------------------------------
@@ -1418,8 +1449,23 @@ jobs:
         }
     }
 
-    # The gate this repository actually ships interpolates a GitHub expression into its
-    # message. `${{ ... }}` is not `$(`, and refusing it would red every house gate.
+    # THIS ASSERTION WAS REVERSED ON 2026-09-20, and the reversal is recorded rather than
+    # quietly applied. It used to read: "`${{ ... }}` is not `$(`, and refusing it would
+    # red every house gate" -- and it was right about the consequence. Measured when the
+    # hardened checker became canonical: 18 of the 28 repositories that passed went red,
+    # every one of them on this spelling and none of them actually exploitable.
+    #
+    # It is reversed anyway, because the reasoning behind the old assertion was about the
+    # EXPRESSION being harmless while the checker's problem is that it cannot know that.
+    # GitHub substitutes `${{ ... }}` textually before the shell parses the line, so the
+    # question is not whether `join` over job results is safe -- it is -- but whether this
+    # checker can tell a safe expansion from one that splices in a separator or an early
+    # exit. Answering that means evaluating GitHub expressions here, and widening this
+    # file's accepted forms on that kind of reasoning has already shipped a fail-open rule
+    # once (CodeRabbit, PR #176, refuted in a later round).
+    #
+    # The house gate moved to `env:` instead, across the estate, which costs nothing and
+    # needs no judgement call at all. The old spelling is asserted as REFUSED above.
     $githubExpression = Invoke-Gate @'
 jobs:
   build:
@@ -1430,12 +1476,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ join(needs.*.result, ', ') }}
         run: |
-          echo "Upstream results: ${{ join(needs.*.result, ', ') }}"
+          echo "Upstream results: $RESULTS"
           exit 1
 '@
     if ($githubExpression.Code -ne 0) {
-        throw "a GitHub expression in the gate message must stay accepted:`n$($githubExpression.Output)"
+        throw "a GitHub expression hoisted into env: must stay accepted:`n$($githubExpression.Output)"
     }
 
     foreach ($case in @(
