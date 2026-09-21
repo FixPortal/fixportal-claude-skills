@@ -527,10 +527,20 @@ def tolerant_jobs(lines, jobs, job_indent):
         tolerant_key = key_pattern(indent, "continue-on-error")
         for i in range(start + 1, end):
             match = tolerant_key.match(lines[i].rstrip("\r\n"))
-            if match and normalise_condition(strip_comment(match.group(1)).strip()) not in (
-                "false",
-                "",
-            ):
+            if not match:
+                continue
+            value = normalise_condition(strip_comment(match.group(1)).strip())
+            # A COMPOUND condition survives normalise_condition as itself, so the
+            # membership test alone marked `continue-on-error: ${{ false && x }}`
+            # tolerant -- while static_truth folds the same expression to False, and a
+            # job whose continue-on-error cannot evaluate true tolerates nothing. The
+            # only consumer of this set refuses a tolerant job that feeds the gate, so
+            # the misclassification was a false RED on a legitimate feeder, not a
+            # pass-through. Only a static fold to False is excluded; UNKNOWN stays
+            # tolerant, because an expression this checker cannot fold may still
+            # evaluate true at runtime, and that is the conservative direction.
+            # (CodeRabbit, fixportal-claude-skills#110.)
+            if value not in ("false", "") and static_truth(value) is not False:
                 tolerant.add(job_id)
                 break
     return tolerant
@@ -1484,6 +1494,41 @@ RUN_KEY = re.compile(r"""^(\s*(?:-\s+)?)(?:'run'|"run"|run)\s*:\s*(.*?)\s*$""")
 LOCAL_USES = re.compile(r"""^\s*(?:-\s+)?(?:'uses'|"uses"|uses)\s*:\s*['"]?((?:\./|\$/)[^\s#'"]+)""")
 
 
+def run_payload_indexes(lines):
+    """The line indexes consumed by block-scalar `run:` payloads in `lines`.
+
+    A `run: |` body is SHELL TEXT at workflow indentation, and a LOCAL_USES scan over
+    physical lines cannot tell it from syntax: an indented `uses: ./action` inside the
+    payload -- a heredoc writing an action manifest, say -- matched and read as a local
+    delegation. A missing target was silently ignored, but an EXISTING non-composite one
+    raised the ValueError in delegated_run_bodies and failed gate coverage over a line
+    the workflow never executes as a step. That is a false RED on a correct workflow --
+    the direction that gets a working control deleted to make CI green. (CodeRabbit,
+    fixportal-claude-skills#110.)
+
+    Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
+    on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
+    The value test reads the COMMENT-STRIPPED value, exactly as the run-body loops in
+    delegated_run_bodies and gated_run_bodies do -- `run: | # build log` is a real
+    spelling, and BLOCK_SCALAR is anchored.
+    """
+    payloads = set()
+    index = 0
+    while index < len(lines):
+        match = RUN_KEY.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        value = strip_inline_comment(match.group(2)).strip()
+        if BLOCK_SCALAR.match(value):
+            _, following = continuation_lines(lines, index, len(match.group(1)))
+            payloads.update(range(index + 1, following))
+            index = following
+        else:
+            index += 1
+    return payloads
+
+
 def glob_to_regex(pattern):
     """A gitignore-style policy glob as an anchored regex.
 
@@ -1576,7 +1621,10 @@ def delegated_run_bodies(root, ref, visited):
         else:
             body, index = ([value] if value else []), index + 1
         yield from body
-    for line in lines:
+    payload_indexes = run_payload_indexes(lines)
+    for index, line in enumerate(lines):
+        if index in payload_indexes:
+            continue
         match = LOCAL_USES.match(line)
         if match:
             yield from delegated_run_bodies(root, match.group(1), visited)
@@ -1622,7 +1670,10 @@ def gated_run_bodies(lines, jobs, needs, gate_job, root):
                 body, index = ([value] if value else []), index + 1
             for body_line in body:
                 yield job_id, body_line
-        for line in block:
+        payload_indexes = run_payload_indexes(block)
+        for index, line in enumerate(block):
+            if index in payload_indexes:
+                continue
             match = LOCAL_USES.match(line)
             if match:
                 for body_line in delegated_run_bodies(root, match.group(1), set()):
