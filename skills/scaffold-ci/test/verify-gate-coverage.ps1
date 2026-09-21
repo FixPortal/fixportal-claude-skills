@@ -973,6 +973,131 @@ jobs:
         throw "a gate script inside a commented block scalar must be detected:`n$($commentedScalar.Output)"
     }
 
+    # --- CodeRabbit, fixportal-claude-skills#110 -------------------------------------
+
+    # A STATICALLY FALSE job-level continue-on-error tolerates nothing, but the old
+    # membership test normalised `${{ false && inputs.allow_failure }}` to a compound
+    # string -- neither "false" nor "" -- and counted the job tolerant, and a tolerant
+    # job feeding the gate is refused: a false RED on a legitimate feeder. The fix
+    # consults static_truth, which folds the compound to False.
+    $staticFalseTolerance = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ false && inputs.allow_failure }}
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($staticFalseTolerance.Code -ne 0) {
+        throw "a statically false continue-on-error must not read as tolerant:`n$($staticFalseTolerance.Output)"
+    }
+
+    # The two directions that must NOT change: literal true is tolerant, and an
+    # expression the checker cannot fold stays potentially tolerant -- both refused on
+    # a merge-blocking job.
+    foreach ($case in @('true', '${{ inputs.allow_failure }}')) {
+        $stillTolerant = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: $case
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        if ($stillTolerant.Code -eq 0 -or $stillTolerant.Output -notmatch 'continue-on-error') {
+            throw "a tolerant or unfoldable continue-on-error on a gate-feeding job must fail ($case):`n$($stillTolerant.Output)"
+        }
+    }
+
+    # A local `uses:` line inside a run: payload is SHELL TEXT, not a delegation. The
+    # LOCAL_USES scan ran over physical lines, so a payload line like the one below
+    # matched, and because the target exists and is non-composite the traversal raised
+    # its ValueError -- a false RED on a workflow that never delegates. Payload lines
+    # are now excluded from both LOCAL_USES scans. (Second finding, same review.)
+    function New-GateActionRepo([string] $actionContent, [string] $yaml) {
+        # The policy is load-bearing: assert_gate_scripts returns early when no
+        # review-policy.json is readable, and gate_script_paths -- where the LOCAL_USES
+        # traversal lives -- is only reached behind that read. Without it both fixtures
+        # below pass while exercising nothing.
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        '{"version":1,"high":["scripts/**"],"low":[]}' |
+            Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo 'actions' 'probe') -Force | Out-Null
+        $actionContent | Set-Content -LiteralPath (Join-Path $repo 'actions' 'probe' 'action.yml') -Encoding utf8
+        $workflowPath = Join-Path $repo '.github' 'workflows' 'ci.yml'
+        $yaml | Set-Content -LiteralPath $workflowPath -Encoding utf8
+        $outputPath = Join-Path $repo 'output.txt'
+        & $python.Source -S $script $workflowPath *> $outputPath
+        [pscustomobject]@{
+            Code = $LASTEXITCODE
+            Output = Get-Content -LiteralPath $outputPath -Raw
+        }
+    }
+
+    $nonCompositeAction = @'
+name: probe
+runs:
+  using: node20
+  main: index.js
+'@
+
+    $payloadUses = New-GateActionRepo $nonCompositeAction @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: |
+          cat > actions/probe/action.yml <<'EOF'
+          name: probe
+          runs:
+            using: composite
+          EOF
+          uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($payloadUses.Code -ne 0) {
+        throw "a uses: line inside a run: payload must not be followed as a delegation:`n$($payloadUses.Output)"
+    }
+
+    # ... while a GENUINE step-level local delegation to a non-composite action is still
+    # refused -- the exclusion covers run payloads only, not the steps list.
+    $realUses = New-GateActionRepo $nonCompositeAction @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($realUses.Code -eq 0 -or $realUses.Output -notmatch 'gate coverage only follows composite') {
+        throw "a genuine non-composite local action must still be refused:`n$($realUses.Output)"
+    }
+
     # `always()` is unconditionally true, so `always() && <coverage>` gates exactly what the
     # coverage atom gates. Leaving it UNKNOWN kept it as a residual conjunct and reported a
     # correct gate as referencing no needs.<job>.result at all -- a false RED on the very
