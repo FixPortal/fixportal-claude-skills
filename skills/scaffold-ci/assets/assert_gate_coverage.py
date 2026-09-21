@@ -2016,6 +2016,13 @@ def resolve_committed_paths(root, relative):
                 if spelled not in matches:
                     return sorted(matches + [spelled])
         except (OSError, ValueError):
+            # Resolution can fail on a broken or circular link, a permission error, or a
+            # path the platform rejects outright. Falling through leaves the LEXICAL
+            # answer, which is already in `matches` and is what this function returned
+            # before the filesystem check existed -- so a failure here costs the extra
+            # requirement this block might have added and nothing else. Reporting no gate
+            # script at all because a link could not be read would be the fail-open
+            # direction, which is what this whole block exists to avoid.
             pass
 
     # The exact-match test uses the NORMALISED spelling: `scripts/./probe.py` resolves to
