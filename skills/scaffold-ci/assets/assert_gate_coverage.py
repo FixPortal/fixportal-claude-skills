@@ -1990,8 +1990,18 @@ def resolve_committed_paths(root, relative):
                     following.append((entry, resolved + [entry.name]))
         candidates = following
         if not candidates:
-            return []
-    matches = sorted("/".join(resolved) for path, resolved in candidates if path.is_file())
+            # BREAK, do not return. When the candidate CLIMBED, the lexical spelling is
+            # not the only one worth trying: `scripts/link/../gate.ps1` reduces to
+            # `scripts/gate.ps1`, and if that file does not exist a return here would
+            # abandon the path before the filesystem resolution below ever ran -- leaving
+            # the repository-root `gate.ps1` the runner actually executes untiered.
+            # Fail-open, and invisible to a fixture that creates both targets. The empty
+            # case is re-checked after the climbed block instead. (CodeRabbit, on an
+            # upstream review.)
+            break
+    matches = sorted(
+        "/".join(resolved) for path, resolved in candidates if path.is_file()
+    ) if candidates else []
 
     # A `..` REDUCED LEXICALLY IS NOT WHAT THE RUNNER EXECUTES when a symlink precedes it.
     # `scripts/link/../gate.py` reduces here to `scripts/gate.py`, but the OS resolves
@@ -2024,6 +2034,11 @@ def resolve_committed_paths(root, relative):
             # script at all because a link could not be read would be the fail-open
             # direction, which is what this whole block exists to avoid.
             pass
+
+    # The walk may have broken out with nothing, and the climbed block above may have
+    # added nothing to it. Only now is "this path resolves to no file at all" true.
+    if not matches:
+        return []
 
     # The exact-match test uses the NORMALISED spelling: `scripts/./probe.py` resolves to
     # `scripts/probe.py`, and comparing against the raw text would never match it.

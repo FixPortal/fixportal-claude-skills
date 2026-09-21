@@ -1342,8 +1342,14 @@ jobs:
     New-Item -ItemType Directory -Path (Join-Path $symlinkRepo '.github' 'workflows') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'scripts') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'elsewhere') -Force | Out-Null
-    '# lexical target'   | Set-Content -LiteralPath (Join-Path $symlinkRepo 'scripts' 'gate.ps1') -Encoding utf8
-    '# real target'      | Set-Content -LiteralPath (Join-Path $symlinkRepo 'gate.ps1') -Encoding utf8
+    # ONLY the file the symlink actually reaches. The first version of this fixture also
+    # created the LEXICAL target at scripts/gate.ps1, and that is what hid a fail-open:
+    # with both present the component walk always succeeded, so it never took the
+    # empty-candidate path and the filesystem resolution below was never the thing under
+    # test. With the lexical target absent the walk finds nothing, which is exactly the
+    # case that used to abandon the path before resolving it. (CodeRabbit, on an upstream
+    # review.)
+    '# real target' | Set-Content -LiteralPath (Join-Path $symlinkRepo 'gate.ps1') -Encoding utf8
     # SymbolicLink first; a JUNCTION where that is refused. A plain symlink needs
     # Developer Mode or elevation on Windows, while a junction needs neither and is a
     # reparse point that `Path.resolve()` follows identically -- so the fallback
@@ -1409,9 +1415,11 @@ print(real.relative_to(root.resolve()).as_posix())
         $executed = (& $python.Source -S $probeFile $symlinkRepo).Trim()
 
         if ($executed -eq 'scripts/gate.ps1') {
-            # The tiered file is the one that runs; the checker must accept.
+            # This platform normalises `..` lexically, so the path the runner reaches is
+            # scripts/gate.ps1 -- which this fixture deliberately does NOT create. A
+            # candidate that resolves to no file is not asserted about, so the gate passes.
             if ($symlinkCode -ne 0) {
-                throw "on this platform '..' normalises lexically, so the tiered script is the one that runs and the gate must pass:`n$symlinkText"
+                throw "on this platform '..' normalises lexically to a file that does not exist, so nothing is asserted and the gate must pass:`n$symlinkText"
             }
         }
         else {
