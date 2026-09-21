@@ -529,7 +529,11 @@ def tolerant_jobs(lines, jobs, job_indent):
             match = tolerant_key.match(lines[i].rstrip("\r\n"))
             if not match:
                 continue
-            value = normalise_condition(strip_comment(match.group(1)).strip())
+            value = strip_comment(match.group(1)).strip()
+            if not value or is_block_scalar_header(value):
+                body, _ = continuation_lines(lines, i, indent)
+                value = " ".join(strip_comment(line).strip() for line in body)
+            value = normalise_condition(value)
             # A COMPOUND condition survives normalise_condition as itself, so the
             # membership test alone marked `continue-on-error: ${{ false && x }}`
             # tolerant -- while static_truth folds the same expression to False, and a
@@ -539,7 +543,9 @@ def tolerant_jobs(lines, jobs, job_indent):
             # pass-through. Only a static fold to False is excluded; UNKNOWN stays
             # tolerant, because an expression this checker cannot fold may still
             # evaluate true at runtime, and that is the conservative direction.
-            # (CodeRabbit, fixportal-claude-skills#110.)
+            # (CodeRabbit, fixportal-claude-skills#110.) The block-scalar unfold came
+            # from the upstream unit review (2026-09-21): `continue-on-error: >` then
+            # `false` read as the bare header and was counted tolerant all the same.
             if value not in ("false", "") and static_truth(value) is not False:
                 tolerant.add(job_id)
                 break
@@ -1168,7 +1174,14 @@ def step_can_fail(block, span, key_indent):
         if not value or is_block_scalar_header(value):
             body, _ = continuation_lines(block, i, key_indent)
             value = " ".join(strip_comment(line).strip() for line in body)
-        if normalise_condition(value) not in ("false", ""):
+        value = normalise_condition(value)
+        # The job-level sibling consults static_truth for the same expression: a
+        # compound like `${{ false && inputs.allow_failure }}` normalises to itself but
+        # folds to False, and a step whose continue-on-error cannot evaluate true CAN
+        # still fail the job. Without the consult the two levels disagreed about the
+        # same expression (upstream unit review, 2026-09-21). UNKNOWN stays
+        # cannot-fail, the conservative direction.
+        if value not in ("false", "") and static_truth(value) is not False:
             return False, "carries `continue-on-error`, so it cannot fail the job"
 
     shell = "bash"
@@ -1492,6 +1505,196 @@ GATE_SCRIPT = re.compile(
 # opens at the key, two columns right of the dash.
 RUN_KEY = re.compile(r"""^(\s*(?:-\s+)?)(?:'run'|"run"|run)\s*:\s*(.*?)\s*$""")
 LOCAL_USES = re.compile(r"""^\s*(?:-\s+)?(?:'uses'|"uses"|uses)\s*:\s*['"]?((?:\./|\$/)[^\s#'"]+)""")
+# The `runs:` key of an action's metadata, anchored at column ZERO like JOBS_KEY: that is
+# where action metadata carries it, and the anchor keeps a `runs:`-shaped line inside a
+# reusable workflow's (always indented) run: body from being read as metadata. The colon
+# in the pattern is what keeps `runs-on:` from matching.
+RUNS_KEY = re.compile(r"""^(?:'runs'|"runs"|runs)\s*:\s*(.*?)\s*$""")
+
+
+def parse_flow_mapping(text):
+    """The depth-1 entries of a `{...}` flow mapping as (key, value) pairs, or None.
+
+    A hand parser, because the regex scan it replaces was wrong in both directions. A
+    quoted span is data, not syntax: `{note: "{using: composite}", using: docker}` held
+    the decoy first and a regex returned composite, so the real non-composite entry was
+    never read -- fail-OPEN. And a naive strip_comment cut a quoted '#'
+    (`{main: "x # y", using: ...}`), leaving an unterminated fragment that raised on
+    valid YAML -- a false RED. (CodeRabbit, on the upstream review of this scanner,
+    2026-09.) So quotes are tracked, a '#' opens a comment only outside quotes (after
+    whitespace or at a line start, per the YAML rule), keys may be quoted exactly as
+    key_pattern admits in block style, and a nested flow value is skipped with its own
+    depth walk so its braces never move the outer count.
+
+    None when the text is not a flow mapping or is unterminated -- the caller then
+    raises, because "cannot classify" must never read as "composite".
+    """
+    length = len(text)
+
+    def skip_gap(i):
+        while i < length:
+            if text[i] in " \t\r\n":
+                i += 1
+            elif text[i] == "#":
+                newline = text.find("\n", i)
+                i = length if newline == -1 else newline + 1
+            else:
+                break
+        return i
+
+    def read_quoted(i):
+        quote = text[i]
+        i += 1
+        chars = []
+        while i < length:
+            char = text[i]
+            if quote == '"' and char == BACKSLASH and i + 1 < length:
+                chars.append(text[i + 1])
+                i += 2
+                continue
+            if char == quote:
+                if quote == "'" and i + 1 < length and text[i + 1] == "'":
+                    chars.append("'")
+                    i += 2
+                    continue
+                return "".join(chars), i + 1
+            chars.append(char)
+            i += 1
+        return "".join(chars), i
+
+    def read_bare(i):
+        start = i
+        while i < length and text[i] not in ",{}: \t\r\n":
+            i += 1
+        return text[start:i], i
+
+    index = skip_gap(0)
+    if index >= length or text[index] != "{":
+        return None
+    depth = 1
+    index += 1
+    entries = []
+    while index < length and depth > 0:
+        index = skip_gap(index)
+        if index >= length:
+            break
+        char = text[index]
+        if char == "{":
+            depth += 1
+            index += 1
+            continue
+        if char == "}":
+            depth -= 1
+            index += 1
+            continue
+        if char == ",":
+            index += 1
+            continue
+        if depth != 1:
+            # Inside a nested mapping: quoted spans stay atomic so their content
+            # (braces, commas, colons) never reaches the outer walk.
+            if char in "'\"":
+                _, index = read_quoted(index)
+            else:
+                index += 1
+            continue
+        if char in "'\"":
+            key, index = read_quoted(index)
+        else:
+            key, index = read_bare(index)
+        index = skip_gap(index)
+        if index >= length or text[index] != ":":
+            continue
+        index = skip_gap(index + 1)
+        if index < length and text[index] in "'\"":
+            value, index = read_quoted(index)
+        elif index < length and text[index] == "{":
+            nested_depth = 0
+            while index < length:
+                char = text[index]
+                if char in "'\"":
+                    _, index = read_quoted(index)
+                    continue
+                if char == "{":
+                    nested_depth += 1
+                elif char == "}":
+                    nested_depth -= 1
+                    if nested_depth == 0:
+                        index += 1
+                        break
+                index += 1
+            value = None
+        else:
+            value, index = read_bare(index)
+        if value is not None:
+            entries.append((key, value))
+    if depth != 0:
+        return None
+    return entries
+
+
+def resolve_runs_using(lines, target):
+    """The action's `runs.using` value, or None when the file has no `runs:` key.
+
+    Scoped to the `runs:` mapping. The whole-file regex this replaces matched the first
+    `using:`-shaped line ANYWHERE, which was wrong in both directions:
+
+      * a block scalar (a multi-line description, an embedded script) holding an
+        indented `'using': javascript` line matched BEFORE the real mapping, so a valid
+        composite action raised -- a false RED on a healthy action (CodeRabbit,
+        fixportal-fixatdl#148);
+      * a flow-style `runs: {using: node20, main: index.js}` never matched the
+        line-anchored pattern at all, so `using` stayed unset and the non-composite
+        guard was skipped -- fail-OPEN (an upstream issue, 2026-09).
+
+    A `runs:` key holding no readable `using` entry RAISES rather than skipping the
+    guard: "cannot classify" must never read as "composite". None (no `runs:` at all)
+    remains the reusable-workflow path, which carries no such guard.
+    """
+    for start, line in enumerate(lines):
+        match = RUNS_KEY.match(line)
+        if match:
+            break
+    else:
+        return None
+    value = strip_comment(match.group(1)).strip()
+    if value.startswith("{"):
+        # A flow mapping is PARSED, not regexed (parse_flow_mapping for the why and the
+        # mechanics). The regex scan this replaces read `using` out of quoted text and
+        # without depth context: `{note: "{using: composite}", using: docker}` returned
+        # composite because the decoy sat first -- fail-OPEN -- and the naive
+        # strip_comment ahead of it cut a quoted '#', turning valid YAML into an
+        # unterminated fragment that raised -- a false RED. (CodeRabbit, on the upstream
+        # review of this scanner, 2026-09.) The parser reads the RAW text (so a comment
+        # marker inside quotes survives), takes `using` only from a depth-1 key, and
+        # returns None on an unterminated mapping, which falls to the fail-closed raise
+        # below rather than classifying a fragment.
+        entries = parse_flow_mapping("\n".join([match.group(1)] + list(lines[start + 1 :])))
+        if entries is not None:
+            for entry_key, entry_value in entries:
+                if entry_key == "using":
+                    return entry_value
+    elif not value:
+        # Block style: `using` is a child key of the mapping, at the indentation every
+        # key in it shares -- read off the document, never assumed. The mapping ends at
+        # the next line back at column zero.
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            candidate = lines[i]
+            if candidate.strip() and not candidate.startswith((" ", "#")):
+                end = i
+                break
+        child = mapping_indent(lines, start + 1, end)
+        if child is not None:
+            using_key = key_pattern(child, "using")
+            for i in range(start + 1, end):
+                entry = using_key.match(lines[i])
+                if entry:
+                    return decode_yaml_scalar(strip_comment(entry.group(1)).strip()).strip()
+    raise ValueError(
+        f"{target}: `runs:` is present but holds no readable `using:` entry, so whether "
+        "the body is composite cannot be verified -- refusing to follow it"
+    )
 
 
 def run_payload_indexes(lines):
@@ -1594,19 +1797,14 @@ def delegated_run_bodies(root, ref, visited):
         return
     visited.add(key)
     lines = target.read_text(encoding="utf-8").splitlines()
-    # The KEY may be quoted too, not just the value. `'using': javascript` did not match,
-    # so `using` came back None, the guard below was skipped, and a non-composite action
-    # was followed as though it were composite -- fail-open, and inconsistent with the
-    # rest of this file, whose own success line advertises that it handles quoted keys.
-    # (CodeRabbit, fixportal-claude-skills#110.)
-    using = re.search(
-        r"""^\s+(?:'using'|"using"|using)\s*:\s*['"]?([^\s#'"]+)""",
-        "\n".join(lines),
-        re.MULTILINE,
-    )
-    if using and using.group(1) != "composite":
+    # `using` is resolved INSIDE the `runs:` mapping by resolve_runs_using -- see its
+    # docstring. Quoted keys ('using'/"using"/using) are admitted in both block and
+    # flow style, exactly as the whole-file regex admitted them here. (CodeRabbit,
+    # fixportal-claude-skills#110.)
+    using = resolve_runs_using(lines, target)
+    if using is not None and using != "composite":
         raise ValueError(
-            f"{target}: local action uses runs.using {using.group(1)}; "
+            f"{target}: local action uses runs.using {using}; "
             "gate coverage only follows composite action bodies"
         )
     index = 0
