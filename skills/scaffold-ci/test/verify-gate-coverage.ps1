@@ -30,10 +30,14 @@ $env:GATE_EXEMPT = ''
 $env:GATE_CONDITIONAL_EXEMPT = ''
 $env:GATE_FILE_EXEMPT = ''
 
-function Invoke-Gate([string] $yaml) {
+function Invoke-Gate([string] $yaml, [switch] $Bom) {
     $workflow = Join-Path $root 'ci.yml'
     $output = Join-Path $root 'output.txt'
-    $yaml | Set-Content -LiteralPath $workflow -Encoding utf8
+    # -Bom writes the SAME text with a leading UTF-8 BOM. PowerShell 7's `utf8` is
+    # BOM-less and `utf8BOM` is the only way to get one, so no existing case could have
+    # produced a BOM by accident -- which is how the BOM defect survived.
+    $encoding = if ($Bom) { 'utf8BOM' } else { 'utf8' }
+    $yaml | Set-Content -LiteralPath $workflow -Encoding $encoding
     & $python.Source -S $script $workflow *> $output
     [pscustomobject]@{
         Code = $LASTEXITCODE
@@ -319,7 +323,7 @@ jobs:
     # so the step runs unconditionally and never fails -- still passed, because the echo
     # matched. That is exactly the "guts only the aggregation step" neuter the checker
     # exists to catch, so it was blind to its own subject. Found by Gitar on
-    # fixportal-initiator#225.
+    # an upstream review.
     $echoOnly = Invoke-Gate @'
 jobs:
   build:
@@ -653,7 +657,7 @@ jobs:
     # at step-body indentation. A checker that scans every line for the STEP_IF_VALUE
     # shape, blind to whether it sits inside a preceding block scalar, reads that printed
     # text as the real condition and reports the gate as aggregating -- fail-open on a
-    # gate that aggregates nothing. Found by CodeRabbit on fixportal-quickfixn#68.
+    # gate that aggregates nothing. Found by CodeRabbit on an upstream review.
     $conditionInRunBody = Invoke-Gate @'
 jobs:
   build:
@@ -953,7 +957,7 @@ jobs:
     # branch properly: the else arm yielded the bare `|` and advanced one line, skipping
     # the whole payload. The script inside was then invisible and escaped the HIGH-tier
     # requirement -- fail-open on the control this check exists to be. (CodeRabbit,
-    # fixportal-ci-backend PR #140.)
+    # on an upstream review.)
     $commentedScalar = New-GateRepo '{"version":1,"high":[],"low":[]}' @('.github/scripts/probe.py') @'
 jobs:
   build:
@@ -973,7 +977,160 @@ jobs:
         throw "a gate script inside a commented block scalar must be detected:`n$($commentedScalar.Output)"
     }
 
-    # --- CodeRabbit, fixportal-claude-skills#110 -------------------------------------
+    # -- Windows path spellings reach the same gate script ---------------------------
+    # Windows resolves a path separator- and case-insensitively, so a gate job on a
+    # windows-latest runner executes `.\scripts\probe.ps1` exactly as it executes the
+    # POSIX spelling. GATE_SCRIPT admitted only `/` and lowercase extensions, so neither
+    # Windows form was seen and assert_gate_scripts asserted NOTHING -- a repo-authored
+    # gate script left editable in a NORMAL-tier pull request, reached by punctuation
+    # rather than by deleting anything. Probed before the fix: both spellings exited 0.
+    #
+    # Each spelling is pinned in BOTH directions. Detection alone would pass with the
+    # path captured in a form no policy glob can ever match, which reports every such
+    # script as untiered forever -- correct-looking and permanently red.
+    foreach ($spelling in @('.\scripts\probe.ps1', './scripts/probe.PS1', '.\scripts\probe.PS1')) {
+        $windowsYaml = @"
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: $spelling
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        $windowsUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/probe.ps1') $windowsYaml
+        if ($windowsUntiered.Code -eq 0) {
+            throw "the Windows spelling '$spelling' must be detected as a gate script:`n$($windowsUntiered.Output)"
+        }
+        # The COMMITTED spelling must be reported, not the one the workflow typed.
+        # This is the assertion that is not inert on Windows: there a mixed-case
+        # `probe.PS1` resolves through the case-insensitive filesystem, so a checker
+        # that skipped the resolution would still detect the script and still fail --
+        # correctly, but reporting `probe.PS1`, a key no exact policy entry can match.
+        # On Linux the same missing resolution fails the line above instead. One
+        # fixture, both platforms, and it cannot pass while the resolution is absent.
+        if ($windowsUntiered.Output -cnotmatch 'scripts/probe\.ps1') {
+            throw "the committed spelling must be reported for '$spelling', not the typed one:`n$($windowsUntiered.Output)"
+        }
+        $windowsTiered = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/probe.ps1') $windowsYaml
+        if ($windowsTiered.Code -ne 0) {
+            throw "a high glob must cover the Windows spelling '$spelling':`n$($windowsTiered.Output)"
+        }
+    }
+
+    # A path-shaped token that is NOT a gate script must stay unmatched. The widening
+    # above touched the separator and extension classes, which is exactly where an
+    # over-broad pattern would start claiming ordinary arguments.
+    $notAScript = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: dotnet test --results-directory .\artifacts\results
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($notAScript.Code -ne 0) {
+        throw "a Windows-spelled non-script argument must not be claimed as a gate script:`n$($notAScript.Output)"
+    }
+
+    # -- A BOM'd workflow is still a workflow ----------------------------------------
+    # `JOBS_KEY` is anchored at `^`, so a plain utf-8 read left the BOM in front of
+    # `jobs:` and the line never matched. In FILE mode that exited 1 with "no jobs
+    # found": a permanently red required check over a valid workflow, triggered by
+    # nothing more than a Windows editor saving the file. In DIRECTORY mode it was
+    # written off as "not a workflow, skipped" and every job in it escaped coverage
+    # instead. Pinned as an EQUIVALENCE to its BOM-less twin, because the defect is
+    # precisely that the two behaved differently.
+    $bomYaml = @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    $plain = Invoke-Gate $bomYaml
+    $bom = Invoke-Gate $bomYaml -Bom
+    if ($plain.Code -ne 0) { throw "the BOM control workflow must pass without a BOM:`n$($plain.Output)" }
+    if ($bom.Code -ne $plain.Code) {
+        throw "a BOM must not change the verdict (plain=$($plain.Code) bom=$($bom.Code)):`n$($bom.Output)"
+    }
+    if ($bom.Output -match 'no jobs') {
+        throw "a BOM'd workflow must not read as having no jobs:`n$($bom.Output)"
+    }
+
+    # -- pwsh `throw` with a trailing comment -----------------------------------------
+    # The pwsh arm fullmatched the joined block-scalar body with no comment handling,
+    # while its bash sibling masks then strips them. So `exit 1 # note` was accepted and
+    # the identical pwsh `throw "..." # note` was refused -- a false RED on a gate that
+    # does fail, and only in the block-scalar form, since the inline form goes through
+    # strip_inline_comment.
+    $pwshCases = @(
+        @{ Name = 'trailing comment';      Body = 'throw "an upstream job did not succeed" # keep the message greppable' }
+        @{ Name = 'hash inside message';   Body = 'throw "an upstream job did not succeed # see the runbook"' }
+        @{ Name = 'comment on its own line'; Body = "# the gate`n          throw `"an upstream job did not succeed`"" }
+    )
+    foreach ($case in $pwshCases) {
+        $pwshGate = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: |
+          $($case.Body)
+"@
+        if ($pwshGate.Code -ne 0) {
+            throw "a pwsh throw with a $($case.Name) must be accepted:`n$($pwshGate.Output)"
+        }
+    }
+
+    # Stripping comments must not have widened what the pwsh arm ACCEPTS. A body that is
+    # more than an unconditional throw stays refused: the preceding command can decide
+    # the exit status, which is the whole reason this arm is a fullmatch and not a search.
+    $pwshNotBare = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: |
+          Write-Host "upstream failed" # note
+          if ($env:OK) { exit 0 }
+          throw "an upstream job did not succeed"
+'@
+    if ($pwshNotBare.Code -eq 0) {
+        throw "a pwsh body that is more than an unconditional throw must stay refused:`n$($pwshNotBare.Output)"
+    }
+
+    # --- CodeRabbit, on an upstream review -------------------------------------
 
     # A STATICALLY FALSE job-level continue-on-error tolerates nothing, but the old
     # membership test normalised `${{ false && inputs.allow_failure }}` to a compound
@@ -1125,7 +1282,7 @@ jobs:
     # 1. The block-scalar false match. The description's payload holds an indented
     #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
     #    matched it first and raised on a valid composite action -- a false RED on a
-    #    healthy action. (CodeRabbit, fixportal-fixatdl#148.) The composite body invokes
+    #    healthy action. (CodeRabbit, on an upstream review.) The composite body invokes
     #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
     #    the action being silently skipped.
     $blockScalarUsing = New-GateActionRepo @'
@@ -1281,7 +1438,7 @@ jobs:
     # coverage atom gates. Leaving it UNKNOWN kept it as a residual conjunct and reported a
     # correct gate as referencing no needs.<job>.result at all -- a false RED on the very
     # shape the gate's own job-level condition uses.
-    # (CodeRabbit, fixportal-claude-skills#106.)
+    # (CodeRabbit, on an upstream review.)
     foreach ($shape in @(
         "always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))",
         "always() && contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
@@ -1326,7 +1483,7 @@ jobs:
     # quoted inline scalar whose command OPENS with a redirection decodes to a string
     # starting with `>`, and testing the decoded text read it as a folded body: the step
     # supplied no coverage and the gate went red over a command that does fail.
-    # (CodeRabbit, fixportal-claude-skills#106.)
+    # (CodeRabbit, on an upstream review.)
     $leadingRedirect = Invoke-Gate @'
 jobs:
   build:
@@ -1346,7 +1503,7 @@ jobs:
     # A CONDITIONAL feeder's house shape: the job may legitimately skip, so skipping must
     # not fail the gate, and `!= 'skipped'` NARROWS the `!= 'success'` atom about the SAME
     # job rather than adding a condition this checker cannot read. Refusing every residual
-    # conjunction rejected fixportal-initiator's correct gate as "aggregates nothing" --
+    # conjunction rejected a consuming repository's correct gate as "aggregates nothing" --
     # found by running the reconciled checker over all 26 repositories BEFORE syncing it to
     # any of them, which is the only reason it was not shipped estate-wide.
     $conditionalFeeder = Invoke-Gate @'
@@ -1396,7 +1553,7 @@ jobs:
     # A `#` inside a QUOTED YAML scalar is data, not a comment. Truncating there hid the
     # script that follows it, so the script escaped the HIGH-tier requirement -- fail-open
     # on this control. Both quote styles, because the escape rules differ.
-    # (CodeRabbit, fixportal-ci-backend PR #140.)
+    # (CodeRabbit, on an upstream review.)
     $quotedHash = @{
         'double-quoted' = '      - run: "printf ''tag # audit''; python .github/scripts/probe.py"'
         'single-quoted' = "      - run: 'printf \`"tag # audit\`"; python .github/scripts/probe.py'"
@@ -1424,7 +1581,7 @@ $($quotedHash[$style])
     # The same bug seen from the other side: a quoted body carrying a literal `#`, with a
     # genuine YAML comment after the closing quote. Truncating at the inner hash left an
     # unterminated fragment, so a gate that DOES fail read as one that cannot -- a false
-    # RED. (CodeRabbit, fixportal-ci-frontend PR #163.)
+    # RED. (CodeRabbit, on an upstream review.)
     $quotedBody = Invoke-Gate @'
 jobs:
   build:
@@ -1460,7 +1617,7 @@ jobs:
         throw "an unquoted run: value is truncated by YAML at ` #, so it must not be vouched for:`n$($plainHash.Output)"
     }
 
-    # The rules this asset absorbed from the fixportal-ci-backend and fixportal-ci-frontend
+    # The rules this asset absorbed from the two upstream CI
     # copies, which had each hardened independently while canonical carried neither. They
     # are pinned HERE, in the canonical suite, because the three-way divergence they close
     # was invisible until all three test files were run against one file: a rule owned only
