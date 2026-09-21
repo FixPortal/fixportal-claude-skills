@@ -1327,6 +1327,105 @@ jobs:
         throw "a path escaping the repository must not be asserted about:`n$($escaping.Output)"
     }
 
+    # A `..` AFTER A SYMLINK does not reduce the way the runner resolves it: the OS
+    # follows `link` first and then climbs from the TARGET's parent, so
+    # `scripts/link/../gate.ps1` executes a file the lexical reduction never names.
+    # Vouching for the lexical answer alone would require HIGH on a path the gate does
+    # not run while the one it does run stays untiered -- fail-open. Both spellings must
+    # be required. (CodeRabbit, on an upstream review.)
+    #
+    # Creating a directory symlink needs either Developer Mode or elevation on Windows,
+    # so the case SKIPS with a stated reason where it cannot be built rather than passing
+    # vacuously -- a silent pass here is indistinguishable from coverage.
+    $symlinkRepo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $symlinkRepo '.claude') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $symlinkRepo '.github' 'workflows') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'scripts') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'elsewhere') -Force | Out-Null
+    '# lexical target'   | Set-Content -LiteralPath (Join-Path $symlinkRepo 'scripts' 'gate.ps1') -Encoding utf8
+    '# real target'      | Set-Content -LiteralPath (Join-Path $symlinkRepo 'gate.ps1') -Encoding utf8
+    # SymbolicLink first; a JUNCTION where that is refused. A plain symlink needs
+    # Developer Mode or elevation on Windows, while a junction needs neither and is a
+    # reparse point that `Path.resolve()` follows identically -- so the fallback
+    # exercises the same code path rather than skipping it. Without it this case was
+    # SKIPPED on the authoring host and ran only on the runner, which is the inert-fixture
+    # shape this file keeps warning about.
+    $linkMade = $true
+    foreach ($kind in @('SymbolicLink', 'Junction')) {
+        try {
+            New-Item -ItemType $kind -Path (Join-Path $symlinkRepo 'scripts' 'link') -Target (Join-Path $symlinkRepo 'elsewhere') -ErrorAction Stop | Out-Null
+            $linkMade = $true
+            break
+        }
+        catch { $linkMade = $false }
+    }
+
+    if (-not $linkMade) {
+        Write-Host 'SKIP: cannot create a directory symlink or junction on this host; the symlink-plus-dotdot case was NOT checked'
+    }
+    else {
+        # Only `scripts/gate.ps1` is tiered. The file the runner actually reaches through
+        # the link is the repository-root `gate.ps1`, which is NOT tiered -- so a checker
+        # that trusted the lexical reduction alone would report this repository clean.
+        '{"version":1,"high":["scripts/gate.ps1"],"low":[]}' |
+            Set-Content -LiteralPath (Join-Path $symlinkRepo '.claude' 'review-policy.json') -Encoding utf8
+        @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: scripts/link/../gate.ps1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
+        $symlinkOutput = Join-Path $symlinkRepo 'output.txt'
+        & $python.Source -S $script (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') *> $symlinkOutput
+        $symlinkCode = $LASTEXITCODE
+        $symlinkText = Get-Content -LiteralPath $symlinkOutput -Raw
+
+        # WHAT THE RUNNER EXECUTES DIFFERS BY PLATFORM, and that is the whole point of
+        # this case: the checker must agree with its own runner, not with a rule someone
+        # wrote down. POSIX follows `link` and then climbs from the TARGET's parent, so an
+        # untiered file runs. Windows normalises `..` lexically ITSELF, so the tiered file
+        # runs and there is no divergence to catch. Asking the same interpreter is the
+        # only way to state the expectation without hardcoding one platform's answer --
+        # and hardcoding POSIX here is exactly what made the first version of this fixture
+        # fail on the authoring host for the wrong reason.
+        $probe = @'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+real = (root / "scripts/link/../gate.ps1").resolve()
+print(real.relative_to(root.resolve()).as_posix())
+'@
+        $probeFile = Join-Path $symlinkRepo 'probe.py'
+        $probe | Set-Content -LiteralPath $probeFile -Encoding utf8
+        $executed = (& $python.Source -S $probeFile $symlinkRepo).Trim()
+
+        if ($executed -eq 'scripts/gate.ps1') {
+            # The tiered file is the one that runs; the checker must accept.
+            if ($symlinkCode -ne 0) {
+                throw "on this platform '..' normalises lexically, so the tiered script is the one that runs and the gate must pass:`n$symlinkText"
+            }
+        }
+        else {
+            # An untiered file runs. Vouching for the lexical reduction alone would be
+            # fail-open, so the checker must refuse AND name what actually runs.
+            if ($symlinkCode -eq 0) {
+                throw "a '..' through a symlink reaches '$executed', which no policy tiers -- the gate must refuse it:`n$symlinkText"
+            }
+            if ($symlinkText -notmatch ([regex]::Escape($executed))) {
+                throw "the refusal must name the file the symlink actually reaches ('$executed'):`n$symlinkText"
+            }
+        }
+    }
+
     # ── The OTHER two BOM read paths, and BOM in DIRECTORY mode ─────────────────────
     # Three reads changed to utf-8-sig, and only the workflow one had a fixture. The
     # untested two are the review policy (where json.loads RAISES on a BOM and the

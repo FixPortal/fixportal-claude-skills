@@ -1962,6 +1962,7 @@ def resolve_committed_paths(root, relative):
     # repository root is refused outright rather than clamped: nothing outside the
     # checkout is a repo-local gate script. (CodeRabbit, on an upstream review.)
     parts = []
+    climbed = False
     for part in relative.split("/"):
         if part in ("", "."):
             continue
@@ -1969,6 +1970,7 @@ def resolve_committed_paths(root, relative):
             if not parts:
                 return []
             parts.pop()
+            climbed = True
             continue
         parts.append(part)
     if not parts:
@@ -1990,6 +1992,32 @@ def resolve_committed_paths(root, relative):
         if not candidates:
             return []
     matches = sorted("/".join(resolved) for path, resolved in candidates if path.is_file())
+
+    # A `..` REDUCED LEXICALLY IS NOT WHAT THE RUNNER EXECUTES when a symlink precedes it.
+    # `scripts/link/../gate.py` reduces here to `scripts/gate.py`, but the OS resolves
+    # `link` first and then climbs from the TARGET's parent, so the file that actually
+    # runs can be a different one -- and vouching for the lexical answer would require
+    # HIGH on a path the gate never runs while the one it does run goes untiered.
+    #
+    # So when the candidate climbed, resolve it through the filesystem as well and keep
+    # BOTH spellings. The error direction is the same as everywhere else in this check:
+    # more scripts required HIGH, never fewer. A disagreement between the lexical and the
+    # real answer can only ADD a requirement. A target outside the checkout is dropped
+    # rather than clamped -- nothing out there is a repo-local gate script.
+    #
+    # Measured before writing this: zero committed symlinks across the estate, so the
+    # hazard is unreachable today. It is closed because the cost is a dozen lines and the
+    # direction is fail-open, not because it was observed. (CodeRabbit, on an upstream review.)
+    if climbed:
+        try:
+            real = (root / relative).resolve()
+            if real.is_file() and real.is_relative_to(root.resolve()):
+                spelled = real.relative_to(root.resolve()).as_posix()
+                if spelled not in matches:
+                    return sorted(matches + [spelled])
+        except (OSError, ValueError):
+            pass
+
     # The exact-match test uses the NORMALISED spelling: `scripts/./probe.py` resolves to
     # `scripts/probe.py`, and comparing against the raw text would never match it.
     return [normalised] if normalised in matches else matches
