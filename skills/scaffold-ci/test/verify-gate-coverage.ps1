@@ -1276,6 +1276,112 @@ jobs:
         throw "a genuine non-composite local action must still be refused:`n$($realUses.Output)"
     }
 
+    # ── Dot components in a gate-script path (CodeRabbit, on an upstream review) ──
+    # `iterdir()` never yields `.` or `..`, so resolve_committed_paths walking them
+    # literally matches nothing and drops the candidate -- fail-open. The exact
+    # `is_file()` the walk replaced collapsed a single dot for free, via pathlib, so
+    # omitting this was a REGRESSION and not an unchanged gap. Both spellings resolve to
+    # the same committed file and must be required HIGH exactly as the plain spelling is.
+    foreach ($dotted in @('./scripts/./probe.ps1', './scripts/sub/../probe.ps1')) {
+        $dottedYaml = @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: $dotted
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        $dottedRepo = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/probe.ps1', 'scripts/sub/keep.txt') $dottedYaml
+        if ($dottedRepo.Code -eq 0) {
+            throw "a gate script spelled '$dotted' must be detected:`n$($dottedRepo.Output)"
+        }
+        if ($dottedRepo.Output -cnotmatch 'scripts/probe\.ps1') {
+            throw "'$dotted' must report the normalised committed path:`n$($dottedRepo.Output)"
+        }
+    }
+
+    # A path climbing above the repository root is refused rather than clamped: nothing
+    # outside the checkout is a repo-local gate script, and clamping would resolve it to
+    # one that is.
+    $escaping = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/probe.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: scripts/../../scripts/probe.ps1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($escaping.Code -ne 0) {
+        throw "a path escaping the repository must not be asserted about:`n$($escaping.Output)"
+    }
+
+    # ── The OTHER two BOM read paths, and BOM in DIRECTORY mode ─────────────────────
+    # Three reads changed to utf-8-sig, and only the workflow one had a fixture. The
+    # untested two are the review policy (where json.loads RAISES on a BOM and the
+    # surrounding except swallows it as "no policy", silently disabling the HIGH-tier
+    # assertion) and the delegated local-action manifest. Directory mode is the third
+    # gap and the worst-directioned of them: there a BOM'd workflow was written off as
+    # "not a workflow, skipped" and every job in it escaped coverage, which is fail-open
+    # where file mode was merely red. (Gitar and CodeRabbit, on an upstream review.)
+    function New-BomGateRepo([string] $policyJson, [string[]] $scriptPaths, [string] $yaml, [switch] $BomPolicy, [switch] $BomWorkflow, [string] $Target) {
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
+        $policyJson | Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding ($BomPolicy ? 'utf8BOM' : 'utf8')
+        foreach ($relative in $scriptPaths) {
+            $full = $repo
+            foreach ($segment in ($relative -split '/')) { $full = Join-Path $full $segment }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force | Out-Null
+            '# probe' | Set-Content -LiteralPath $full -Encoding utf8
+        }
+        $yaml | Set-Content -LiteralPath (Join-Path $repo '.github' 'workflows' 'ci.yml') -Encoding ($BomWorkflow ? 'utf8BOM' : 'utf8')
+        $output = Join-Path $repo 'output.txt'
+        $argument = if ($Target) { Join-Path $repo $Target } else { Join-Path $repo '.github' 'workflows' 'ci.yml' }
+        & $python.Source -S $script $argument *> $output
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = Get-Content -LiteralPath $output -Raw }
+    }
+
+    # A BOM'd review policy must still be READ, so an untiered gate script is still
+    # refused. Before utf-8-sig this exited 0: the policy looked absent, so nothing was
+    # asserted -- the fail-open direction, and silent.
+    $bomPolicy = New-BomGateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') $gatedYaml -BomPolicy
+    if ($bomPolicy.Code -eq 0 -or $bomPolicy.Output -notmatch 'not tiered\s+HIGH') {
+        throw "a BOM'd review policy must still refuse an untiered gate script:`n$($bomPolicy.Output)"
+    }
+
+    # DIRECTORY mode over a BOM'd workflow: the gate job must still be found. Before
+    # utf-8-sig the file was skipped as "not a workflow" and its jobs escaped entirely.
+    $bomDirectory = New-BomGateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ -BomWorkflow -Target '.github/workflows'
+    if ($bomDirectory.Code -ne 0) {
+        throw "directory mode must accept a BOM'd workflow:`n$($bomDirectory.Output)"
+    }
+    if ($bomDirectory.Output -match 'not a workflow') {
+        throw "a BOM'd workflow must not be skipped as 'not a workflow' in directory mode:`n$($bomDirectory.Output)"
+    }
+
     # --- A local action's runs.using is resolved INSIDE the runs: mapping (ported from
     #     the upstream scanner work, 2026-09) ---
 
