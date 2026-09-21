@@ -1024,22 +1024,43 @@ jobs:
     # matched, and because the target exists and is non-composite the traversal raised
     # its ValueError -- a false RED on a workflow that never delegates. Payload lines
     # are now excluded from both LOCAL_USES scans. (Second finding, same review.)
-    function New-GateActionRepo([string] $actionContent, [string] $yaml) {
+    function New-GateActionRepo([string] $actionContent, [string] $workflowYaml) {
         # The policy is load-bearing: assert_gate_scripts returns early when no
         # review-policy.json is readable, and gate_script_paths -- where the LOCAL_USES
-        # traversal lives -- is only reached behind that read. Without it both fixtures
-        # below pass while exercising nothing.
+        # traversal lives -- is only reached behind that read. Without it the
+        # local-action fixtures pass while exercising nothing.
+        # [string] parameters coerce an omitted argument to "" rather than $null, so a
+        # null test never fires and the default workflow never writes -- an empty ci.yml
+        # then fails every caller with "no jobs found". IsNullOrEmpty covers both forms.
         $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
         '{"version":1,"high":["scripts/**"],"low":[]}' |
             Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
-        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $repo 'actions' 'probe') -Force | Out-Null
         $actionContent | Set-Content -LiteralPath (Join-Path $repo 'actions' 'probe' 'action.yml') -Encoding utf8
-        $workflowPath = Join-Path $repo '.github' 'workflows' 'ci.yml'
-        $yaml | Set-Content -LiteralPath $workflowPath -Encoding utf8
+        New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') -Force | Out-Null
+        '# probe' | Set-Content -LiteralPath (Join-Path $repo 'scripts' 'probe.py') -Encoding utf8
+        $workflow = Join-Path $repo '.github' 'workflows' 'ci.yml'
+        if ([string]::IsNullOrEmpty($workflowYaml)) {
+            $workflowYaml = @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+        }
+        $workflowYaml | Set-Content -LiteralPath $workflow -Encoding utf8
         $outputPath = Join-Path $repo 'output.txt'
-        & $python.Source -S $script $workflowPath *> $outputPath
+        & $python.Source -S $script $workflow *> $outputPath
         [pscustomobject]@{
             Code = $LASTEXITCODE
             Output = Get-Content -LiteralPath $outputPath -Raw
@@ -1096,6 +1117,164 @@ jobs:
 '@
     if ($realUses.Code -eq 0 -or $realUses.Output -notmatch 'gate coverage only follows composite') {
         throw "a genuine non-composite local action must still be refused:`n$($realUses.Output)"
+    }
+
+    # --- A local action's runs.using is resolved INSIDE the runs: mapping (ported from
+    #     the upstream scanner work, 2026-09) ---
+
+    # 1. The block-scalar false match. The description's payload holds an indented
+    #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
+    #    matched it first and raised on a valid composite action -- a false RED on a
+    #    healthy action. (CodeRabbit, fixportal-fixatdl#148.) The composite body invokes
+    #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
+    #    the action being silently skipped.
+    $blockScalarUsing = New-GateActionRepo @'
+name: Probe
+description: |
+  Explains the metadata shape, for example:
+    'using': javascript
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python scripts/probe.py
+'@
+    if ($blockScalarUsing.Code -ne 0 -or $blockScalarUsing.Output -notmatch 'scripts/probe\.py') {
+        throw "a composite action whose earlier block scalar mentions 'using': must pass, its body followed:`n$($blockScalarUsing.Output)"
+    }
+
+    # 2. A flow-style runs: mapping. The line-anchored search could never see `using`
+    #    inside `runs: {using: ...}`, so the composite spelling must be recognised --
+    #    not raise, and not silently skip the guard.
+    $flowComposite = New-GateActionRepo @'
+name: Probe
+runs: {using: composite, steps: []}
+'@
+    if ($flowComposite.Code -ne 0) {
+        throw "a flow-style runs: {using: composite, ...} must be recognised as composite:`n$($flowComposite.Output)"
+    }
+
+    # 2b. The same flow mapping written across SEVERAL LINES, which YAML allows.
+    $multilineFlowComposite = New-GateActionRepo @'
+name: Probe
+runs: {
+    using: composite,
+    steps: [] }
+'@
+    if ($multilineFlowComposite.Code -ne 0) {
+        throw "a multiline flow runs: mapping must be recognised as composite:`n$($multilineFlowComposite.Output)"
+    }
+
+    # 2c. A quoted VALUE carrying a false `using` must not be read as the mapping's own
+    #     entry. Searching the joined text matched `{using: composite}` inside the
+    #     string and vouched composite for a DOCKER action -- fail-open, the dangerous
+    #     direction. Extraction counts a key only OUTSIDE quotes and at depth ONE.
+    $quotedFalseUsing = New-GateActionRepo @'
+name: Probe
+runs: {note: "{using: composite}", using: docker, main: index.js}
+'@
+    if ($quotedFalseUsing.Code -eq 0 -or $quotedFalseUsing.Output -notmatch 'runs\.using docker') {
+        throw "a quoted false using must not mask the real runs.using docker:`n$($quotedFalseUsing.Output)"
+    }
+
+    # 2d. ...and a `#` inside a QUOTED flow value is data, not a comment. Truncating
+    #     there first broke the mapping mid-scan and reddened a valid composite action.
+    #     A comment AFTER the mapping is the ordinary case and must keep working.
+    foreach ($hashRuns in @(
+        'runs: {description: "a # b", using: composite}',
+        'runs: {using: composite, steps: []} # tail'
+    )) {
+        $quotedHashFlow = New-GateActionRepo "name: Probe`n$hashRuns"
+        if ($quotedHashFlow.Code -ne 0) {
+            throw "a quoted # inside a flow mapping (or a real trailing comment) must not break runs.using resolution:`n$hashRuns`n---`n$($quotedHashFlow.Output)"
+        }
+    }
+
+    # 2e. A QUOTED key is still a key: {'using': composite} parses exactly as the bare
+    #     spelling does (key_pattern admits quoted keys in block style; flow must agree).
+    $quotedKeyFlow = New-GateActionRepo @'
+name: Probe
+runs: {'using': composite, steps: []}
+'@
+    if ($quotedKeyFlow.Code -ne 0) {
+        throw "a quoted 'using' key in a flow mapping must be recognised:`n$($quotedKeyFlow.Output)"
+    }
+
+    # 3. A runs: mapping with NO readable using: entry must RAISE -- fail closed rather
+    #    than skip the guard and follow a body whose kind cannot be verified. The flow
+    #    form (a typo'd key), the block form (no using: child at all), the multiline
+    #    flow form, and a `using` inside a NESTED flow collection (depth one only).
+    foreach ($badRuns in @(
+        'runs: {usign: composite, steps: []}',
+        "runs:`n  steps:`n    - shell: bash`n      run: echo hi",
+        "runs: {`n    usign: composite,`n    steps: [] }",
+        'runs: {steps: [{using: composite}]}'
+    )) {
+        $noUsing = New-GateActionRepo "name: Probe`n$badRuns"
+        if ($noUsing.Code -eq 0 -or $noUsing.Output -notmatch 'no readable') {
+            throw "a runs: mapping with no readable using: entry must fail closed:`n$badRuns`n---`n$($noUsing.Output)"
+        }
+    }
+
+    # 4. The step-level static fold (from the upstream unit review, 2026-09-21): the
+    #    gate's aggregation step with a statically false continue-on-error tolerates
+    #    nothing, so it CAN still fail the job and the gate stands.
+    $staticFalseStep = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        continue-on-error: ${{ false && inputs.allow_failure }}
+        run: exit 1
+'@
+    if ($staticFalseStep.Code -ne 0) {
+        throw "a statically false step-level continue-on-error must not read as cannot-fail:`n$($staticFalseStep.Output)"
+    }
+
+    # ... and step-level controls: literal true and an unfoldable expression still refuse.
+    foreach ($case in @('true', '${{ inputs.allow_failure }}')) {
+        $stepTolerant = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        continue-on-error: $case
+        run: exit 1
+"@
+        if ($stepTolerant.Code -eq 0 -or $stepTolerant.Output -notmatch 'continue-on-error') {
+            throw "a tolerant or unfoldable step-level continue-on-error must be refused ($case):`n$($stepTolerant.Output)"
+        }
+    }
+
+    # 5. A block-scalar job-level spelling (`continue-on-error: >` then `false`) folds
+    #    to the literal false and tolerates nothing; the key-line-only read saw the
+    #    bare `>` header and counted the job tolerant -- a false RED.
+    $blockScalarTolerance = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: >
+      false
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($blockScalarTolerance.Code -ne 0) {
+        throw "a block-scalar continue-on-error folding to false must not read as tolerant:`n$($blockScalarTolerance.Output)"
     }
 
     # `always()` is unconditionally true, so `always() && <coverage>` gates exactly what the
