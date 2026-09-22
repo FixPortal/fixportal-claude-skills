@@ -1424,6 +1424,77 @@ print(real.relative_to(root.resolve()).as_posix())
                 throw "the refusal must name the file the symlink actually reaches ('$executed'):`n$symlinkText"
             }
         }
+
+        # A LEXICAL OVER-CLIMB is not proof the path leaves the checkout.
+        # `scripts/link/../../../gate.ps1` removes every component on paper, but when
+        # `link` targets a sufficiently deep in-checkout directory the OS lands back
+        # INSIDE the repository -- so refusing on the lexical reading alone would omit a
+        # gate script that really runs. Containment is decided by the filesystem answer,
+        # not the arithmetic. (CodeRabbit, on an upstream review.)
+        New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'elsewhere' 'a' 'b') -Force | Out-Null
+        $deepLink = Join-Path $symlinkRepo 'scripts' 'deep'
+        $deepMade = $true
+        foreach ($kind in @('SymbolicLink', 'Junction')) {
+            try {
+                New-Item -ItemType $kind -Path $deepLink -Target (Join-Path $symlinkRepo 'elsewhere' 'a' 'b') -ErrorAction Stop | Out-Null
+                $deepMade = $true
+                break
+            }
+            catch { $deepMade = $false }
+        }
+
+        if (-not $deepMade) {
+            Write-Host 'SKIP: cannot create the deep link on this host; the lexical-over-climb case was NOT checked'
+        }
+        else {
+            $overProbe = @'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+real = (root / "scripts/deep/../../../gate.ps1").resolve()
+try:
+    print(real.relative_to(root.resolve()).as_posix())
+except ValueError:
+    print("<outside>")
+'@
+            $overProbeFile = Join-Path $symlinkRepo 'overprobe.py'
+            $overProbe | Set-Content -LiteralPath $overProbeFile -Encoding utf8
+            $overExecuted = (& $python.Source -S $overProbeFile $symlinkRepo).Trim()
+
+            @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: scripts/deep/../../../gate.ps1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
+            $overOutput = Join-Path $symlinkRepo 'over-output.txt'
+            & $python.Source -S $script (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') *> $overOutput
+            $overCode = $LASTEXITCODE
+            $overText = Get-Content -LiteralPath $overOutput -Raw
+
+            if ($overExecuted -eq '<outside>') {
+                if ($overCode -ne 0) {
+                    throw "an over-climb that genuinely leaves the checkout must not be asserted about:`n$overText"
+                }
+            }
+            else {
+                if ($overCode -eq 0) {
+                    throw "an over-climb resolving back into the checkout reaches '$overExecuted', which no policy tiers -- the gate must refuse it:`n$overText"
+                }
+                if ($overText -notmatch ([regex]::Escape($overExecuted))) {
+                    throw "the refusal must name the over-climbed file actually reached ('$overExecuted'):`n$overText"
+                }
+            }
+        }
     }
 
     # ── The OTHER two BOM read paths, and BOM in DIRECTORY mode ─────────────────────
