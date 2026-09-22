@@ -1963,22 +1963,34 @@ def resolve_committed_paths(root, relative):
     # checkout is a repo-local gate script. (CodeRabbit, on an upstream review.)
     parts = []
     climbed = False
+    overclimbed = False
     for part in relative.split("/"):
         if part in ("", "."):
             continue
         if part == "..":
-            if not parts:
-                return []
-            parts.pop()
             climbed = True
+            if not parts:
+                # OVER-CLIMBED LEXICALLY. Returning here would be the same early-exit
+                # mistake as the one below, one step earlier: `scripts/link/../../../gate.py`
+                # escapes the checkout on paper, but if `link` targets a sufficiently deep
+                # in-checkout directory the OS lands back INSIDE it, and the gate script
+                # that actually runs would be omitted from coverage. Fall through to the
+                # filesystem resolution instead; its `is_relative_to` containment check is
+                # what excludes a genuinely external target, and it does so on the real
+                # answer rather than the lexical one. (CodeRabbit, on an upstream review.)
+                overclimbed = True
+                continue
+            parts.pop()
             continue
         parts.append(part)
-    if not parts:
-        return []
+
     normalised = "/".join(parts)
 
-    candidates = [(root, [])]
-    for part in parts:
+    # An over-climbed path has NO trustworthy lexical spelling -- the components left in
+    # `parts` no longer describe where the path points -- so the component walk is skipped
+    # entirely and only the filesystem answer is used.
+    candidates = [] if (overclimbed or not parts) else [(root, [])]
+    for part in (parts if candidates else []):
         following = []
         for base, resolved in candidates:
             try:
