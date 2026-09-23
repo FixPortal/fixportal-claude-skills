@@ -931,7 +931,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - working-directory: src/your-ui
+      - working-directory: "src/your ui"
         run: python scripts/assert-coverage-floor.ps1
   ci-gate:
     if: always()
@@ -941,16 +941,16 @@ jobs:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
 '@
-    $workingDirectory = New-GateRepo '{"version":1,"high":["src/your-ui/scripts/assert-coverage-floor.ps1"],"low":[]}' `
-        @('src/your-ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
+    $workingDirectory = New-GateRepo '{"version":1,"high":["src/your ui/scripts/assert-coverage-floor.ps1"],"low":[]}' `
+        @('src/your ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
     if ($workingDirectory.Code -ne 0) {
         throw "a gate script must be resolved under its working-directory:`n$($workingDirectory.Output)"
     }
 
     $workingDirectoryUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' `
-        @('src/your-ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
+        @('src/your ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
     if ($workingDirectoryUntiered.Code -eq 0 -or
-        $workingDirectoryUntiered.Output -notmatch 'src/your-ui/scripts/assert-coverage-floor\.ps1' -or
+        $workingDirectoryUntiered.Output -notmatch 'src/your ui/scripts/assert-coverage-floor\.ps1' -or
         $workingDirectoryUntiered.Output -notmatch 'not tiered HIGH') {
         throw "a script resolved under working-directory must still be required HIGH:`n$($workingDirectoryUntiered.Output)"
     }
@@ -1073,6 +1073,61 @@ jobs:
 '@
     if ($flowBashEnv.Code -eq 0 -or $flowBashEnv.Output -notmatch 'BASH_ENV') {
         throw "a BASH_ENV key inside a flow-style env mapping must fail closed:`n$($flowBashEnv.Output)"
+    }
+
+    $quotedFlowBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: {FOO: "value } # marker", BASH_ENV: /tmp/env.sh}
+    steps:
+      - run: exit 1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($quotedFlowBashEnv.Code -eq 0 -or $quotedFlowBashEnv.Output -notmatch 'BASH_ENV') {
+        throw "quoted delimiters must not hide BASH_ENV in a flow-style env mapping:`n$($quotedFlowBashEnv.Output)"
+    }
+
+    $bashOptionArgumentCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash -o pipefail -c 'cd sub; python scripts/assert-coverage-floor.ps1'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashOptionArgumentCDashC.Code -eq 0 -or $bashOptionArgumentCDashC.Output -notmatch 'after a directory change') {
+        throw "a directory change inside bash with a separate option argument must fail closed:`n$($bashOptionArgumentCDashC.Output)"
+    }
+
+    $unclassifiedBashOptionCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash --rcfile /tmp/bashrc -c 'cd sub; python scripts/assert-coverage-floor.ps1'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($unclassifiedBashOptionCDashC.Code -eq 0 -or $unclassifiedBashOptionCDashC.Output -notmatch 'after a directory change') {
+        throw "an unclassified shell option before -c must fail closed:`n$($unclassifiedBashOptionCDashC.Output)"
     }
 
     $bashCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
@@ -1675,7 +1730,7 @@ jobs:
     # The whole-file search this pins against matched the first `using:`-shaped line
     # ANYWHERE in the action file, which is wrong in both directions: a block scalar
     # holding an indented `'using': javascript` line matched BEFORE the real runs:
-    # mapping and reddened a valid COMPOSITE action (CodeRabbit review),
+    # mapping and reddened a valid COMPOSITE action (CodeRabbit, fixportal-fixatdl#148),
     # and a flow-style `runs: {using: node20, ...}` never matched the line-anchored
     # pattern at all, so the non-composite guard was silently skipped -- fail-open
     # (issue #227).
@@ -1731,7 +1786,7 @@ jobs:
     # 1. The block-scalar false match. The description's payload holds an indented
     #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
     #    matched it first and raised on a valid composite action -- a false RED on a
-    #    healthy action. (CodeRabbit review.) The composite body invokes
+    #    healthy action. (CodeRabbit, fixportal-fixatdl#148.) The composite body invokes
     #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
     #    the action being silently skipped.
     $blockScalarUsing = New-GateActionRepo @'
@@ -1832,7 +1887,7 @@ runs: {'using': composite, steps: []}
     }
 
     # --- Tolerance folding and run-payload traversal (back-ported from the mirror's
-    #     mirror follow-up fixes; the two level-consistency findings are from
+    #     fixportal-claude-skills#110 fixes; the two level-consistency findings are from
     #     the 2026-09-21 unit review) ---
 
     # 4. A STATICALLY FALSE continue-on-error tolerates nothing, at EITHER level, but
@@ -1935,7 +1990,7 @@ jobs:
     #    LOCAL_USES scan ran over physical lines, so the heredoc below matched -- and
     #    with the target on disk and non-composite, the traversal raised its ValueError:
     #    a false RED on a workflow that never delegates. Payload lines are now excluded
-    #    from both LOCAL_USES scans (mirror follow-up).
+    #    from both LOCAL_USES scans (mirror fixportal-claude-skills#110).
     $nonCompositeAction = @'
 name: Probe
 runs:
