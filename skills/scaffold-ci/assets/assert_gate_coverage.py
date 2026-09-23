@@ -69,7 +69,7 @@ FAILURE_CONDITION_ATOM = re.compile(
 # `needs.secrets.result != 'success' && needs.secrets.result != 'skipped'` -- a job that
 # legitimately skips must not fail the gate by skipping, which is exactly what
 # GATE_CONDITIONAL_EXEMPT is for. Refusing every residual conjunction rejected that, and
-# fixportal-initiator's correct gate then read as "aggregates nothing". Found by running
+# a consumer's correct gate then read as "aggregates nothing". Found by running
 # the reconciled checker over all 26 repositories BEFORE syncing it to any of them.
 CONDITION_REFINEMENT = re.compile(rf"needs\.({ID})\.result!=['\"]skipped['\"]")
 BACKSLASH = "\\"
@@ -437,6 +437,7 @@ def working_directory_value(line):
             sys.exit("cannot verify gate script paths with an unresolved working-directory expression")
         return unquoted
     sys.exit("cannot verify gate script paths with an unsupported working-directory value")
+    return None
 
 
 def inline_mapping_has_key(text, wanted):
@@ -542,7 +543,7 @@ def strip_inline_comment(value):
     shell ever sees it -- SHELL quotes do not protect a hash from YAML, and pretending
     they do would vouch for a command the runner never receives.
 
-    (CodeRabbit, fixportal-ci-backend#140 and fixportal-ci-frontend#163.)
+    (CodeRabbit review.)
     """
     quote = value[:1]
     if quote not in ("'", '"'):
@@ -733,7 +734,7 @@ def tolerant_jobs(lines, jobs, job_indent):
             # that tolerates nothing: a block-scalar spelling (`continue-on-error: >`
             # then `false`) never unfolded past the header, and a compound like
             # `${{ false && inputs.allow_failure }}` survives normalisation as itself
-            # while static_truth folds it to False (mirror fixportal-claude-skills#110;
+            # while static_truth folds it to False (mirror follow-up;
             # unit review 2026-09-21). UNKNOWN stays tolerant -- an expression this
             # checker cannot fold may still evaluate true at runtime, and that is the
             # conservative direction.
@@ -1113,7 +1114,7 @@ def failure_atoms(normalised):
     `!= 'skipped'` guards about the SAME job. That is the house shape for a conditional
     feeder -- `needs.secrets.result != 'success' && needs.secrets.result != 'skipped'` --
     and it covers exactly {failure, cancelled} for that job, which is what the atom
-    already claims. Refusing it rejected fixportal-initiator's correct gate outright.
+    already claims. Refusing it rejected a consumer's correct gate outright.
     """
     residual = [
         part
@@ -1398,7 +1399,7 @@ def step_can_fail(block, span, key_indent):
         # Testing the decoded text read `run: ">&2 echo upstream failed; exit 1"` as a
         # FOLDED body, because decoding leaves a string opening with `>`. That step then
         # supplied no coverage and the gate went red over a command that does fail -- a
-        # false RED. (CodeRabbit, fixportal-claude-skills#106.)
+        # false RED. (CodeRabbit review.)
         if value and not is_block_scalar_header(raw):
             body = [value]
         else:
@@ -1871,7 +1872,7 @@ def resolve_runs_using(lines, target):
       * a block scalar (a multi-line description, an embedded script) holding an
         indented `'using': javascript` line matched BEFORE the real mapping, so a valid
         composite action raised -- a false RED on a healthy action (CodeRabbit,
-        fixportal-fixatdl#148);
+        a prior reviewer finding);
       * a flow-style `runs: {using: node20, main: index.js}` never matched the
         line-anchored pattern at all, so `using` stayed unset and the non-composite
         guard was skipped -- fail-OPEN (issue #227).
@@ -1986,8 +1987,8 @@ def run_payload_indexes(lines):
     delegation. A missing target was silently ignored, but an EXISTING non-composite one
     raised the ValueError in delegated_run_bodies and failed gate coverage over a line
     the workflow never executes as a step. That is a false RED on a correct workflow --
-    the direction that gets a working control deleted to make CI green. (CodeRabbit,
-    fixportal-claude-skills#110.)
+    the direction that gets a working control deleted to make CI green. (CodeRabbit
+    review.)
 
     Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
     on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
@@ -2030,7 +2031,7 @@ def delegated_run_bodies(root, ref, visited):
     lines = target.read_text(encoding="utf-8-sig").splitlines()
     # `using` is resolved INSIDE the `runs:` mapping by resolve_runs_using -- see its
     # docstring. Quoted keys ('using'/"using"/using) are admitted in both block and
-    # flow style, as they were here. (CodeRabbit, fixportal-claude-skills#110.)
+    # flow style, as they were here. (CodeRabbit review.)
     using = resolve_runs_using(lines, target)
     if using is not None and using != "composite":
         raise ValueError(
@@ -2358,7 +2359,7 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
     follows from what the workflow actually invokes, so a gate script added to a
     repository years after it was scaffolded is covered on the day it is wired in.
 
-    Verified in the field, not hypothesised: fixportal-fixatdl added
+    Verified in the field, not hypothesised: a consumer added
     `scripts/assert-coverage-floor.ps1` as a merge gate on 2026-08-24 and it sat outside
     both the policy and the guard until an adversarial review found it on 2026-09-08 --
     the third recurrence of this class in that repository, after the same hole had been
