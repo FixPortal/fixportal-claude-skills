@@ -68,10 +68,40 @@ FAILURE_CONDITION_ATOM = re.compile(
 # `needs.secrets.result != 'success' && needs.secrets.result != 'skipped'` -- a job that
 # legitimately skips must not fail the gate by skipping, which is exactly what
 # GATE_CONDITIONAL_EXEMPT is for. Refusing every residual conjunction rejected that, and
-# a consuming repository's correct gate then read as "aggregates nothing". Found by running
+# a consumer's correct gate then read as "aggregates nothing". Found by running
 # the reconciled checker over all 26 repositories BEFORE syncing it to any of them.
 CONDITION_REFINEMENT = re.compile(rf"needs\.({ID})\.result!=['\"]skipped['\"]")
 BACKSLASH = "\\"
+DIRECTORY_CHANGE = re.compile(
+    r"(?:^|[;&|(){}`]|\$\(|\b(?:then|do|else|if|elif|while|until)\b|!)\s*"
+    r"(?:cd|pushd|popd|chdir|Set-Location|Push-Location|Pop-Location|sl)\b",
+    re.IGNORECASE,
+)
+SHELL_C_ARGUMENT = re.compile(r"\b(?:bash|sh)\s+-c\s+(['\"])(.*?)\1", re.IGNORECASE)
+COMMAND_SUBSTITUTION = re.compile(r"\$\(([^()]*)\)")
+MESSAGE_COMMAND = re.compile(
+    r"(?:^|[;&|]\s*)(?:echo|printf|Write-Output)\b"
+    r"(?:\s+(?:'[^']*'|\"[^\"]*\"|[^;&|])*)",
+    re.IGNORECASE,
+)
+
+
+def has_directory_change(body):
+    """Detect directory changes without treating quoted log messages as commands."""
+    for line in body:
+        pending = [line]
+        while pending:
+            candidate = pending.pop()
+            pending.extend(match.group(2) for match in SHELL_C_ARGUMENT.finditer(candidate))
+            pending.extend(match.group(1) for match in COMMAND_SUBSTITUTION.finditer(candidate))
+            candidate = SHELL_C_ARGUMENT.sub(" ", candidate)
+            candidate = COMMAND_SUBSTITUTION.sub(" ", candidate)
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "'\"":
+                candidate = candidate[1:-1]
+            candidate = MESSAGE_COMMAND.sub(" ", candidate)
+            if DIRECTORY_CHANGE.search(candidate):
+                return True
+    return False
 
 # The gate step's failing command, in the forms this checker will vouch for. Anything
 # else is REJECTED with a message naming these -- see ends_non_zero for why recognising
@@ -350,7 +380,7 @@ def strip_inline_comment(value):
     shell ever sees it -- SHELL quotes do not protect a hash from YAML, and pretending
     they do would vouch for a command the runner never receives.
 
-    (CodeRabbit, on upstream reviews of this scanner.)
+    (CodeRabbit, two consumer PRs.)
     """
     quote = value[:1]
     if quote not in ("'", '"'):
@@ -541,7 +571,7 @@ def tolerant_jobs(lines, jobs, job_indent):
             # that tolerates nothing: a block-scalar spelling (`continue-on-error: >`
             # then `false`) never unfolded past the header, and a compound like
             # `${{ false && inputs.allow_failure }}` survives normalisation as itself
-            # while static_truth folds it to False (mirror PR #110;
+            # while static_truth folds it to False (mirror follow-up;
             # unit review 2026-09-21). UNKNOWN stays tolerant -- an expression this
             # checker cannot fold may still evaluate true at runtime, and that is the
             # conservative direction.
@@ -921,7 +951,7 @@ def failure_atoms(normalised):
     `!= 'skipped'` guards about the SAME job. That is the house shape for a conditional
     feeder -- `needs.secrets.result != 'success' && needs.secrets.result != 'skipped'` --
     and it covers exactly {failure, cancelled} for that job, which is what the atom
-    already claims. Refusing it rejected a consuming repository's correct gate outright.
+    already claims. Refusing it rejected a consumer's correct gate outright.
     """
     residual = [
         part
@@ -1206,7 +1236,7 @@ def step_can_fail(block, span, key_indent):
         # Testing the decoded text read `run: ">&2 echo upstream failed; exit 1"` as a
         # FOLDED body, because decoding leaves a string opening with `>`. That step then
         # supplied no coverage and the gate went red over a command that does fail -- a
-        # false RED. (CodeRabbit, on an upstream review.)
+        # false RED. (CodeRabbit review.)
         if value and not is_block_scalar_header(raw):
             body = [value]
         else:
@@ -1679,7 +1709,7 @@ def resolve_runs_using(lines, target):
       * a block scalar (a multi-line description, an embedded script) holding an
         indented `'using': javascript` line matched BEFORE the real mapping, so a valid
         composite action raised -- a false RED on a healthy action (CodeRabbit,
-        on a consuming repository review);
+        consumer PR);
       * a flow-style `runs: {using: node20, main: index.js}` never matched the
         line-anchored pattern at all, so `using` stayed unset and the non-composite
         guard was skipped -- fail-OPEN (issue #227).
@@ -1795,7 +1825,7 @@ def run_payload_indexes(lines):
     raised the ValueError in delegated_run_bodies and failed gate coverage over a line
     the workflow never executes as a step. That is a false RED on a correct workflow --
     the direction that gets a working control deleted to make CI green. (CodeRabbit,
-    PR #110.)
+    mirror follow-up.)
 
     Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
     on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
@@ -1838,7 +1868,7 @@ def delegated_run_bodies(root, ref, visited):
     lines = target.read_text(encoding="utf-8-sig").splitlines()
     # `using` is resolved INSIDE the `runs:` mapping by resolve_runs_using -- see its
     # docstring. Quoted keys ('using'/"using"/using) are admitted in both block and
-    # flow style, as they were here. (CodeRabbit, PR #110.)
+    # flow style, as they were here. (CodeRabbit review.)
     using = resolve_runs_using(lines, target)
     if using is not None and using != "composite":
         raise ValueError(
@@ -2073,24 +2103,23 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
     disk, by resolve_committed_paths.
     """
     found = {}
+    directory_cache = {}
     for job_id, body_line, body, delegated_directories in gated_run_bodies(lines, jobs, needs, gate_job, root):
-        for match in GATE_SCRIPT.finditer(body_line):
-            relative = match.group(1).replace("\\", "/")
-            if any(re.search(r"(?:^|[;&|])\s*(?:cd|pushd|Set-Location)\b", line, re.IGNORECASE) for line in body):
-                sys.exit(f"{root}: cannot verify gate script paths after a directory change in job '{job_id}'; use working-directory:")
-            # Resolve a single job/step working-directory declaration. Multiple values
-            # are ambiguous to this line-oriented parser, so fail closed instead of
-            # silently checking the repository-root spelling.
+        if has_directory_change(body):
+            sys.exit(f"{root}: cannot verify gate script paths after a directory change in job '{job_id}'; use working-directory:")
+        if job_id not in directory_cache:
             block = job_block(lines, jobs, job_id)
             directories = set()
-            job_start = jobs[job_id]
-            # Workflow-level lines end at the first job. Values in sibling jobs
-            # cannot affect this command; step-level and job-level values inside this
-            # block can, so retain every plausible path spelling.
+            # Workflow-level and job/step working-directory values are candidates;
+            # this line-oriented parser conservatively checks their union.
             for line in lines[:min(jobs.values())] + block:
                 workdir = re.match(r"^\s*(?:working-directory)\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
                 if workdir:
                     directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
+            directory_cache[job_id] = directories
+        for match in GATE_SCRIPT.finditer(body_line):
+            relative = match.group(1).replace("\\", "/")
+            directories = directory_cache[job_id]
             candidates = {relative} | {directory + "/" + relative for directory in directories if directory}
             candidates.update(directory + "/" + relative for directory in delegated_directories if directory)
             for candidate in candidates:
@@ -2164,7 +2193,7 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
     follows from what the workflow actually invokes, so a gate script added to a
     repository years after it was scaffolded is covered on the day it is wired in.
 
-    Verified in the field, not hypothesised: a consuming repository added
+    Verified in the field, not hypothesised: a consumer added
     `scripts/assert-coverage-floor.ps1` as a merge gate on 2026-08-24 and it sat outside
     both the policy and the guard until an adversarial review found it on 2026-09-08 --
     the third recurrence of this class in that repository, after the same hole had been
@@ -2237,7 +2266,7 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
 
     with open(workflow_path, encoding="utf-8-sig") as handle:
         lines = handle.readlines()
-    if any(re.match(r"^\s*BASH_ENV\s*:", strip_comment(line)) for line in lines):
+    if any(re.match(r"^\s*['\"]?BASH_ENV['\"]?\s*:", strip_comment(line)) for line in lines):
         sys.exit(
             f"{workflow_path}: BASH_ENV can load shell functions that override the gate's "
             "accepted exit command. Remove the override or use a separately verified gate shell."
