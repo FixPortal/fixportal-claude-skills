@@ -947,6 +947,14 @@ jobs:
         throw "a gate script must be resolved under its working-directory:`n$($workingDirectory.Output)"
     }
 
+    $workingDirectoryUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' `
+        @('src/your-ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
+    if ($workingDirectoryUntiered.Code -eq 0 -or
+        $workingDirectoryUntiered.Output -notmatch 'src/your-ui/scripts/assert-coverage-floor\.ps1' -or
+        $workingDirectoryUntiered.Output -notmatch 'not tiered HIGH') {
+        throw "a script resolved under working-directory must still be required HIGH:`n$($workingDirectoryUntiered.Output)"
+    }
+
     $siblingWorkingDirectory = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   earlier:

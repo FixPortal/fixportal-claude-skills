@@ -1892,7 +1892,7 @@ def delegated_run_bodies(root, ref, visited):
         if body:
             directories = set()
             for line in lines:
-                workdir = re.match(r"^\s*working-directory\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
+                workdir = re.match(r"^\s*(?:-\s*)?working-directory\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
                 if workdir:
                     directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
             yield body, directories
@@ -2119,7 +2119,7 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
             # Workflow-level and job/step working-directory values are candidates;
             # this line-oriented parser conservatively checks their union.
             for line in lines[:min(jobs.values())] + block:
-                workdir = re.match(r"^\s*(?:working-directory)\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
+                workdir = re.match(r"^\s*(?:-\s*)?working-directory\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
                 if workdir:
                     directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
             directory_cache[job_id] = directories
