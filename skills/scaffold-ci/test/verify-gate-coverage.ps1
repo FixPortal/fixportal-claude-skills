@@ -1130,6 +1130,24 @@ jobs:
         throw "a directory change inside bash.exe -c must fail closed:`n$($bashExeCDashC.Output)"
     }
 
+    $unbalancedQuoteBashMention = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "bash is available
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($unbalancedQuoteBashMention.Code -ne 0) {
+        throw "an unmatched quote with a plain bash mention must not be treated as an unclassified shell invocation:`n$($unbalancedQuoteBashMention.Output)"
+    }
+
     $unclassifiedBashOptionCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   build:

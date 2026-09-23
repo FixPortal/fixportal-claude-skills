@@ -93,7 +93,19 @@ def shell_c_arguments(line):
     try:
         tokens = shlex.split(line)
     except ValueError:
-        return [], bool(re.search(r"\b(?:bash|sh)\b", line, re.IGNORECASE))
+        tokens = [token.strip("'\"") for token in line.split()]
+        separators = {";", "&&", "||", "|"}
+        for index, token in enumerate(tokens):
+            basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            basename = re.sub(r"\.(?:exe|com|cmd|bat)$", "", basename)
+            if basename not in ("bash", "sh"):
+                continue
+            for option in tokens[index + 1 :]:
+                if option in separators:
+                    break
+                if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", option):
+                    return [], True
+        return [], False
     bodies = []
     for index, token in enumerate(tokens):
         basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
