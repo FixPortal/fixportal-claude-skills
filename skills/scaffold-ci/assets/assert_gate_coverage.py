@@ -39,6 +39,7 @@ import json
 import math
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -77,12 +78,8 @@ DIRECTORY_CHANGE = re.compile(
     r"(?:cd|pushd|popd|chdir|Set-Location|Push-Location|Pop-Location|sl)\b",
     re.IGNORECASE,
 )
-SHELL_C_ARGUMENT = re.compile(
-    r"\b(?:bash|sh)\s+(?:(?:--[a-z][\w-]*(?:=\S+)?|-(?:o|O)\s+\S+|-[a-zA-Z]+)\s+)*"
-    r"-[a-zA-Z]*c[a-zA-Z]*\s+(['\"])(.*?)\1",
-    re.IGNORECASE,
-)
-SHELL_C_UNCLASSIFIED = re.compile(r"\b(?:bash|sh)\b[^;&|]*\s-[a-zA-Z]*c[a-zA-Z]*\s", re.IGNORECASE)
+SHELL_ARGUMENT_OPTIONS = {"-o", "-O"}
+SHELL_FLAG_OPTIONS = {"--login", "--noprofile", "--norc", "--posix", "--restricted", "--verbose"}
 COMMAND_SUBSTITUTION = re.compile(r"\$\(([^()]*)\)")
 MESSAGE_COMMAND = re.compile(
     r"(?:^|[;&|]\s*)(?:echo|printf|Write-Output)\b"
@@ -91,22 +88,80 @@ MESSAGE_COMMAND = re.compile(
 )
 
 
+def shell_c_arguments(line):
+    """Return shell `-c` bodies and whether an invocation could not be classified."""
+    try:
+        tokens = shlex.split(line)
+    except ValueError:
+        return [], bool(re.search(r"\b(?:bash|sh)\b", line, re.IGNORECASE))
+    bodies = []
+    for index, token in enumerate(tokens):
+        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() not in ("bash", "sh"):
+            continue
+        cursor = index + 1
+        while cursor < len(tokens):
+            option = tokens[cursor]
+            if option in SHELL_ARGUMENT_OPTIONS:
+                if cursor + 1 >= len(tokens):
+                    return bodies, True
+                cursor += 2
+                continue
+            if option in SHELL_FLAG_OPTIONS or (option.startswith("--") and "=" in option):
+                cursor += 1
+                continue
+            if re.fullmatch(r"-[a-zA-Z]+", option):
+                if "c" in option[1:].lower():
+                    if cursor + 1 >= len(tokens):
+                        return bodies, True
+                    bodies.append(tokens[cursor + 1])
+                    break
+                cursor += 1
+                continue
+            if option.startswith("-"):
+                return bodies, True
+            if any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", later) for later in tokens[cursor + 1 :]):
+                return bodies, True
+            break
+    return bodies, False
+
+
+def mask_quoted_strings(text):
+    result = []
+    quote = None
+    escaped = False
+    for char in text:
+        if quote:
+            result.append(" ")
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+            result.append(" ")
+        else:
+            result.append(char)
+    return "".join(result)
+
+
 def has_directory_change(body):
     """Detect directory changes without treating quoted log messages as commands."""
     for line in body:
         pending = [line]
         while pending:
             candidate = pending.pop()
-            shell_matches = list(SHELL_C_ARGUMENT.finditer(candidate))
-            if SHELL_C_UNCLASSIFIED.search(candidate) and not shell_matches:
+            shell_bodies, unclassified = shell_c_arguments(candidate)
+            if unclassified:
                 return True
-            pending.extend(match.group(2) for match in shell_matches)
+            pending.extend(shell_bodies)
             pending.extend(match.group(1) for match in COMMAND_SUBSTITUTION.finditer(candidate))
-            candidate = SHELL_C_ARGUMENT.sub(" ", candidate)
             candidate = COMMAND_SUBSTITUTION.sub(" ", candidate)
             if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "'\"":
                 candidate = candidate[1:-1]
             candidate = MESSAGE_COMMAND.sub(" ", candidate)
+            candidate = mask_quoted_strings(candidate)
             if DIRECTORY_CHANGE.search(candidate):
                 return True
     return False
