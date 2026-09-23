@@ -990,6 +990,26 @@ jobs:
         throw "a gate script after a multi-line directory change must fail closed:`n$($multiLineCd.Output)"
     }
 
+    $unrelatedCd = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' `
+        @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cd /tmp && do_something_unrelated
+      - run: python scripts/assert-coverage-floor.ps1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($unrelatedCd.Code -ne 0) {
+        throw "a directory change in a step without a gate script must not fail the workflow:`n$($unrelatedCd.Output)"
+    }
+
     $subshellCd = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   build:
