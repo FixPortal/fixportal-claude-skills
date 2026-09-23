@@ -77,7 +77,10 @@ DIRECTORY_CHANGE = re.compile(
     r"(?:cd|pushd|popd|chdir|Set-Location|Push-Location|Pop-Location|sl)\b",
     re.IGNORECASE,
 )
-SHELL_C_ARGUMENT = re.compile(r"\b(?:bash|sh)\s+-c\s+(['\"])(.*?)\1", re.IGNORECASE)
+SHELL_C_ARGUMENT = re.compile(
+    r"\b(?:bash|sh)\s+(?:(?:--[a-z][\w-]*|-[a-zA-Z]+)\s+)*-[a-zA-Z]*c[a-zA-Z]*\s+(['\"])(.*?)\1",
+    re.IGNORECASE,
+)
 COMMAND_SUBSTITUTION = re.compile(r"\$\(([^()]*)\)")
 MESSAGE_COMMAND = re.compile(
     r"(?:^|[;&|]\s*)(?:echo|printf|Write-Output)\b"
@@ -2269,7 +2272,11 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
 
     with open(workflow_path, encoding="utf-8-sig") as handle:
         lines = handle.readlines()
-    if any(re.match(r"^\s*['\"]?BASH_ENV['\"]?\s*:", strip_comment(line)) for line in lines):
+    if any(re.match(
+        r"^\s*(?:['\"]?BASH_ENV['\"]?\s*:|env\s*:\s*\{[^}]*['\"]?BASH_ENV['\"]?\s*:)",
+        strip_comment(line),
+        re.IGNORECASE,
+    ) for line in lines):
         sys.exit(
             f"{workflow_path}: BASH_ENV can load shell functions that override the gate's "
             "accepted exit command. Remove the override or use a separately verified gate shell."

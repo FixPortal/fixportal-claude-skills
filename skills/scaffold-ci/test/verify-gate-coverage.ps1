@@ -1048,6 +1048,25 @@ jobs:
         throw "a quoted BASH_ENV key must fail closed:`n$($quotedBashEnv.Output)"
     }
 
+    $flowBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: {BASH_ENV: /tmp/env.sh}
+    steps:
+      - run: exit 1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($flowBashEnv.Code -eq 0 -or $flowBashEnv.Output -notmatch 'BASH_ENV') {
+        throw "a BASH_ENV key inside a flow-style env mapping must fail closed:`n$($flowBashEnv.Output)"
+    }
+
     $bashCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   build:
@@ -1064,6 +1083,24 @@ jobs:
 '@
     if ($bashCDashC.Code -eq 0 -or $bashCDashC.Output -notmatch 'after a directory change') {
         throw "a directory change inside bash -c must fail closed:`n$($bashCDashC.Output)"
+    }
+
+    $bashLoginCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash -lc 'cd sub; python scripts/assert-coverage-floor.ps1'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashLoginCDashC.Code -eq 0 -or $bashLoginCDashC.Output -notmatch 'after a directory change') {
+        throw "a directory change inside bash -lc must fail closed:`n$($bashLoginCDashC.Output)"
     }
 
     $echoMessage = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' `
@@ -1679,7 +1716,7 @@ jobs:
     }
 
     $localActionUntiered = New-GateActionRepo "name: Probe`nruns: {using: composite, steps: []}" $null '{"version":1,"high":["scripts/**"],"low":[]}'
-    if ($localActionUntiered.Code -eq 0 -or $localActionUntiered.Output -notmatch 'actions/probe/action\.yml') {
+    if ($localActionUntiered.Code -eq 0 -or $localActionUntiered.Output -notmatch 'actions/probe/action\.yml' -or $localActionUntiered.Output -notmatch 'not tiered HIGH') {
         throw "a local action feeding the gate must itself be tiered HIGH:`n$($localActionUntiered.Output)"
     }
 
@@ -1963,7 +2000,12 @@ runs:
         throw "a directory change earlier in a composite run body must fail closed:`n$($compositeCdResult.Output)"
     }
 
-    $reusable = New-GateActionRepo '# unused' $null '{"version":1,"high":[".github/workflows/**"],"low":[]}'
+    $reusable = New-GateActionRepo @'
+name: Probe
+runs:
+  using: composite
+  steps: []
+'@ $null '{"version":1,"high":[".github/workflows/**"],"low":[]}'
     $reusableWorkflowPath = Join-Path $reusable.Repo '.github/workflows/reusable.yml'
     @'
 name: Reusable
@@ -1987,7 +2029,7 @@ jobs:
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $reusable.Repo '.github/workflows/ci.yml') -Encoding utf8
     $reusableResult = Invoke-GateFile -Repo $reusable.Repo
-    if ($reusableResult.Code -eq 0 -or $reusableResult.Output -notmatch 'actions/probe/action\.yml') {
+    if ($reusableResult.Code -eq 0 -or $reusableResult.Output -notmatch 'actions/probe/action\.yml' -or $reusableResult.Output -notmatch 'not tiered HIGH') {
         throw "a local action nested in a gate-fed reusable workflow must be tiered HIGH:`n$($reusableResult.Output)"
     }
 
