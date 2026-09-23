@@ -186,7 +186,8 @@ BLOCK_SCALAR = re.compile(r"^[|>](?:[0-9][+-]?|[+-][0-9]?)?$")
 # "not a workflow, skipped" and counted GREEN -- so a whole workflow's jobs escaped
 # gate coverage on how its key was punctuated. Same fail-OPEN class as the quoted job
 # key below, one level up.
-JOBS_KEY = re.compile(r"""^(?:'jobs'|"jobs"|jobs)\s*:\s*$""")
+JOBS_KEY = re.compile(r"""^(?:'jobs'|"jobs"|jobs)\s*:\s*(?:$|\{)""")
+JOBS_DECL = re.compile(r"""^(?:'jobs'|"jobs"|jobs)\s*:""")
 
 
 def is_block_scalar_header(raw):
@@ -510,8 +511,10 @@ def conditional_jobs(lines, jobs, job_indent):
         if indent is None:
             continue
         job_if = key_pattern(indent, "if")
-        if any(job_if.match(lines[i].rstrip("\r\n")) for i in range(start + 1, end)):
-            conditional.add(job_id)
+        for i in range(start + 1, end):
+            match = job_if.match(lines[i].rstrip("\r\n"))
+            if match and normalise_condition(match.group(1)) not in ("always()", "!cancelled()"):
+                conditional.add(job_id)
     return conditional
 
 
@@ -534,18 +537,14 @@ def tolerant_jobs(lines, jobs, job_indent):
                 body, _ = continuation_lines(lines, i, indent)
                 value = " ".join(strip_comment(line).strip() for line in body)
             value = normalise_condition(value)
-            # A COMPOUND condition survives normalise_condition as itself, so the
-            # membership test alone marked `continue-on-error: ${{ false && x }}`
-            # tolerant -- while static_truth folds the same expression to False, and a
-            # job whose continue-on-error cannot evaluate true tolerates nothing. The
-            # only consumer of this set refuses a tolerant job that feeds the gate, so
-            # the misclassification was a false RED on a legitimate feeder, not a
-            # pass-through. Only a static fold to False is excluded; UNKNOWN stays
-            # tolerant, because an expression this checker cannot fold may still
-            # evaluate true at runtime, and that is the conservative direction.
-            # (CodeRabbit, on an upstream review.) The block-scalar unfold came
-            # from the upstream unit review (2026-09-21): `continue-on-error: >` then
-            # `false` read as the bare header and was counted tolerant all the same.
+            # Two shapes the bare membership test misread, both false REDs on a feeder
+            # that tolerates nothing: a block-scalar spelling (`continue-on-error: >`
+            # then `false`) never unfolded past the header, and a compound like
+            # `${{ false && inputs.allow_failure }}` survives normalisation as itself
+            # while static_truth folds it to False (mirror PR #110;
+            # unit review 2026-09-21). UNKNOWN stays tolerant -- an expression this
+            # checker cannot fold may still evaluate true at runtime, and that is the
+            # conservative direction.
             if value not in ("false", "") and static_truth(value) is not False:
                 tolerant.add(job_id)
                 break
@@ -1179,8 +1178,8 @@ def step_can_fail(block, span, key_indent):
         # compound like `${{ false && inputs.allow_failure }}` normalises to itself but
         # folds to False, and a step whose continue-on-error cannot evaluate true CAN
         # still fail the job. Without the consult the two levels disagreed about the
-        # same expression (upstream unit review, 2026-09-21). UNKNOWN stays
-        # cannot-fail, the conservative direction.
+        # same expression (unit review 2026-09-21). UNKNOWN stays cannot-fail, the
+        # conservative direction.
         if value not in ("false", "") and static_truth(value) is not False:
             return False, "carries `continue-on-error`, so it cannot fail the job"
 
@@ -1234,7 +1233,7 @@ def step_can_fail(block, span, key_indent):
             # `throw "..." # note` inside a `run: |` block was refused outright while the
             # identical bash `exit 1 # note` was accepted and the same pwsh throw written
             # inline passed via strip_inline_comment. A false RED on a gate that does
-            # fail. (An upstream issue, 2026-09.)
+            # fail. (Issue #232.)
             #
             # Located in the MASKED copy, not stripped by a blind re.sub: mask_quoted
             # preserves offsets exactly -- every branch emits as many characters as it
@@ -1527,9 +1526,9 @@ def parse_jobs(workflow_path):
 # opposite error direction from widening an accept-list, which is why it is safe to do
 # and an ACCEPTED_FAILING_FORMS widening was not.
 #
-# Probed on a mini-repo (an upstream issue, 2026-09): `.\scripts\probe.ps1` and
-# `./scripts/probe.PS1` both exited 0 -- green, ungated -- while the POSIX control
-# `./scripts/probe.ps1` exited 1 with "not tiered HIGH".
+# Probed on a mini-repo (issue #230): `.\scripts\probe.ps1` and `./scripts/probe.PS1`
+# both exited 0 -- green, ungated -- while the POSIX control `./scripts/probe.ps1`
+# exited 1 with "not tiered HIGH".
 GATE_SCRIPT = re.compile(
     # The extension set is deliberately closed: these are the gate-script languages
     # supported by the estate checker. Add a new extension here and to the policy
@@ -1550,8 +1549,6 @@ LOCAL_USES = re.compile(r"""^\s*(?:-\s+)?(?:'uses'|"uses"|uses)\s*:\s*['"]?((?:\
 # reusable workflow's (always indented) run: body from being read as metadata. The colon
 # in the pattern is what keeps `runs-on:` from matching.
 RUNS_KEY = re.compile(r"""^(?:'runs'|"runs"|runs)\s*:\s*(.*?)\s*$""")
-
-
 def parse_flow_mapping(text):
     """The depth-1 entries of a `{...}` flow mapping as (key, value) pairs, or None.
 
@@ -1560,11 +1557,11 @@ def parse_flow_mapping(text):
     the decoy first and a regex returned composite, so the real non-composite entry was
     never read -- fail-OPEN. And a naive strip_comment cut a quoted '#'
     (`{main: "x # y", using: ...}`), leaving an unterminated fragment that raised on
-    valid YAML -- a false RED. (CodeRabbit, on the upstream review of this scanner,
-    2026-09.) So quotes are tracked, a '#' opens a comment only outside quotes (after
-    whitespace or at a line start, per the YAML rule), keys may be quoted exactly as
-    key_pattern admits in block style, and a nested flow value is skipped with its own
-    depth walk so its braces never move the outer count.
+    valid YAML -- a false RED. (CodeRabbit, PR #228.) So quotes are tracked, a '#'
+    opens a comment only outside quotes (after whitespace or at a line start, per the
+    YAML rule), keys may be quoted exactly as key_pattern admits in block style, and a
+    nested flow value is skipped with its own depth walk so its braces never move the
+    outer count.
 
     None when the text is not a flow mapping or is unterminated -- the caller then
     raises, because "cannot classify" must never read as "composite".
@@ -1682,10 +1679,10 @@ def resolve_runs_using(lines, target):
       * a block scalar (a multi-line description, an embedded script) holding an
         indented `'using': javascript` line matched BEFORE the real mapping, so a valid
         composite action raised -- a false RED on a healthy action (CodeRabbit,
-        an upstream review);
+        on a consuming repository review);
       * a flow-style `runs: {using: node20, main: index.js}` never matched the
         line-anchored pattern at all, so `using` stayed unset and the non-composite
-        guard was skipped -- fail-OPEN (an upstream issue, 2026-09).
+        guard was skipped -- fail-OPEN (issue #227).
 
     A `runs:` key holding no readable `using` entry RAISES rather than skipping the
     guard: "cannot classify" must never read as "composite". None (no `runs:` at all)
@@ -1704,11 +1701,10 @@ def resolve_runs_using(lines, target):
         # without depth context: `{note: "{using: composite}", using: docker}` returned
         # composite because the decoy sat first -- fail-OPEN -- and the naive
         # strip_comment ahead of it cut a quoted '#', turning valid YAML into an
-        # unterminated fragment that raised -- a false RED. (CodeRabbit, on the upstream
-        # review of this scanner, 2026-09.) The parser reads the RAW text (so a comment
-        # marker inside quotes survives), takes `using` only from a depth-1 key, and
-        # returns None on an unterminated mapping, which falls to the fail-closed raise
-        # below rather than classifying a fragment.
+        # unterminated fragment that raised -- a false RED. (CodeRabbit, PR #228.) The
+        # parser reads the RAW text (so a comment marker inside quotes survives), takes
+        # `using` only from a depth-1 key, and returns None on an unterminated mapping,
+        # which falls to the fail-closed raise below rather than classifying a fragment.
         entries = parse_flow_mapping("\n".join([match.group(1)] + list(lines[start + 1 :])))
         if entries is not None:
             for entry_key, entry_value in entries:
@@ -1735,41 +1731,6 @@ def resolve_runs_using(lines, target):
         f"{target}: `runs:` is present but holds no readable `using:` entry, so whether "
         "the body is composite cannot be verified -- refusing to follow it"
     )
-
-
-def run_payload_indexes(lines):
-    """The line indexes consumed by block-scalar `run:` payloads in `lines`.
-
-    A `run: |` body is SHELL TEXT at workflow indentation, and a LOCAL_USES scan over
-    physical lines cannot tell it from syntax: an indented `uses: ./action` inside the
-    payload -- a heredoc writing an action manifest, say -- matched and read as a local
-    delegation. A missing target was silently ignored, but an EXISTING non-composite one
-    raised the ValueError in delegated_run_bodies and failed gate coverage over a line
-    the workflow never executes as a step. That is a false RED on a correct workflow --
-    the direction that gets a working control deleted to make CI green. (CodeRabbit,
-    an upstream review.)
-
-    Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
-    on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
-    The value test reads the COMMENT-STRIPPED value, exactly as the run-body loops in
-    delegated_run_bodies and gated_run_bodies do -- `run: | # build log` is a real
-    spelling, and BLOCK_SCALAR is anchored.
-    """
-    payloads = set()
-    index = 0
-    while index < len(lines):
-        match = RUN_KEY.match(lines[index])
-        if not match:
-            index += 1
-            continue
-        value = strip_inline_comment(match.group(2)).strip()
-        if BLOCK_SCALAR.match(value):
-            _, following = continuation_lines(lines, index, len(match.group(1)))
-            payloads.update(range(index + 1, following))
-            index = following
-        else:
-            index += 1
-    return payloads
 
 
 def glob_to_regex(pattern):
@@ -1824,8 +1785,43 @@ def policy_root(workflow_path):
     return None
 
 
+def run_payload_indexes(lines):
+    """The line indexes consumed by block-scalar `run:` payloads in `lines`.
+
+    A `run: |` body is SHELL TEXT at workflow indentation, and a LOCAL_USES scan over
+    physical lines cannot tell it from syntax: an indented `uses: ./action` inside the
+    payload -- a heredoc writing an action manifest, say -- matched and read as a local
+    delegation. A missing target was silently ignored, but an EXISTING non-composite one
+    raised the ValueError in delegated_run_bodies and failed gate coverage over a line
+    the workflow never executes as a step. That is a false RED on a correct workflow --
+    the direction that gets a working control deleted to make CI green. (CodeRabbit,
+    PR #110.)
+
+    Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
+    on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
+    The value test reads the COMMENT-STRIPPED value, exactly as the run-body loops in
+    delegated_run_bodies and gated_run_bodies do -- `run: | # build log` is a real
+    spelling, and BLOCK_SCALAR is anchored.
+    """
+    payloads = set()
+    index = 0
+    while index < len(lines):
+        match = RUN_KEY.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        value = strip_inline_comment(match.group(2)).strip()
+        if BLOCK_SCALAR.match(value):
+            _, following = continuation_lines(lines, index, len(match.group(1)))
+            payloads.update(range(index + 1, following))
+            index = following
+        else:
+            index += 1
+    return payloads
+
+
 def delegated_run_bodies(root, ref, visited):
-    """Yield run-body lines from a local composite action or reusable workflow."""
+    """Yield run bodies and their action-level working directories."""
     relative = ref[2:]
     target = root / relative
     if target.is_dir():
@@ -1842,8 +1838,7 @@ def delegated_run_bodies(root, ref, visited):
     lines = target.read_text(encoding="utf-8-sig").splitlines()
     # `using` is resolved INSIDE the `runs:` mapping by resolve_runs_using -- see its
     # docstring. Quoted keys ('using'/"using"/using) are admitted in both block and
-    # flow style, exactly as the whole-file regex admitted them here. (CodeRabbit,
-    # an upstream review.)
+    # flow style, as they were here. (CodeRabbit, PR #110.)
     using = resolve_runs_using(lines, target)
     if using is not None and using != "composite":
         raise ValueError(
@@ -1861,7 +1856,13 @@ def delegated_run_bodies(root, ref, visited):
             body, index = continuation_lines(lines, index, len(match.group(1)))
         else:
             body, index = ([value] if value else []), index + 1
-        yield from body
+        if body:
+            directories = set()
+            for line in lines:
+                workdir = re.match(r"^\s*working-directory\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
+                if workdir:
+                    directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
+            yield body, directories
     payload_indexes = run_payload_indexes(lines)
     for index, line in enumerate(lines):
         if index in payload_indexes:
@@ -1910,15 +1911,16 @@ def gated_run_bodies(lines, jobs, needs, gate_job, root):
             else:
                 body, index = ([value] if value else []), index + 1
             for body_line in body:
-                yield job_id, body_line
+                yield job_id, body_line, body, set()
         payload_indexes = run_payload_indexes(block)
         for index, line in enumerate(block):
             if index in payload_indexes:
                 continue
             match = LOCAL_USES.match(line)
             if match:
-                for body_line in delegated_run_bodies(root, match.group(1), set()):
-                    yield job_id, body_line
+                for delegated_body, directories in delegated_run_bodies(root, match.group(1), set()):
+                    for body_line in delegated_body:
+                        yield job_id, body_line, delegated_body, directories
         pending.extend(job_needs(lines, jobs, job_id, job_indent) - seen)
 
 
@@ -1960,7 +1962,7 @@ def resolve_committed_paths(root, relative):
     # collapses a single dot on construction, so leaving it out was a REGRESSION rather
     # than an unchanged gap. `..` is resolved here too, and a path that climbs above the
     # repository root is refused outright rather than clamped: nothing outside the
-    # checkout is a repo-local gate script. (CodeRabbit, on an upstream review.)
+    # checkout is a repo-local gate script. (CodeRabbit, on the review of this change.)
     parts = []
     climbed = False
     overclimbed = False
@@ -1977,7 +1979,7 @@ def resolve_committed_paths(root, relative):
                 # that actually runs would be omitted from coverage. Fall through to the
                 # filesystem resolution instead; its `is_relative_to` containment check is
                 # what excludes a genuinely external target, and it does so on the real
-                # answer rather than the lexical one. (CodeRabbit, on an upstream review.)
+                # answer rather than the lexical one. (CodeRabbit.)
                 overclimbed = True
                 continue
             parts.pop()
@@ -2008,8 +2010,7 @@ def resolve_committed_paths(root, relative):
             # abandon the path before the filesystem resolution below ever ran -- leaving
             # the repository-root `gate.ps1` the runner actually executes untiered.
             # Fail-open, and invisible to a fixture that creates both targets. The empty
-            # case is re-checked after the climbed block instead. (CodeRabbit, on an
-            # upstream review.)
+            # case is re-checked after the climbed block instead. (CodeRabbit.)
             break
     matches = sorted(
         "/".join(resolved) for path, resolved in candidates if path.is_file()
@@ -2029,7 +2030,7 @@ def resolve_committed_paths(root, relative):
     #
     # Measured before writing this: zero committed symlinks across the estate, so the
     # hazard is unreachable today. It is closed because the cost is a dozen lines and the
-    # direction is fail-open, not because it was observed. (CodeRabbit, on an upstream review.)
+    # direction is fail-open, not because it was observed. (CodeRabbit.)
     if climbed:
         try:
             real = (root / relative).resolve()
@@ -2072,12 +2073,79 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
     disk, by resolve_committed_paths.
     """
     found = {}
-    for job_id, body_line in gated_run_bodies(lines, jobs, needs, gate_job, root):
+    for job_id, body_line, body, delegated_directories in gated_run_bodies(lines, jobs, needs, gate_job, root):
         for match in GATE_SCRIPT.finditer(body_line):
             relative = match.group(1).replace("\\", "/")
-            for committed in resolve_committed_paths(root, relative):
-                found.setdefault(committed, job_id)
+            if any(re.search(r"(?:^|[;&|])\s*(?:cd|pushd|Set-Location)\b", line, re.IGNORECASE) for line in body):
+                sys.exit(f"{root}: cannot verify gate script paths after a directory change in job '{job_id}'; use working-directory:")
+            # Resolve a single job/step working-directory declaration. Multiple values
+            # are ambiguous to this line-oriented parser, so fail closed instead of
+            # silently checking the repository-root spelling.
+            block = job_block(lines, jobs, job_id)
+            directories = set()
+            job_start = jobs[job_id]
+            # Workflow-level lines end at the first job. Values in sibling jobs
+            # cannot affect this command; step-level and job-level values inside this
+            # block can, so retain every plausible path spelling.
+            for line in lines[:min(jobs.values())] + block:
+                workdir = re.match(r"^\s*(?:working-directory)\s*:\s*['\"]?([^\s#'\"]+)", strip_comment(line))
+                if workdir:
+                    directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
+            candidates = {relative} | {directory + "/" + relative for directory in directories if directory}
+            candidates.update(directory + "/" + relative for directory in delegated_directories if directory)
+            for candidate in candidates:
+                for committed in resolve_committed_paths(root, candidate):
+                    found.setdefault(committed, job_id)
+    # Local actions and reusable workflows execute from the PR checkout too. Their
+    # own files therefore need HIGH coverage even when their run bodies contain no
+    # directly named script.
+    job_indent = len(lines[jobs[gate_job]]) - len(lines[jobs[gate_job]].lstrip(" "))
+    pending = list(set(needs) | {gate_job})
+    seen = set()
+    while pending:
+        job_id = pending.pop()
+        if job_id in seen or job_id not in jobs:
+            continue
+        seen.add(job_id)
+        block = job_block(lines, jobs, job_id)
+        payload_indexes = run_payload_indexes(block)
+        for index, line in enumerate(block):
+            match = LOCAL_USES.match(line)
+            if match and index not in payload_indexes and match.group(1).startswith(("./", "$/")):
+                for relative in local_action_paths(root, match.group(1)):
+                    found.setdefault(relative, job_id)
+        pending.extend(job_needs(lines, jobs, job_id, job_indent) - seen)
     return found
+
+
+def local_action_paths(root, ref, visited=None):
+    """Action manifests reachable from a local composite action reference."""
+    if visited is None:
+        visited = set()
+    target = root / ref[2:]
+    if target.is_dir():
+        target = next((target / name for name in ("action.yml", "action.yaml") if (target / name).is_file()), None)
+    if target is None or not target.is_file():
+        return set()
+    target = target.resolve()
+    if target in visited:
+        return set()
+    visited.add(target)
+    try:
+        relative = target.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        sys.exit(f"{root}: local action escapes repository: {ref}")
+    paths = {relative}
+    lines = target.read_text(encoding="utf-8-sig").splitlines()
+    using = resolve_runs_using(lines, target)
+    if using is not None and using != "composite":
+        return paths
+    payload_indexes = run_payload_indexes(lines)
+    for index, line in enumerate(lines):
+        match = LOCAL_USES.match(line) if index not in payload_indexes else None
+        if match and match.group(1).startswith(("./", "$/")):
+            paths.update(local_action_paths(root, match.group(1), visited))
+    return paths
 
 
 def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
@@ -2110,14 +2178,16 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
         # utf-8-sig for the same reason as the workflow reads, and for one more: a BOM
         # makes json.loads raise, which the except below swallows as "no policy" -- so a
         # BOM'd policy file would disable the HIGH-tier assertion silently rather than
-        # noisily. Not named in the upstream issue, which covered the workflow reads; it
-        # is the same one-word defect in the same file and the same fail-open direction.
+        # noisily. Not named in issue #231, which covered the workflow reads; it is the
+        # same one-word defect in the same file and the same fail-open direction.
         policy = json.loads(policy_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         # An unreadable or malformed policy is review-policy-guard.yml's failure to
         # report, and it already does. Duplicating it here would print the same breach
         # twice and, worse, make THIS check the one that fails on a repository whose
         # actual problem is elsewhere.
+        return
+    if not isinstance(policy, dict):
         return
     high = policy.get("high")
     if not isinstance(high, list):
@@ -2157,19 +2227,26 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
     READ AS utf-8-sig. A plain utf-8 read leaves a leading BOM in the first character,
     so `JOBS_KEY` -- anchored at `^` -- never matched a BOM'd file's `jobs:` line, and
     Windows editors add BOMs silently. The consequence split on invocation mode and was
-    bad in both directions: in FILE mode (how these workflows wire this) the file exited
-    1 with "no jobs found", a permanently red required check over a valid workflow; in
+    bad in both directions: in FILE mode (how the estate wires this) the file exited 1
+    with "no jobs found", a permanently red required check over a valid workflow; in
     DIRECTORY mode it was written off as "not a workflow, skipped" and every job in it
     escaped coverage. A checker must not disagree with the runner about whether a file
     is a workflow. The canonical-asset hasher already tolerates a BOM, so the two now
-    agree. (An upstream issue, 2026-09, probed in both modes.)
+    agree. (Issue #231, probed both modes.)
     """
 
     with open(workflow_path, encoding="utf-8-sig") as handle:
         lines = handle.readlines()
+    if any(re.match(r"^\s*BASH_ENV\s*:", strip_comment(line)) for line in lines):
+        sys.exit(
+            f"{workflow_path}: BASH_ENV can load shell functions that override the gate's "
+            "accepted exit command. Remove the override or use a separately verified gate shell."
+        )
     jobs, needs, conditional = read_gate_contract(lines, gate_job)
 
     if not jobs:
+        if any(JOBS_DECL.match(strip_comment(line).rstrip()) for line in lines):
+            sys.exit(f"{workflow_path}: flow-style or empty 'jobs' mapping is unsupported; refusing to skip coverage.")
         if on_empty == "skip":
             return None
         sys.exit(f"{workflow_path}: no jobs found -- refusing to report coverage over nothing.")
@@ -2185,6 +2262,38 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
             f"{workflow_path}: not gated by '{gate_job}': {', '.join(missing)}.\n"
             f"Add each to the '{gate_job}' needs: list, or to GATE_EXEMPT if it is "
             "deliberately not merge-blocking."
+        )
+
+    # A feeder can be skipped transitively when it depends on a conditional or
+    # explicitly exempt job. Since the gate treats skipped as success, require an
+    # always-running condition on that feeder before accepting the chain.
+    unsafe_feeders = set()
+    for feeder in set(needs) - {gate_job}:
+        feeder_start = jobs[feeder]
+        feeder_end = min((i for i in jobs.values() if i > feeder_start), default=len(lines))
+        feeder_indent = job_body_indent(lines, jobs, feeder, job_indent)
+        feeder_if = key_pattern(feeder_indent, "if") if feeder_indent is not None else None
+        condition = next((normalise_condition(match.group(1))
+                          for i in range(feeder_start + 1, feeder_end)
+                          if feeder_if and (match := feeder_if.match(lines[i].rstrip("\r\n")))), "")
+        if condition in ("always()", "!cancelled()"):
+            continue
+        pending = list(job_needs(lines, jobs, feeder, job_indent))
+        visited = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in visited or dependency not in jobs:
+                continue
+            visited.add(dependency)
+            if dependency in exempt or dependency in conditional:
+                unsafe_feeders.add(feeder)
+            pending.extend(job_needs(lines, jobs, dependency, job_indent) - visited)
+    if unsafe_feeders:
+        sys.exit(
+            f"{workflow_path}: gate feeder dependency chain reaches conditional or exempt "
+            f"job(s): {', '.join(sorted(unsafe_feeders))}. A skipped feeder passes the gate; "
+            "add `if: always()` or `if: !cancelled()` to the dependent feeder, or remove "
+            "the unsafe dependency."
         )
 
     # The gate counts `skipped` as a pass, so a job feeding it must be unconditional:
@@ -2259,6 +2368,7 @@ def main(argv):
     files = sorted(
         path.as_posix()
         for path in list(Path(target).glob("*.yml")) + list(Path(target).glob("*.yaml"))
+        if path.is_file()
     )
     if not files:
         sys.exit(f"{target}: no workflow files found -- refusing to report coverage over nothing.")

@@ -1181,7 +1181,7 @@ jobs:
     # matched, and because the target exists and is non-composite the traversal raised
     # its ValueError -- a false RED on a workflow that never delegates. Payload lines
     # are now excluded from both LOCAL_USES scans. (Second finding, same review.)
-    function New-GateActionRepo([string] $actionContent, [string] $workflowYaml) {
+    function New-GateActionRepo([string] $actionContent, [string] $workflowYaml, [string] $highPaths = '["scripts/**","actions/**"]') {
         # The policy is load-bearing: assert_gate_scripts returns early when no
         # review-policy.json is readable, and gate_script_paths -- where the LOCAL_USES
         # traversal lives -- is only reached behind that read. Without it the
@@ -1192,7 +1192,7 @@ jobs:
         $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
-        '{"version":1,"high":["scripts/**"],"low":[]}' |
+        ('{"version":1,"high":' + $highPaths + ',"low":[]}') |
             Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
         New-Item -ItemType Directory -Path (Join-Path $repo 'actions' 'probe') -Force | Out-Null
         $actionContent | Set-Content -LiteralPath (Join-Path $repo 'actions' 'probe' 'action.yml') -Encoding utf8
@@ -1230,6 +1230,14 @@ runs:
   using: node20
   main: index.js
 '@
+
+    $localActionUntiered = New-GateActionRepo @'
+name: Probe
+runs: {using: composite, steps: []}
+'@ $null '["scripts/**"]'
+    if ($localActionUntiered.Code -eq 0 -or $localActionUntiered.Output -notmatch 'actions/probe/action\.yml') {
+        throw "a local action feeding the gate must itself be tiered HIGH:`n$($localActionUntiered.Output)"
+    }
 
     $payloadUses = New-GateActionRepo $nonCompositeAction @'
 jobs:
