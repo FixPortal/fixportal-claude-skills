@@ -1112,6 +1112,24 @@ jobs:
         throw "a directory change inside bash with a separate option argument must fail closed:`n$($bashOptionArgumentCDashC.Output)"
     }
 
+    $bashExeCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - run: bash.exe -c 'cd sub; python scripts/assert-coverage-floor.ps1'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashExeCDashC.Code -eq 0 -or $bashExeCDashC.Output -notmatch 'after a directory change') {
+        throw "a directory change inside bash.exe -c must fail closed:`n$($bashExeCDashC.Output)"
+    }
+
     $unclassifiedBashOptionCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   build:
