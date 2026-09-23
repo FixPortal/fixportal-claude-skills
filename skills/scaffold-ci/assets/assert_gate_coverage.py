@@ -96,7 +96,9 @@ def shell_c_arguments(line):
         return [], bool(re.search(r"\b(?:bash|sh)\b", line, re.IGNORECASE))
     bodies = []
     for index, token in enumerate(tokens):
-        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() not in ("bash", "sh"):
+        basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        basename = re.sub(r"\.(?:exe|com|cmd|bat)$", "", basename)
+        if basename not in ("bash", "sh"):
             continue
         cursor = index + 1
         while cursor < len(tokens):
