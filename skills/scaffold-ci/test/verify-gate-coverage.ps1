@@ -1730,7 +1730,7 @@ jobs:
     # The whole-file search this pins against matched the first `using:`-shaped line
     # ANYWHERE in the action file, which is wrong in both directions: a block scalar
     # holding an indented `'using': javascript` line matched BEFORE the real runs:
-    # mapping and reddened a valid COMPOSITE action (CodeRabbit, fixportal-fixatdl#148),
+    # mapping and reddened a valid COMPOSITE action (CodeRabbit review),
     # and a flow-style `runs: {using: node20, ...}` never matched the line-anchored
     # pattern at all, so the non-composite guard was silently skipped -- fail-open
     # (issue #227).
@@ -1786,7 +1786,7 @@ jobs:
     # 1. The block-scalar false match. The description's payload holds an indented
     #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
     #    matched it first and raised on a valid composite action -- a false RED on a
-    #    healthy action. (CodeRabbit, fixportal-fixatdl#148.) The composite body invokes
+    #    healthy action. (CodeRabbit review.) The composite body invokes
     #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
     #    the action being silently skipped.
     $blockScalarUsing = New-GateActionRepo @'
@@ -1887,7 +1887,7 @@ runs: {'using': composite, steps: []}
     }
 
     # --- Tolerance folding and run-payload traversal (back-ported from the mirror's
-    #     fixportal-claude-skills#110 fixes; the two level-consistency findings are from
+    #     mirror fixes; the two level-consistency findings are from
     #     the 2026-09-21 unit review) ---
 
     # 4. A STATICALLY FALSE continue-on-error tolerates nothing, at EITHER level, but
@@ -1990,7 +1990,7 @@ jobs:
     #    LOCAL_USES scan ran over physical lines, so the heredoc below matched -- and
     #    with the target on disk and non-composite, the traversal raised its ValueError:
     #    a false RED on a workflow that never delegates. Payload lines are now excluded
-    #    from both LOCAL_USES scans (mirror fixportal-claude-skills#110).
+    #    from both LOCAL_USES scans (mirror follow-up).
     $nonCompositeAction = @'
 name: Probe
 runs:
