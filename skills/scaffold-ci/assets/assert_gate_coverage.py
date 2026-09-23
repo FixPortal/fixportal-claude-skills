@@ -2105,6 +2105,9 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
     found = {}
     directory_cache = {}
     for job_id, body_line, body, delegated_directories in gated_run_bodies(lines, jobs, needs, gate_job, root):
+        matches = list(GATE_SCRIPT.finditer(body_line))
+        if not matches:
+            continue
         if has_directory_change(body):
             sys.exit(f"{root}: cannot verify gate script paths after a directory change in job '{job_id}'; use working-directory:")
         if job_id not in directory_cache:
@@ -2117,7 +2120,7 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
                 if workdir:
                     directories.add(workdir.group(1).replace("\\", "/").rstrip("/"))
             directory_cache[job_id] = directories
-        for match in GATE_SCRIPT.finditer(body_line):
+        for match in matches:
             relative = match.group(1).replace("\\", "/")
             directories = directory_cache[job_id]
             candidates = {relative} | {directory + "/" + relative for directory in directories if directory}
