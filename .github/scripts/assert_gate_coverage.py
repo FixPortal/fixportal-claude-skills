@@ -75,7 +75,7 @@ CONDITION_REFINEMENT = re.compile(rf"needs\.({ID})\.result!=['\"]skipped['\"]")
 BACKSLASH = "\\"
 DIRECTORY_CHANGE = re.compile(
     r"(?:^|[;&|(){}`]|\$\(|\b(?:then|do|else|if|elif|while|until)\b|!)\s*"
-    r"(?:cd|pushd|popd|chdir|Set-Location|Push-Location|Pop-Location|sl)\b",
+    r"(?:cd|pushd|popd|chdir|Set-Location|Push-Location|Pop-Location|sl)\b(?!\.\w)",
     re.IGNORECASE,
 )
 SHELL_ARGUMENT_OPTIONS = {"-o", "-O"}
@@ -90,6 +90,7 @@ MESSAGE_COMMAND = re.compile(
 
 def shell_c_arguments(line):
     """Return shell `-c` bodies and whether an invocation could not be classified."""
+    bodies = []
     try:
         tokens = shlex.split(line)
     except ValueError:
@@ -98,19 +99,30 @@ def shell_c_arguments(line):
         for index, token in enumerate(tokens):
             basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
             basename = re.sub(r"\.(?:exe|com|cmd|bat)$", "", basename)
-            if basename not in ("bash", "sh"):
+            if basename not in ("bash", "sh", "pwsh", "powershell"):
                 continue
-            for option in tokens[index + 1 :]:
+            for option_index, option in enumerate(tokens[index + 1 :], start=index + 1):
                 if option in separators:
                     break
-                if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", option):
+                if not option.startswith("-"):
+                    break
+                if basename in ("pwsh", "powershell") and (
+                    option.lower() in ("-encodedcommand", "-enc", "-ec", "-e")
+                    or re.fullmatch(r"-[a-z]*c[a-z]*", option, re.IGNORECASE)
+                ):
                     return [], True
-        return [], False
-    bodies = []
+                if basename in ("bash", "sh") and re.fullmatch(
+                    r"-[a-z]*c[a-z]*", option, re.IGNORECASE
+                ):
+                    if option_index + 1 >= len(tokens):
+                        return [], True
+                    bodies.append(" ".join(tokens[option_index + 1 :]))
+                    break
+        return bodies, False
     for index, token in enumerate(tokens):
         basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         basename = re.sub(r"\.(?:exe|com|cmd|bat)$", "", basename)
-        if basename not in ("bash", "sh"):
+        if basename not in ("bash", "sh", "pwsh", "powershell"):
             continue
         cursor = index + 1
         while cursor < len(tokens):
@@ -123,6 +135,17 @@ def shell_c_arguments(line):
             if option in SHELL_FLAG_OPTIONS or (option.startswith("--") and "=" in option):
                 cursor += 1
                 continue
+            if basename in ("pwsh", "powershell") and option.lower() in (
+                "-encodedcommand", "-enc", "-ec", "-e"
+            ):
+                return bodies, True
+            if basename in ("pwsh", "powershell") and option.lower().startswith("-workingdirectory"):
+                return bodies, True
+            if option.lower() in ("-command", "-c"):
+                if cursor + 1 >= len(tokens):
+                    return bodies, True
+                bodies.append(" ".join(tokens[cursor + 1 :]))
+                break
             if re.fullmatch(r"-[a-zA-Z]+", option):
                 if "c" in option[1:].lower():
                     if cursor + 1 >= len(tokens):
@@ -132,8 +155,6 @@ def shell_c_arguments(line):
                 cursor += 1
                 continue
             if option.startswith("-"):
-                return bodies, True
-            if any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", later) for later in tokens[cursor + 1 :]):
                 return bodies, True
             break
     return bodies, False
@@ -435,7 +456,7 @@ def strip_comment(line):
 
 def working_directory_value(line):
     """Return a working-directory value, or fail closed on a form we cannot resolve."""
-    key = re.match(r"^\s*(?:-\s*)?working-directory\s*:\s*(.*)$", line.rstrip())
+    key = re.match(r"^\s*(?:-\s*)?(?:'working-directory'|\"working-directory\"|working-directory)\s*:\s*(.*)$", line.rstrip())
     if not key:
         return None
     value = key.group(1).strip()
@@ -451,7 +472,34 @@ def working_directory_value(line):
             sys.exit("cannot verify gate script paths with an unresolved working-directory expression")
         return unquoted
     sys.exit("cannot verify gate script paths with an unsupported working-directory value")
-    return None
+
+
+def working_directory_lines(lines):
+    """Yield working-directory keys only in defaults.run or step mappings."""
+    payload = run_payload_indexes(lines)
+    stack = []
+    candidates = []
+    for index, line in enumerate(lines):
+        if index in payload:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        if re.match(r"^\s*(?:-\s*)?(?:'working-directory'|\"working-directory\"|working-directory)\s*:", line):
+            parents = [name for _, name in stack]
+            in_defaults = len(parents) >= 2 and parents[-2:] == ["defaults", "run"]
+            step_index = len(parents) - 1 - parents[::-1].index("steps") if "steps" in parents else -1
+            step_parent = parents[step_index + 1 :]
+            step_fields = {"name", "id", "if", "uses", "run", "shell", "continue-on-error", "timeout-minutes"}
+            in_step = step_index >= 0 and (not step_parent or (len(step_parent) == 1 and step_parent[0] in step_fields))
+            if in_defaults or in_step:
+                candidates.append(line)
+        key = re.match(r"^\s*(?:-\s*)?(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][\w-]*))\s*:\s*(.*)$", line)
+        if key:
+            name = next(value for value in key.groups()[:3] if value is not None)
+            if not key.group(4).strip() or name in ("defaults", "run", "steps", "with", "inputs"):
+                stack.append((indent, name))
+    return candidates
 
 
 def inline_mapping_has_key(text, wanted):
@@ -530,6 +578,102 @@ def has_inline_bash_env(lines):
             if not remaining:
                 sys.exit("cannot verify an unterminated inline env mapping")
             mapping += "\n" + remaining.pop(0)
+    return False
+
+
+def writes_bash_env_to_github_env(body):
+    assignment = re.compile(r"\bBASH_ENV\s*=", re.IGNORECASE)
+    environment_file = re.compile(r"\$(?:\{GITHUB_ENV\}|GITHUB_ENV|env:GITHUB_ENV)", re.IGNORECASE)
+
+    def writes_environment_file(tokens):
+        return any(
+            token in (">", ">>", "&>", "&>>")
+            and index + 1 < len(tokens)
+            and environment_file.search(tokens[index + 1])
+            for index, token in enumerate(tokens)
+        ) or any(
+            token.lower() in ("tee", "add-content", "set-content", "out-file")
+            and any(environment_file.search(argument) for argument in tokens[index + 1 :])
+            for index, token in enumerate(tokens)
+        )
+
+    def line_writes_environment_file(line):
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            commands = [[]]
+            for token in lexer:
+                if token in (";", "&", "&&", "||"):
+                    commands.append([])
+                else:
+                    commands[-1].append(token)
+        except ValueError:
+            return bool(
+                assignment.search(line)
+                and environment_file.search(line)
+                and re.search(r"(?:>>?|&>>?)\s*[\"']?\$(?:\{GITHUB_ENV\}|GITHUB_ENV|env:GITHUB_ENV)", line, re.IGNORECASE)
+            )
+        return any(
+            any(assignment.search(token) for token in command)
+            and writes_environment_file(command)
+            for command in commands
+        )
+
+    def group_writes_environment_file(commands, redirect):
+        target = re.match(r'''\s*(?:"([^"]*)"|'([^']*)'|([^\s;|&]+))''', redirect or "")
+        if not target:
+            return False
+        destination = next(value for value in target.groups() if value is not None)
+        return bool(assignment.search(commands) and environment_file.search(destination))
+
+    heredoc = None
+    grouped_write = None
+    for line in body:
+        if grouped_write is not None:
+            closing = re.search(r"(?:^|\s)\}\s*(?:(>>|>)\s*(.*?)\s*)?$", line)
+            if closing:
+                commands = "\n".join(grouped_write + [line[: closing.start()]])
+                redirect_hit = closing.group(1) and group_writes_environment_file(
+                    commands, closing.group(2)
+                )
+                if redirect_hit:
+                    return True
+                grouped_write = None
+            else:
+                if line_writes_environment_file(line):
+                    return True
+                grouped_write.append(line)
+            continue
+        if heredoc:
+            if assignment.search(line):
+                return True
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        if line_writes_environment_file(line):
+            return True
+        marker = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            tokens = []
+        if marker and writes_environment_file(tokens):
+            heredoc = marker.group(2)
+            continue
+        opening = re.search(r"(?:^|\s)\{\s*", line)
+        if opening:
+            commands = line[opening.end() :]
+            closing = re.search(r"(?:^|\s)\}\s*(?:(>>|>)\s*(.*?)\s*)?$", commands)
+            if closing:
+                if (
+                    closing.group(1)
+                    and group_writes_environment_file(commands[: closing.start()], closing.group(2))
+                ):
+                    return True
+            else:
+                grouped_write = [commands]
     return False
 
 
@@ -1992,6 +2136,14 @@ def policy_root(workflow_path):
     return None
 
 
+def repository_root(workflow_path):
+    """Repository root, including repos that have not adopted review-policy.json."""
+    return policy_root(workflow_path) or next(
+        (parent for parent in Path(workflow_path).resolve().parents if (parent / ".git").exists()),
+        None,
+    )
+
+
 def run_payload_indexes(lines):
     """The line indexes consumed by block-scalar `run:` payloads in `lines`.
 
@@ -2027,8 +2179,8 @@ def run_payload_indexes(lines):
     return payloads
 
 
-def delegated_run_bodies(root, ref, visited):
-    """Yield run bodies and their action-level working directories."""
+def delegated_run_bodies(root, ref, visited, *, skip_non_composite=False):
+    """Yield run bodies and candidate action working-directory lines."""
     relative = ref[2:]
     target = root / relative
     if target.is_dir():
@@ -2043,11 +2195,14 @@ def delegated_run_bodies(root, ref, visited):
     # BOM'd local action manifest would otherwise read as having no `runs:` mapping,
     # and its delegated body would escape the scan entirely.
     lines = target.read_text(encoding="utf-8-sig").splitlines()
+    directory_lines = working_directory_lines(lines)
     # `using` is resolved INSIDE the `runs:` mapping by resolve_runs_using -- see its
     # docstring. Quoted keys ('using'/"using"/using) are admitted in both block and
     # flow style, as they were here. (CodeRabbit review.)
     using = resolve_runs_using(lines, target)
     if using is not None and using != "composite":
+        if skip_non_composite:
+            return
         raise ValueError(
             f"{target}: local action uses runs.using {using}; "
             "gate coverage only follows composite action bodies"
@@ -2064,22 +2219,19 @@ def delegated_run_bodies(root, ref, visited):
         else:
             body, index = ([value] if value else []), index + 1
         if body:
-            directories = set()
-            for line in lines:
-                workdir = working_directory_value(line)
-                if workdir:
-                    directories.add(workdir.replace("\\", "/").rstrip("/"))
-            yield body, directories
+            yield body, directory_lines
     payload_indexes = run_payload_indexes(lines)
     for index, line in enumerate(lines):
         if index in payload_indexes:
             continue
         match = LOCAL_USES.match(line)
         if match:
-            yield from delegated_run_bodies(root, match.group(1), visited)
+            yield from delegated_run_bodies(
+                root, match.group(1), visited, skip_non_composite=skip_non_composite
+            )
 
 
-def gated_run_bodies(lines, jobs, needs, gate_job, root):
+def gated_run_bodies(lines, jobs, needs, gate_job, root, *, skip_non_composite=False):
     """Every `run:` body line belonging to a job that can fail the gate, with its job id.
 
     Scoped to the gate's `needs:` plus the gate job itself, because that is exactly the
@@ -2125,7 +2277,9 @@ def gated_run_bodies(lines, jobs, needs, gate_job, root):
                 continue
             match = LOCAL_USES.match(line)
             if match:
-                for delegated_body, directories in delegated_run_bodies(root, match.group(1), set()):
+                for delegated_body, directories in delegated_run_bodies(
+                    root, match.group(1), set(), skip_non_composite=skip_non_composite
+                ):
                     for body_line in delegated_body:
                         yield job_id, body_line, delegated_body, directories
         pending.extend(job_needs(lines, jobs, job_id, job_indent) - seen)
@@ -2281,7 +2435,7 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
     """
     found = {}
     directory_cache = {}
-    for job_id, body_line, body, delegated_directories in gated_run_bodies(lines, jobs, needs, gate_job, root):
+    for job_id, body_line, body, delegated_directory_lines in gated_run_bodies(lines, jobs, needs, gate_job, root):
         matches = list(GATE_SCRIPT.finditer(body_line))
         if not matches:
             continue
@@ -2292,11 +2446,16 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
             directories = set()
             # Workflow-level and job/step working-directory values are candidates;
             # this line-oriented parser conservatively checks their union.
-            for line in lines[:min(jobs.values())] + block:
+            for line in working_directory_lines(lines[:min(jobs.values())] + block):
                 workdir = working_directory_value(line)
                 if workdir:
                     directories.add(workdir.replace("\\", "/").rstrip("/"))
             directory_cache[job_id] = directories
+        delegated_directories = set()
+        for line in delegated_directory_lines:
+            workdir = working_directory_value(line)
+            if workdir:
+                delegated_directories.add(workdir.replace("\\", "/").rstrip("/"))
         for match in matches:
             relative = match.group(1).replace("\\", "/")
             directories = directory_cache[job_id]
@@ -2446,15 +2605,6 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
 
     with open(workflow_path, encoding="utf-8-sig") as handle:
         lines = handle.readlines()
-    if has_inline_bash_env(lines) or any(re.match(
-        r"^\s*(?:['\"]?BASH_ENV['\"]?\s*:|env\s*:\s*\{[^}]*['\"]?BASH_ENV['\"]?\s*:)",
-        strip_comment(line),
-        re.IGNORECASE,
-    ) for line in lines):
-        sys.exit(
-            f"{workflow_path}: BASH_ENV can load shell functions that override the gate's "
-            "accepted exit command. Remove the override or use a separately verified gate shell."
-        )
     jobs, needs, conditional = read_gate_contract(lines, gate_job)
 
     if not jobs:
@@ -2465,6 +2615,28 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
         sys.exit(f"{workflow_path}: no jobs found -- refusing to report coverage over nothing.")
     if gate_job not in jobs:
         return False
+
+    if has_inline_bash_env(lines) or any(re.match(
+        r"^\s*(?:['\"]?BASH_ENV['\"]?\s*:|env\s*:\s*\{[^}]*['\"]?BASH_ENV['\"]?\s*:)",
+        strip_comment(line),
+        re.IGNORECASE,
+    ) for line in lines):
+        sys.exit(
+            f"{workflow_path}: BASH_ENV can load shell functions that override the gate's "
+            "accepted exit command. Remove the override or use a separately verified gate shell."
+        )
+
+    repository = repository_root(workflow_path)
+    if repository is not None and any(
+        writes_bash_env_to_github_env(body)
+        for _, _, body, _ in gated_run_bodies(
+            lines, jobs, needs, gate_job, repository, skip_non_composite=True
+        )
+    ):
+        sys.exit(
+            f"{workflow_path}: a gate job or feeder writes BASH_ENV to GITHUB_ENV, which can "
+            "load shell functions that override the gate's accepted exit command."
+        )
 
     gate_line = lines[jobs[gate_job]]
     job_indent = len(gate_line) - len(gate_line.lstrip(" "))
