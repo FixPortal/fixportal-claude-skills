@@ -1372,6 +1372,9 @@ jobs:
                           'echo $(bash -c "cd sub; python3 scripts/gate.py")',
                           'echo `cd sub; python3 scripts/gate.py`',
                           'cd>cd.log; python3 scripts/gate.py',
+                          'cd$X; python3 scripts/gate.py',
+                          'cd${SUB}; python3 scripts/gate.py',
+                          'cd$(printf " sub"); python3 scripts/gate.py',
                           "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $r = New-FollowupRepo @{
             'scripts/gate.py'          = '# probe'
