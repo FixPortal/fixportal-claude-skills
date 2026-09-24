@@ -1117,6 +1117,117 @@ jobs:
         throw "quoted delimiters must not hide BASH_ENV in a flow-style env mapping:`n$($quotedFlowBashEnv.Output)"
     }
 
+    $gateEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'BASH_ENV=/tmp/env.sh' >> "$GITHUB_ENV"
+'@
+    if ($gateEnvWrite.Code -eq 0 -or $gateEnvWrite.Output -notmatch 'BASH_ENV') {
+        throw "a gate job writing BASH_ENV to GITHUB_ENV must fail closed"
+    }
+
+    $feederEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "BASH_ENV=/tmp/env.sh" | tee -a "$GITHUB_ENV"
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($feederEnvWrite.Code -eq 0 -or $feederEnvWrite.Output -notmatch 'BASH_ENV') {
+        throw "a feeder pipeline writing BASH_ENV to GITHUB_ENV must fail closed"
+    }
+
+    $groupedEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {
+            echo "BASH_ENV=/tmp/env.sh"
+          } >> "$GITHUB_ENV"
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($groupedEnvWrite.Code -eq 0 -or $groupedEnvWrite.Output -notmatch 'BASH_ENV') {
+        throw "a grouped feeder write of BASH_ENV to GITHUB_ENV must fail closed"
+    }
+
+    $envMentionWithoutWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "BASH_ENV=/tmp/env.sh" "$GITHUB_ENV"
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($envMentionWithoutWrite.Code -ne 0) {
+        throw "printing BASH_ENV and GITHUB_ENV without writing must not be rejected"
+    }
+
+    $printedTeeBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: printf 'BASH_ENV=/tmp/env.sh' tee "$GITHUB_ENV"
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($printedTeeBashEnv.Code -ne 0) {
+        throw "the word tee in printf arguments must not be treated as a GITHUB_ENV write"
+    }
+
+    $separateHeredocWriter = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'EOF' > /tmp/heredoc.txt; echo SAFE=1 >> "$GITHUB_ENV"
+          BASH_ENV=/tmp/env.sh
+          EOF
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($separateHeredocWriter.Code -ne 0) {
+        throw "a separate GITHUB_ENV writer must not persist a BASH_ENV heredoc sent to another file"
+    }
+
     $bashOptionArgumentCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   build:
