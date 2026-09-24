@@ -1383,6 +1383,7 @@ jobs:
                          'echo "cd scripts/gate.py is required for setup"',
                          'echo "$(date)"; echo "cd scripts/gate.py is deprecated"',
                          'echo then cd sub; python3 scripts/gate.py',
+                         'echo hi! cd sub; python3 scripts/gate.py',
                          'bash -c "echo then cd sub; python3 scripts/gate.py"',
                          'printf "cd scripts is deprecated, use scripts/gate.py instead\n"') {
         $r = New-FollowupRepo @{
