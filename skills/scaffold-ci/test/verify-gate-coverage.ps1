@@ -1363,7 +1363,10 @@ jobs:
     # Adjacent quoted spans are ONE shell argument, and a command substitution runs even
     # inside a printed string: both still change directory before the gate script.
     foreach ($spelling in 'bash -c "cd sub; "''python3 scripts/gate.py''',
-                          'echo "$(cd sub; python3 scripts/gate.py)"') {
+                          'echo "$(cd sub; python3 scripts/gate.py)"',
+                          'echo "cd sub; python3 scripts/gate.py" | bash',
+                          'echo $(bash -c "cd sub; python3 scripts/gate.py")',
+                          "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $r = New-FollowupRepo @{
             'scripts/gate.py'          = '# probe'
             'sub/scripts/gate.py'      = '# probe'
