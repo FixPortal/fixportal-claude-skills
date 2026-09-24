@@ -1273,6 +1273,114 @@ jobs:
         }
     }
 
+    # --- Follow-up batch: gate-checker coverage gaps and false failures ------------------
+    # Self-contained: every fixture file is written BEFORE the checker runs, which the
+    # action-path case needs (its script sits beside action.yml).
+    function New-FollowupRepo([hashtable] $files, [string] $policy) {
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        $policy | Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
+        foreach ($relative in $files.Keys) {
+            $full = Join-Path $repo $relative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force | Out-Null
+            $files[$relative] | Set-Content -LiteralPath $full -Encoding utf8
+        }
+        $outputPath = Join-Path $repo 'output.txt'
+        & $python.Source -S $script (Join-Path $repo '.github/workflows/ci.yml') *> $outputPath
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = Get-Content -LiteralPath $outputPath -Raw }
+    }
+    $followupGate = @'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    $followupPolicy = '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}'
+
+    # A composite action running its own script through the action path: the script must
+    # be tiered HIGH.
+    foreach ($spelling in '"${{ github.action_path }}/scripts/gate.sh"', '"$GITHUB_ACTION_PATH/scripts/gate.sh"') {
+        $r = New-FollowupRepo @{
+            'actions/probe/action.yml'        = "name: Probe`nruns:`n  using: composite`n  steps:`n    - shell: bash`n      run: $spelling"
+            'actions/probe/scripts/gate.sh'   = '# probe'
+            '.github/workflows/ci.yml'        = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - uses: ./actions/probe`n$followupGate"
+        } '{"version":1,"high":["actions/probe/action.yml"],"low":[]}'
+        if ($r.Code -eq 0 -or $r.Output -notmatch 'actions/probe/scripts/gate\.sh') {
+            throw "a script run through the action path ($spelling) must be tiered HIGH:`n$($r.Output)"
+        }
+    }
+
+    # A flush `- working-directory:` as the step's first key scopes the gate script.
+    $r = New-FollowupRepo @{
+        'sub/scripts/gate.py'      = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n    - working-directory: sub`n      run: python3 scripts/gate.py`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'sub/scripts/gate\.py') {
+        throw "a dash-form working-directory must locate the gate script it scopes:`n$($r.Output)"
+    }
+
+    # A sibling step's working-directory adds no candidate path...
+    $r = New-FollowupRepo @{
+        'scripts/gate.py'          = '# probe'
+        'other/scripts/gate.py'    = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - name: unrelated`n        working-directory: other`n        run: ls`n      - run: python3 scripts/gate.py`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -ne 0) { throw "a sibling step's working-directory must not require an unrelated file HIGH:`n$($r.Output)" }
+    # ...while a job-level defaults.run.working-directory still applies.
+    $r = New-FollowupRepo @{
+        'app/scripts/gate.py'      = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    defaults:`n      run:`n        working-directory: app`n    steps:`n      - run: python3 scripts/gate.py`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'app/scripts/gate\.py') {
+        throw "a job-level defaults.run.working-directory must still apply to its steps:`n$($r.Output)"
+    }
+
+    # A quoted '; cd' in message text is not a directory change...
+    $r = New-FollowupRepo @{
+        'scripts/gate.py'          = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          echo `"step1; cd scripts is deprecated`"`n          python3 scripts/gate.py`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -ne 0) { throw "a quoted '; cd' in message text must not read as a directory change:`n$($r.Output)" }
+    # ...but a quoted command string that changes directory and runs the script is.
+    $r = New-FollowupRepo @{
+        'scripts/gate.py'          = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: bash -c `"cd sub; python3 scripts/gate.py`"`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'directory change') {
+        throw "a quoted command string that changes directory before a gate script must fail closed:`n$($r.Output)"
+    }
+
+    # A BASH_ENV: line inside a run body is shell text; a real env key still fails.
+    $r = Invoke-Gate "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          cat <<'EOF' > notes.yml`n          BASH_ENV: documented-here-only`n          EOF`n$followupGate"
+    if ($r.Code -ne 0) { throw "a BASH_ENV: line inside a run body must not trip the env-key guard:`n$($r.Output)" }
+    $r = Invoke-Gate "jobs:`n  build:`n    runs-on: ubuntu-latest`n    env:`n      BASH_ENV: /tmp/override`n    steps:`n      - run: echo build`n$followupGate"
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'BASH_ENV') { throw "a real BASH_ENV env key must still fail:`n$($r.Output)" }
+
+    # Directory mode: a file-exempt workflow with no gate job is not subject to the
+    # gate's BASH_ENV rule.
+    $dirMode = Join-Path $root ('dir-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dirMode | Out-Null
+    "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo build`n$followupGate" | Set-Content -LiteralPath (Join-Path $dirMode 'ci.yml') -Encoding utf8
+    "jobs:`n  release:`n    runs-on: ubuntu-latest`n    env:`n      BASH_ENV: /tmp/release-env`n    steps:`n      - run: echo release" | Set-Content -LiteralPath (Join-Path $dirMode 'release.yml') -Encoding utf8
+    $env:GATE_FILE_EXEMPT = ((Join-Path $dirMode 'release.yml') -replace '\\', '/')
+    try {
+        $dirOut = & $python.Source -S $script ($dirMode -replace '\\', '/') 2>&1 | Out-String
+        $dirCode = $LASTEXITCODE
+    }
+    finally { $env:GATE_FILE_EXEMPT = '' }
+    if ($dirCode -ne 0) { throw "directory mode must not fail a file-exempt, non-gated workflow on BASH_ENV:`n$dirOut" }
+
+    # An always() intermediate stops feeder-chain traversal.
+    $env:GATE_EXEMPT = 'optional'
+    try {
+        $r = Invoke-Gate "jobs:`n  optional:`n    runs-on: ubuntu-latest`n  mid:`n    if: always()`n    needs: [optional]`n    runs-on: ubuntu-latest`n  quality:`n    needs: [mid]`n    runs-on: ubuntu-latest`n  ci-gate:`n    if: always()`n    needs: [mid, quality]`n    runs-on: ubuntu-latest`n    steps:`n      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')`n        run: exit 1"
+    }
+    finally { $env:GATE_EXEMPT = '' }
+    if ($r.Code -ne 0) { throw "an always() intermediate must stop feeder-chain traversal:`n$($r.Output)" }
+
     $nonCompositeAction = @'
 name: probe
 runs:
