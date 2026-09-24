@@ -1362,7 +1362,11 @@ jobs:
     }
     # Adjacent quoted spans are ONE shell argument, and a command substitution runs even
     # inside a printed string: both still change directory before the gate script.
-    foreach ($spelling in 'bash -c "cd sub; "''python3 scripts/gate.py''',
+    foreach ($spelling in '(cd sub && python3 scripts/gate.py)',
+                          '{ cd sub; python3 scripts/gate.py; }',
+                          'if cd sub; then python3 scripts/gate.py; fi',
+                          '! cd sub || python3 scripts/gate.py',
+                          'bash -c "cd sub; "''python3 scripts/gate.py''',
                           'echo "$(cd sub; python3 scripts/gate.py)"',
                           'echo "cd sub; python3 scripts/gate.py" | bash',
                           'echo $(bash -c "cd sub; python3 scripts/gate.py")',
@@ -1391,6 +1395,10 @@ jobs:
     if ($r.Code -ne 0) { throw "a BASH_ENV: line inside a run body must not trip the env-key guard:`n$($r.Output)" }
     $r = Invoke-Gate "jobs:`n  build:`n    runs-on: ubuntu-latest`n    env:`n      BASH_ENV: /tmp/override`n    steps:`n      - run: echo build`n$followupGate"
     if ($r.Code -eq 0 -or $r.Output -notmatch 'BASH_ENV') { throw "a real BASH_ENV env key must still fail:`n$($r.Output)" }
+    foreach ($key in '"BASH_ENV"', "'BASH_ENV'") {
+        $r = Invoke-Gate "jobs:`n  build:`n    runs-on: ubuntu-latest`n    env:`n      ${key}: /tmp/override`n    steps:`n      - run: echo build`n$followupGate"
+        if ($r.Code -eq 0 -or $r.Output -notmatch 'BASH_ENV') { throw "a quoted BASH_ENV env key ($key) must fail like the bare one:`n$($r.Output)" }
+    }
 
     # Directory mode: a file-exempt workflow with no gate job is not subject to the
     # gate's BASH_ENV rule.
