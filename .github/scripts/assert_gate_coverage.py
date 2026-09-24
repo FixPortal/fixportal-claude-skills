@@ -135,12 +135,33 @@ def shell_c_arguments(line):
             if option in SHELL_FLAG_OPTIONS or (option.startswith("--") and "=" in option):
                 cursor += 1
                 continue
-            if basename in ("pwsh", "powershell") and option.lower() in (
-                "-encodedcommand", "-enc", "-ec", "-e"
-            ):
-                return bodies, True
-            if basename in ("pwsh", "powershell") and option.lower().startswith("-workingdirectory"):
-                return bodies, True
+            if basename in ("pwsh", "powershell"):
+                option = option.lower()
+                option_name = option.split("=", 1)[0]
+                if option in ("-encodedcommand", "-enc", "-ec", "-e", "-encodedarguments", "-commandwithargs", "-cwa"):
+                    return bodies, True
+                if option in ("-file", "-f"):
+                    break
+                if option in ("-workingdirectory", "-wd") or option.startswith("-workingdirectory="):
+                    return bodies, True
+                if option in ("-command", "-c"):
+                    if cursor + 1 >= len(tokens):
+                        return bodies, True
+                    bodies.append(" ".join(tokens[cursor + 1 :]))
+                    break
+                if option_name in ("-configurationname", "-config", "-configurationfile", "-custompipename", "-executionpolicy", "-ep", "-ex", "-inputformat", "-inp", "-if", "-outputformat", "-o", "-of", "-settingsfile", "-settings", "-windowstyle", "-w"):
+                    if "=" in option:
+                        cursor += 1
+                    elif cursor + 1 < len(tokens):
+                        cursor += 2
+                    else:
+                        return bodies, True
+                    continue
+                if option in ("-interactive", "-i", "-login", "-l", "-mta", "-noexit", "-noe", "-nologo", "-nol", "-noninteractive", "-noni", "-noprofile", "-nop", "-noprofileloadtime", "-sshservermode", "-sshs", "-sta", "-version", "-v", "-help", "-h", "-?"):
+                    cursor += 1
+                    continue
+                if option.startswith("-"):
+                    return bodies, True
             if option.lower() in ("-command", "-c"):
                 if cursor + 1 >= len(tokens):
                     return bodies, True
@@ -480,7 +501,7 @@ def working_directory_lines(lines):
     stack = []
     candidates = []
     for index, line in enumerate(lines):
-        if index in payload:
+        if index in payload or COMMENT_OR_BLANK.match(line):
             continue
         indent = len(line) - len(line.lstrip(" "))
         while stack and stack[-1][0] >= indent:
