@@ -955,6 +955,29 @@ jobs:
         throw "a script resolved under working-directory must still be required HIGH:`n$($workingDirectoryUntiered.Output)"
     }
 
+    $workingDirectoryAfterComment = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' @('scripts/assert-coverage-floor.ps1', 'step-sub/scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+
+# A column-zero comment must not reset the parent stack.
+      - working-directory: step-sub
+        run: python scripts/assert-coverage-floor.ps1
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($workingDirectoryAfterComment.Code -eq 0 -or
+        $workingDirectoryAfterComment.Output -notmatch 'step-sub/scripts/assert-coverage-floor\.ps1' -or
+        $workingDirectoryAfterComment.Output -notmatch 'not tiered HIGH') {
+        throw "blank lines and column-zero comments must preserve YAML parent scope"
+    }
+
     $siblingWorkingDirectory = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
 jobs:
   earlier:
@@ -1182,6 +1205,24 @@ jobs:
 '@
     if ($bashCDashC.Code -eq 0 -or $bashCDashC.Output -notmatch 'after a directory change') {
         throw "a directory change inside bash -c must fail closed:`n$($bashCDashC.Output)"
+    }
+
+    $powershellCommandAfterOptions = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - run: pwsh -NoProfile -NonInteractive -ExecutionPolicy=Bypass -Command 'Set-Location sub; python scripts/assert-coverage-floor.ps1'
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($powershellCommandAfterOptions.Code -eq 0 -or $powershellCommandAfterOptions.Output -notmatch 'after a directory change') {
+        throw "PowerShell value and flag options must be parsed before -Command"
     }
 
     $bashLoginCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
