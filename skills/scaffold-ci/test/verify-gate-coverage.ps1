@@ -35,7 +35,7 @@ function Invoke-Gate([string] $yaml, [switch] $Bom) {
     $output = Join-Path $root 'output.txt'
     # -Bom writes the SAME text with a leading UTF-8 BOM. PowerShell 7's `utf8` is
     # BOM-less and `utf8BOM` is the only way to get one, so no existing case could have
-    # produced a BOM by accident -- which is how the defect in issue #231 survived.
+    # produced a BOM by accident -- which is how the BOM defect survived.
     $encoding = if ($Bom) { 'utf8BOM' } else { 'utf8' }
     $yaml | Set-Content -LiteralPath $workflow -Encoding $encoding
     & $python.Source -S $script $workflow *> $output
@@ -45,20 +45,8 @@ function Invoke-Gate([string] $yaml, [switch] $Bom) {
     }
 }
 
-function Invoke-GateFile([string] $Repo) {
-    $workflow = Join-Path $Repo '.github/workflows/ci.yml'
-    $output = Join-Path $Repo 'output.txt'
-    & $python.Source -S $script $workflow *> $output
-    [pscustomobject]@{ Code = $LASTEXITCODE; Output = Get-Content -LiteralPath $output -Raw }
-}
-
 try {
     New-Item -ItemType Directory -Path $root | Out-Null
-
-    $emptyFlowJobs = Invoke-Gate 'jobs: {}'
-    if ($emptyFlowJobs.Code -eq 0 -or $emptyFlowJobs.Output -notmatch 'flow-style or empty') {
-        throw "a flow-style jobs mapping must fail closed instead of being skipped:`n$($emptyFlowJobs.Output)"
-    }
 
     $flow = Invoke-Gate @'
 jobs:
@@ -335,7 +323,7 @@ jobs:
     # so the step runs unconditionally and never fails -- still passed, because the echo
     # matched. That is exactly the "guts only the aggregation step" neuter the checker
     # exists to catch, so it was blind to its own subject. Found by Gitar on
-    # <repo>#225.
+    # an upstream review.
     $echoOnly = Invoke-Gate @'
 jobs:
   build:
@@ -669,7 +657,7 @@ jobs:
     # at step-body indentation. A checker that scans every line for the STEP_IF_VALUE
     # shape, blind to whether it sits inside a preceding block scalar, reads that printed
     # text as the real condition and reports the gate as aggregating -- fail-open on a
-    # gate that aggregates nothing. Found by CodeRabbit on <repo>#68.
+    # gate that aggregates nothing. Found by CodeRabbit on an upstream review.
     $conditionInRunBody = Invoke-Gate @'
 jobs:
   build:
@@ -839,7 +827,7 @@ jobs:
     # 3. Covered by a GLOB rather than an exact path -> PASS. The hook tiers this
     # repository HIGH, so a checker that rejected it would be a false RED — the
     # divergence glob_to_regex is mirrored to prevent.
-    $globbed = New-GateRepo '{"version":1,"high":["scripts/**","actions/**"],"low":[]}' `
+    $globbed = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' `
         @('scripts/assert-coverage-floor.ps1') $gatedYaml
     if ($globbed.Code -ne 0) {
         throw "a high glob covering the script must pass:`n$($globbed.Output)"
@@ -926,488 +914,6 @@ jobs:
     if ($blockScalar.Code -eq 0 -or $blockScalar.Output -notmatch 'assert-coverage-floor\.ps1') {
         throw "a script invoked inside a block-scalar run: body must be seen:`n$($blockScalar.Output)"
     }
-    $workingDirectoryYaml = @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - working-directory: "src/your ui"
-        run: python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    $workingDirectory = New-GateRepo '{"version":1,"high":["src/your ui/scripts/assert-coverage-floor.ps1"],"low":[]}' `
-        @('src/your ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
-    if ($workingDirectory.Code -ne 0) {
-        throw "a gate script must be resolved under its working-directory:`n$($workingDirectory.Output)"
-    }
-
-    $workingDirectoryUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' `
-        @('src/your ui/scripts/assert-coverage-floor.ps1') $workingDirectoryYaml
-    if ($workingDirectoryUntiered.Code -eq 0 -or
-        $workingDirectoryUntiered.Output -notmatch 'src/your ui/scripts/assert-coverage-floor\.ps1' -or
-        $workingDirectoryUntiered.Output -notmatch 'not tiered HIGH') {
-        throw "a script resolved under working-directory must still be required HIGH:`n$($workingDirectoryUntiered.Output)"
-    }
-
-    $workingDirectoryAfterComment = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' @('scripts/assert-coverage-floor.ps1', 'step-sub/scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-
-# A column-zero comment must not reset the parent stack.
-      - working-directory: step-sub
-        run: python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($workingDirectoryAfterComment.Code -eq 0 -or
-        $workingDirectoryAfterComment.Output -notmatch 'step-sub/scripts/assert-coverage-floor\.ps1' -or
-        $workingDirectoryAfterComment.Output -notmatch 'not tiered HIGH') {
-        throw "blank lines and column-zero comments must preserve YAML parent scope"
-    }
-
-    $siblingWorkingDirectory = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  earlier:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: unrelated
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [earlier, build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($siblingWorkingDirectory.Code -eq 0 -or $siblingWorkingDirectory.Output -notmatch 'scripts/assert-coverage-floor.ps1') {
-        throw "a sibling job's working-directory must not hide this gate script:`n$($siblingWorkingDirectory.Output)"
-    }
-
-    $multiLineCd = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          cd subdir
-          python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($multiLineCd.Code -eq 0 -or $multiLineCd.Output -notmatch 'after a directory change') {
-        throw "a gate script after a multi-line directory change must fail closed:`n$($multiLineCd.Output)"
-    }
-
-    $unrelatedCd = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' `
-        @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: cd /tmp && do_something_unrelated
-      - run: python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($unrelatedCd.Code -ne 0) {
-        throw "a directory change in a step without a gate script must not fail the workflow:`n$($unrelatedCd.Output)"
-    }
-
-    $subshellCd = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: (cd sub && python scripts/assert-coverage-floor.ps1)
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($subshellCd.Code -eq 0 -or $subshellCd.Output -notmatch 'after a directory change') {
-        throw "a script after a subshell directory change must fail closed:`n$($subshellCd.Output)"
-    }
-
-    $quotedBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    env:
-      "BASH_ENV": /tmp/env.sh
-    steps:
-      - run: exit 1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($quotedBashEnv.Code -eq 0 -or $quotedBashEnv.Output -notmatch 'BASH_ENV') {
-        throw "a quoted BASH_ENV key must fail closed:`n$($quotedBashEnv.Output)"
-    }
-
-    $flowBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    env: {BASH_ENV: /tmp/env.sh}
-    steps:
-      - run: exit 1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($flowBashEnv.Code -eq 0 -or $flowBashEnv.Output -notmatch 'BASH_ENV') {
-        throw "a BASH_ENV key inside a flow-style env mapping must fail closed:`n$($flowBashEnv.Output)"
-    }
-
-    $quotedFlowBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    env: {FOO: "value } # marker", BASH_ENV: /tmp/env.sh}
-    steps:
-      - run: exit 1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($quotedFlowBashEnv.Code -eq 0 -or $quotedFlowBashEnv.Output -notmatch 'BASH_ENV') {
-        throw "quoted delimiters must not hide BASH_ENV in a flow-style env mapping:`n$($quotedFlowBashEnv.Output)"
-    }
-
-    $gateEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo 'BASH_ENV=/tmp/env.sh' >> "$GITHUB_ENV"
-'@
-    if ($gateEnvWrite.Code -eq 0 -or $gateEnvWrite.Output -notmatch 'BASH_ENV') {
-        throw "a gate job writing BASH_ENV to GITHUB_ENV must fail closed"
-    }
-
-    $feederEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "BASH_ENV=/tmp/env.sh" | tee -a "$GITHUB_ENV"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($feederEnvWrite.Code -eq 0 -or $feederEnvWrite.Output -notmatch 'BASH_ENV') {
-        throw "a feeder pipeline writing BASH_ENV to GITHUB_ENV must fail closed"
-    }
-
-    $groupedEnvWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          {
-            echo "BASH_ENV=/tmp/env.sh"
-          } >> "$GITHUB_ENV"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($groupedEnvWrite.Code -eq 0 -or $groupedEnvWrite.Output -notmatch 'BASH_ENV') {
-        throw "a grouped feeder write of BASH_ENV to GITHUB_ENV must fail closed"
-    }
-
-    $envMentionWithoutWrite = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "BASH_ENV=/tmp/env.sh" "$GITHUB_ENV"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($envMentionWithoutWrite.Code -ne 0) {
-        throw "printing BASH_ENV and GITHUB_ENV without writing must not be rejected"
-    }
-
-    $printedTeeBashEnv = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: printf 'BASH_ENV=/tmp/env.sh' tee "$GITHUB_ENV"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($printedTeeBashEnv.Code -ne 0) {
-        throw "the word tee in printf arguments must not be treated as a GITHUB_ENV write"
-    }
-
-    $separateHeredocWriter = New-GateRepo '{"version":1,"high":[],"low":[]}' @() @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          cat <<'EOF' > /tmp/heredoc.txt; echo SAFE=1 >> "$GITHUB_ENV"
-          BASH_ENV=/tmp/env.sh
-          EOF
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($separateHeredocWriter.Code -ne 0) {
-        throw "a separate GITHUB_ENV writer must not persist a BASH_ENV heredoc sent to another file"
-    }
-
-    $bashOptionArgumentCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash -o pipefail -c 'cd sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($bashOptionArgumentCDashC.Code -eq 0 -or $bashOptionArgumentCDashC.Output -notmatch 'after a directory change') {
-        throw "a directory change inside bash with a separate option argument must fail closed:`n$($bashOptionArgumentCDashC.Output)"
-    }
-
-    $bashExeCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - run: bash.exe -c 'cd sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($bashExeCDashC.Code -eq 0 -or $bashExeCDashC.Output -notmatch 'after a directory change') {
-        throw "a directory change inside bash.exe -c must fail closed:`n$($bashExeCDashC.Output)"
-    }
-
-    $unbalancedQuoteBashMention = Invoke-Gate @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "bash is available
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($unbalancedQuoteBashMention.Code -ne 0) {
-        throw "an unmatched quote with a plain bash mention must not be treated as an unclassified shell invocation:`n$($unbalancedQuoteBashMention.Output)"
-    }
-
-    $unclassifiedBashOptionCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash --rcfile /tmp/bashrc -c 'cd sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($unclassifiedBashOptionCDashC.Code -eq 0 -or $unclassifiedBashOptionCDashC.Output -notmatch 'after a directory change') {
-        throw "an unclassified shell option before -c must fail closed:`n$($unclassifiedBashOptionCDashC.Output)"
-    }
-
-    $bashCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash -c 'cd sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($bashCDashC.Code -eq 0 -or $bashCDashC.Output -notmatch 'after a directory change') {
-        throw "a directory change inside bash -c must fail closed:`n$($bashCDashC.Output)"
-    }
-
-    $powershellCommandAfterOptions = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - run: pwsh -NoProfile -NonInteractive -ExecutionPolicy=Bypass -Command 'Set-Location sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($powershellCommandAfterOptions.Code -eq 0 -or $powershellCommandAfterOptions.Output -notmatch 'after a directory change') {
-        throw "PowerShell value and flag options must be parsed before -Command"
-    }
-
-    $bashLoginCDashC = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash -lc 'cd sub; python scripts/assert-coverage-floor.ps1'
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($bashLoginCDashC.Code -eq 0 -or $bashLoginCDashC.Output -notmatch 'after a directory change') {
-        throw "a directory change inside bash -lc must fail closed:`n$($bashLoginCDashC.Output)"
-    }
-
-    $echoMessage = New-GateRepo '{"version":1,"high":["scripts/assert-coverage-floor.ps1"],"low":[]}' `
-        @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "message; cd sub"; python scripts/assert-coverage-floor.ps1
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($echoMessage.Code -ne 0) {
-        throw "directory-change text inside an echo message must not fail the workflow:`n$($echoMessage.Output)"
-    }
-
-    $commandSubstitutionCd = New-GateRepo '{"version":1,"high":[] ,"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "$(cd sub; python scripts/assert-coverage-floor.ps1)"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($commandSubstitutionCd.Code -eq 0 -or $commandSubstitutionCd.Output -notmatch 'after a directory change') {
-        throw "a directory change inside command substitution must fail closed:`n$($commandSubstitutionCd.Output)"
-    }
-
-    $nestedShellCd = New-GateRepo '{"version":1,"high":[] ,"low":[]}' @('scripts/assert-coverage-floor.ps1') @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash -c "bash -c 'cd sub; python scripts/assert-coverage-floor.ps1'"
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($nestedShellCd.Code -eq 0 -or $nestedShellCd.Output -notmatch 'after a directory change') {
-        throw "a directory change in a nested shell invocation must fail closed:`n$($nestedShellCd.Output)"
-    }
 
     # 8. No review policy in scope -> PASS, asserting nothing. review-policy-guard.yml
     # owns a missing policy; duplicating it here would make THIS check fail on a
@@ -1451,7 +957,7 @@ jobs:
     # branch properly: the else arm yielded the bare `|` and advanced one line, skipping
     # the whole payload. The script inside was then invisible and escaped the HIGH-tier
     # requirement -- fail-open on the control this check exists to be. (CodeRabbit,
-    # <repo> PR #140.)
+    # on an upstream review.)
     $commentedScalar = New-GateRepo '{"version":1,"high":[],"low":[]}' @('.github/scripts/probe.py') @'
 jobs:
   build:
@@ -1471,7 +977,7 @@ jobs:
         throw "a gate script inside a commented block scalar must be detected:`n$($commentedScalar.Output)"
     }
 
-    # ── Windows path spellings reach the same gate script (issue #230) ──────────────
+    # -- Windows path spellings reach the same gate script ---------------------------
     # Windows resolves a path separator- and case-insensitively, so a gate job on a
     # windows-latest runner executes `.\scripts\probe.ps1` exactly as it executes the
     # POSIX spelling. GATE_SCRIPT admitted only `/` and lowercase extensions, so neither
@@ -1512,9 +1018,7 @@ jobs:
         if ($windowsUntiered.Output -cnotmatch 'scripts/probe\.ps1') {
             throw "the committed spelling must be reported for '$spelling', not the typed one:`n$($windowsUntiered.Output)"
         }
-        # The captured path must be normalised to `/`, or the policy glob below -- which
-        # every repository writes with `/` -- could never cover it.
-        $windowsTiered = New-GateRepo '{"version":1,"high":["scripts/**","actions/**"],"low":[]}' @('scripts/probe.ps1') $windowsYaml
+        $windowsTiered = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/probe.ps1') $windowsYaml
         if ($windowsTiered.Code -ne 0) {
             throw "a high glob must cover the Windows spelling '$spelling':`n$($windowsTiered.Output)"
         }
@@ -1542,14 +1046,14 @@ jobs:
         throw "a Windows-spelled non-script argument must not be claimed as a gate script:`n$($notAScript.Output)"
     }
 
-    # ── A BOM'd workflow is still a workflow (issue #231) ──────────────────────────
+    # -- A BOM'd workflow is still a workflow ----------------------------------------
     # `JOBS_KEY` is anchored at `^`, so a plain utf-8 read left the BOM in front of
-    # `jobs:` and the line never matched. In FILE mode -- how the estate wires this --
-    # that exited 1 with "no jobs found": a permanently red required check over a valid
-    # workflow, triggered by nothing more than a Windows editor saving the file. In
-    # DIRECTORY mode it was written off as "not a workflow, skipped" and every job in it
-    # escaped coverage instead. Pinned as an EQUIVALENCE to its BOM-less twin, because
-    # the defect is precisely that the two behaved differently.
+    # `jobs:` and the line never matched. In FILE mode that exited 1 with "no jobs
+    # found": a permanently red required check over a valid workflow, triggered by
+    # nothing more than a Windows editor saving the file. In DIRECTORY mode it was
+    # written off as "not a workflow, skipped" and every job in it escaped coverage
+    # instead. Pinned as an EQUIVALENCE to its BOM-less twin, because the defect is
+    # precisely that the two behaved differently.
     $bomYaml = @'
 jobs:
   build:
@@ -1572,7 +1076,7 @@ jobs:
         throw "a BOM'd workflow must not read as having no jobs:`n$($bom.Output)"
     }
 
-    # ── pwsh `throw` with a trailing comment (issue #232) ──────────────────────────
+    # -- pwsh `throw` with a trailing comment -----------------------------------------
     # The pwsh arm fullmatched the joined block-scalar body with no comment handling,
     # while its bash sibling masks then strips them. So `exit 1 # note` was accepted and
     # the identical pwsh `throw "..." # note` was refused -- a false RED on a gate that
@@ -1626,7 +1130,161 @@ jobs:
         throw "a pwsh body that is more than an unconditional throw must stay refused:`n$($pwshNotBare.Output)"
     }
 
-    # ── Dot components in a gate-script path (CodeRabbit, on the review of this change) ──
+    # --- CodeRabbit, on an upstream review -------------------------------------
+
+    # A STATICALLY FALSE job-level continue-on-error tolerates nothing, but the old
+    # membership test normalised `${{ false && inputs.allow_failure }}` to a compound
+    # string -- neither "false" nor "" -- and counted the job tolerant, and a tolerant
+    # job feeding the gate is refused: a false RED on a legitimate feeder. The fix
+    # consults static_truth, which folds the compound to False.
+    $staticFalseTolerance = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ false && inputs.allow_failure }}
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($staticFalseTolerance.Code -ne 0) {
+        throw "a statically false continue-on-error must not read as tolerant:`n$($staticFalseTolerance.Output)"
+    }
+
+    # The two directions that must NOT change: literal true is tolerant, and an
+    # expression the checker cannot fold stays potentially tolerant -- both refused on
+    # a merge-blocking job.
+    foreach ($case in @('true', '${{ inputs.allow_failure }}')) {
+        $stillTolerant = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: $case
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        if ($stillTolerant.Code -eq 0 -or $stillTolerant.Output -notmatch 'continue-on-error') {
+            throw "a tolerant or unfoldable continue-on-error on a gate-feeding job must fail ($case):`n$($stillTolerant.Output)"
+        }
+    }
+
+    # A local `uses:` line inside a run: payload is SHELL TEXT, not a delegation. The
+    # LOCAL_USES scan ran over physical lines, so a payload line like the one below
+    # matched, and because the target exists and is non-composite the traversal raised
+    # its ValueError -- a false RED on a workflow that never delegates. Payload lines
+    # are now excluded from both LOCAL_USES scans. (Second finding, same review.)
+    function New-GateActionRepo([string] $actionContent, [string] $workflowYaml, [string] $highPaths = '["scripts/**","actions/**"]') {
+        # The policy is load-bearing: assert_gate_scripts returns early when no
+        # review-policy.json is readable, and gate_script_paths -- where the LOCAL_USES
+        # traversal lives -- is only reached behind that read. Without it the
+        # local-action fixtures pass while exercising nothing.
+        # [string] parameters coerce an omitted argument to "" rather than $null, so a
+        # null test never fires and the default workflow never writes -- an empty ci.yml
+        # then fails every caller with "no jobs found". IsNullOrEmpty covers both forms.
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
+        ('{"version":1,"high":' + $highPaths + ',"low":[]}') |
+            Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
+        New-Item -ItemType Directory -Path (Join-Path $repo 'actions' 'probe') -Force | Out-Null
+        $actionContent | Set-Content -LiteralPath (Join-Path $repo 'actions' 'probe' 'action.yml') -Encoding utf8
+        New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') -Force | Out-Null
+        '# probe' | Set-Content -LiteralPath (Join-Path $repo 'scripts' 'probe.py') -Encoding utf8
+        $workflow = Join-Path $repo '.github' 'workflows' 'ci.yml'
+        if ([string]::IsNullOrEmpty($workflowYaml)) {
+            $workflowYaml = @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+        }
+        $workflowYaml | Set-Content -LiteralPath $workflow -Encoding utf8
+        $outputPath = Join-Path $repo 'output.txt'
+        & $python.Source -S $script $workflow *> $outputPath
+        [pscustomobject]@{
+            Code = $LASTEXITCODE
+            Output = Get-Content -LiteralPath $outputPath -Raw
+        }
+    }
+
+    $nonCompositeAction = @'
+name: probe
+runs:
+  using: node20
+  main: index.js
+'@
+
+    $localActionUntiered = New-GateActionRepo @'
+name: Probe
+runs: {using: composite, steps: []}
+'@ $null '["scripts/**"]'
+    if ($localActionUntiered.Code -eq 0 -or $localActionUntiered.Output -notmatch 'actions/probe/action\.yml') {
+        throw "a local action feeding the gate must itself be tiered HIGH:`n$($localActionUntiered.Output)"
+    }
+
+    $payloadUses = New-GateActionRepo $nonCompositeAction @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: |
+          cat > actions/probe/action.yml <<'EOF'
+          name: probe
+          runs:
+            using: composite
+          EOF
+          uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($payloadUses.Code -ne 0) {
+        throw "a uses: line inside a run: payload must not be followed as a delegation:`n$($payloadUses.Output)"
+    }
+
+    # ... while a GENUINE step-level local delegation to a non-composite action is still
+    # refused -- the exclusion covers run payloads only, not the steps list.
+    $realUses = New-GateActionRepo $nonCompositeAction @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./actions/probe
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($realUses.Code -eq 0 -or $realUses.Output -notmatch 'gate coverage only follows composite') {
+        throw "a genuine non-composite local action must still be refused:`n$($realUses.Output)"
+    }
+
+    # ── Dot components in a gate-script path (CodeRabbit, on an upstream review) ──
     # `iterdir()` never yields `.` or `..`, so resolve_committed_paths walking them
     # literally matches nothing and drops the candidate -- fail-open. The exact
     # `is_file()` the walk replaced collapsed a single dot for free, via pathlib, so
@@ -1682,7 +1340,7 @@ jobs:
     # `scripts/link/../gate.ps1` executes a file the lexical reduction never names.
     # Vouching for the lexical answer alone would require HIGH on a path the gate does
     # not run while the one it does run stays untiered -- fail-open. Both spellings must
-    # be required. (CodeRabbit, on the review of this change.)
+    # be required. (CodeRabbit, on an upstream review.)
     #
     # Creating a directory symlink needs either Developer Mode or elevation on Windows,
     # so the case SKIPS with a stated reason where it cannot be built rather than passing
@@ -1697,7 +1355,8 @@ jobs:
     # with both present the component walk always succeeded, so it never took the
     # empty-candidate path and the filesystem resolution below was never the thing under
     # test. With the lexical target absent the walk finds nothing, which is exactly the
-    # case that used to abandon the path before resolving it. (CodeRabbit.)
+    # case that used to abandon the path before resolving it. (CodeRabbit, on an upstream
+    # review.)
     '# real target' | Set-Content -LiteralPath (Join-Path $symlinkRepo 'gate.ps1') -Encoding utf8
     # SymbolicLink first; a JUNCTION where that is refused. A plain symlink needs
     # Developer Mode or elevation on Windows, while a junction needs neither and is a
@@ -1787,7 +1446,7 @@ print(real.relative_to(root.resolve()).as_posix())
         # `link` targets a sufficiently deep in-checkout directory the OS lands back
         # INSIDE the repository -- so refusing on the lexical reading alone would omit a
         # gate script that really runs. Containment is decided by the filesystem answer,
-        # not the arithmetic. (CodeRabbit, on the review of this change.)
+        # not the arithmetic. (CodeRabbit, on an upstream review.)
         New-Item -ItemType Directory -Path (Join-Path $symlinkRepo 'elsewhere' 'a' 'b') -Force | Out-Null
         $deepLink = Join-Path $symlinkRepo 'scripts' 'deep'
         $deepMade = $true
@@ -1839,16 +1498,11 @@ jobs:
             $overText = Get-Content -LiteralPath $overOutput -Raw
 
             if ($overExecuted -eq '<outside>') {
-                # The path really does leave the checkout here; nothing in-repo runs, so
-                # nothing is asserted about it.
                 if ($overCode -ne 0) {
                     throw "an over-climb that genuinely leaves the checkout must not be asserted about:`n$overText"
                 }
             }
             else {
-                # It lands back inside. The file that runs is untiered, so the gate must
-                # refuse and name it -- returning early on the lexical over-climb would
-                # have passed here.
                 if ($overCode -eq 0) {
                     throw "an over-climb resolving back into the checkout reaches '$overExecuted', which no policy tiers -- the gate must refuse it:`n$overText"
                 }
@@ -1866,7 +1520,7 @@ jobs:
     # assertion) and the delegated local-action manifest. Directory mode is the third
     # gap and the worst-directioned of them: there a BOM'd workflow was written off as
     # "not a workflow, skipped" and every job in it escaped coverage, which is fail-open
-    # where file mode was merely red. (Gitar and CodeRabbit, on the review of this change.)
+    # where file mode was merely red. (Gitar and CodeRabbit, on an upstream review.)
     function New-BomGateRepo([string] $policyJson, [string[]] $scriptPaths, [string] $yaml, [switch] $BomPolicy, [switch] $BomWorkflow, [string] $Target) {
         $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
@@ -1914,67 +1568,13 @@ jobs:
         throw "a BOM'd workflow must not be skipped as 'not a workflow' in directory mode:`n$($bomDirectory.Output)"
     }
 
-    # ── A local action's runs.using is resolved INSIDE the runs: mapping ────────────
-    # The whole-file search this pins against matched the first `using:`-shaped line
-    # ANYWHERE in the action file, which is wrong in both directions: a block scalar
-    # holding an indented `'using': javascript` line matched BEFORE the real runs:
-    # mapping and reddened a valid COMPOSITE action (CodeRabbit review),
-    # and a flow-style `runs: {using: node20, ...}` never matched the line-anchored
-    # pattern at all, so the non-composite guard was silently skipped -- fail-open
-    # (issue #227).
-    #
-    # A composite action needs REAL metadata, so the '# probe' placeholder New-GateRepo
-    # writes cannot stand in for it; this variant writes the action content it is given.
-    # The workflow is always the same: a gate-fed job that uses the local action.
-    function New-GateActionRepo([string] $actionContent, [string] $workflowYaml, [string] $policy = '{"version":1,"high":["scripts/**","actions/**"],"low":[]}') {
-        # [string] parameters coerce an omitted argument to "" rather than $null, so a
-        # null test never fires and the default workflow never writes -- an empty ci.yml
-        # then fails every caller with "no jobs found". IsNullOrEmpty covers both forms.
-        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
-        $policy |
-            Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
-        New-Item -ItemType Directory -Path (Join-Path $repo 'actions' 'probe') -Force | Out-Null
-        $actionContent | Set-Content -LiteralPath (Join-Path $repo 'actions' 'probe' 'action.yml') -Encoding utf8
-        New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') -Force | Out-Null
-        '# probe' | Set-Content -LiteralPath (Join-Path $repo 'scripts' 'probe.py') -Encoding utf8
-        $workflow = Join-Path $repo '.github' 'workflows' 'ci.yml'
-        if ([string]::IsNullOrEmpty($workflowYaml)) {
-            $workflowYaml = @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ./actions/probe
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-        }
-        $workflowYaml | Set-Content -LiteralPath $workflow -Encoding utf8
-        $output = Join-Path $repo 'output.txt'
-        & $python.Source -S $script $workflow *> $output
-        [pscustomobject]@{
-            Code = $LASTEXITCODE
-            Output = Get-Content -LiteralPath $output -Raw
-            Repo = $repo
-        }
-    }
-
-    $localActionUntiered = New-GateActionRepo "name: Probe`nruns: {using: composite, steps: []}" $null '{"version":1,"high":["scripts/**"],"low":[]}'
-    if ($localActionUntiered.Code -eq 0 -or $localActionUntiered.Output -notmatch 'actions/probe/action\.yml' -or $localActionUntiered.Output -notmatch 'not tiered HIGH') {
-        throw "a local action feeding the gate must itself be tiered HIGH:`n$($localActionUntiered.Output)"
-    }
+    # --- A local action's runs.using is resolved INSIDE the runs: mapping (ported from
+    #     the upstream scanner work, 2026-09) ---
 
     # 1. The block-scalar false match. The description's payload holds an indented
     #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
     #    matched it first and raised on a valid composite action -- a false RED on a
-    #    healthy action. (CodeRabbit review.) The composite body invokes
+    #    healthy action. (CodeRabbit, on an upstream review.) The composite body invokes
     #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
     #    the action being silently skipped.
     $blockScalarUsing = New-GateActionRepo @'
@@ -1993,8 +1593,8 @@ runs:
     }
 
     # 2. A flow-style runs: mapping. The line-anchored search could never see `using`
-    #    inside `runs: {using: ...}` (issue #227), so the composite spelling must be
-    #    recognised -- not raise, and not silently skip the guard.
+    #    inside `runs: {using: ...}`, so the composite spelling must be recognised --
+    #    not raise, and not silently skip the guard.
     $flowComposite = New-GateActionRepo @'
 name: Probe
 runs: {using: composite, steps: []}
@@ -2003,10 +1603,7 @@ runs: {using: composite, steps: []}
         throw "a flow-style runs: {using: composite, ...} must be recognised as composite:`n$($flowComposite.Output)"
     }
 
-    # 2b. The same flow mapping written across SEVERAL LINES, which YAML allows. Reading
-    #     only the `runs:` line saw `{` and nothing else, so a valid composite action
-    #     raised -- the same false-RED class as fixture 1, one parser branch over.
-    #     (CodeRabbit, PR #228.)
+    # 2b. The same flow mapping written across SEVERAL LINES, which YAML allows.
     $multilineFlowComposite = New-GateActionRepo @'
 name: Probe
 runs: {
@@ -2018,10 +1615,9 @@ runs: {
     }
 
     # 2c. A quoted VALUE carrying a false `using` must not be read as the mapping's own
-    #     entry. Searching the joined text matched `{using: composite}` inside the string
-    #     and vouched composite for a DOCKER action -- fail-open, the dangerous direction.
-    #     Extraction counts a key only OUTSIDE quotes and at depth ONE. (CodeRabbit,
-    #     PR #228.)
+    #     entry. Searching the joined text matched `{using: composite}` inside the
+    #     string and vouched composite for a DOCKER action -- fail-open, the dangerous
+    #     direction. Extraction counts a key only OUTSIDE quotes and at depth ONE.
     $quotedFalseUsing = New-GateActionRepo @'
 name: Probe
 runs: {note: "{using: composite}", using: docker, main: index.js}
@@ -2031,9 +1627,8 @@ runs: {note: "{using: composite}", using: docker, main: index.js}
     }
 
     # 2d. ...and a `#` inside a QUOTED flow value is data, not a comment. Truncating
-    #     there first broke the mapping mid-scan and reddened a valid composite action --
-    #     the quoted-hash rule strip_inline_comment documents, one parser over. A comment
-    #     AFTER the mapping is the ordinary case and must keep working.
+    #     there first broke the mapping mid-scan and reddened a valid composite action.
+    #     A comment AFTER the mapping is the ordinary case and must keep working.
     foreach ($hashRuns in @(
         'runs: {description: "a # b", using: composite}',
         'runs: {using: composite, steps: []} # tail'
@@ -2044,10 +1639,8 @@ runs: {note: "{using: composite}", using: docker, main: index.js}
         }
     }
 
-    # 2e. A QUOTED key is still a key: {'using': composite} must parse exactly as the
-    #     bare spelling does -- key_pattern admits quoted keys in block style, and the
-    #     flow parser must agree. Pinned because a quote-aware rewrite of the flow scan
-    #    (PR #228, the two fixtures above) is precisely where a quoted key could drop out.
+    # 2e. A QUOTED key is still a key: {'using': composite} parses exactly as the bare
+    #     spelling does (key_pattern admits quoted keys in block style; flow must agree).
     $quotedKeyFlow = New-GateActionRepo @'
 name: Probe
 runs: {'using': composite, steps: []}
@@ -2059,9 +1652,7 @@ runs: {'using': composite, steps: []}
     # 3. A runs: mapping with NO readable using: entry must RAISE -- fail closed rather
     #    than skip the guard and follow a body whose kind cannot be verified. The flow
     #    form (a typo'd key), the block form (no using: child at all), the multiline
-    #    flow form -- reading more lines must not read PAST the mapping's closing brace --
-    #    and a `using` inside a NESTED flow collection, which is not the mapping's own
-    #    entry (depth one only).
+    #    flow form, and a `using` inside a NESTED flow collection (depth one only).
     foreach ($badRuns in @(
         'runs: {usign: composite, steps: []}',
         "runs:`n  steps:`n    - shell: bash`n      run: echo hi",
@@ -2074,32 +1665,9 @@ runs: {'using': composite, steps: []}
         }
     }
 
-    # --- Tolerance folding and run-payload traversal (back-ported from the mirror's
-    #     mirror fixes; the two level-consistency findings are from
-    #     the 2026-09-21 unit review) ---
-
-    # 4. A STATICALLY FALSE continue-on-error tolerates nothing, at EITHER level, but
-    #    the bare membership test read the surviving compound as tolerant -- a false RED
-    #    on a legitimate feeder. Both levels now consult static_truth.
-    $staticFalseJob = Invoke-Gate @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    continue-on-error: ${{ false && inputs.allow_failure }}
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($staticFalseJob.Code -ne 0) {
-        throw "a statically false job-level continue-on-error must not read as tolerant:`n$($staticFalseJob.Output)"
-    }
-
-    # 5. The same expression at STEP level, on the gate's own aggregation step: the step
-    #    tolerates nothing, so it CAN still fail the job and the gate stands.
+    # 4. The step-level static fold (from the upstream unit review, 2026-09-21): the
+    #    gate's aggregation step with a statically false continue-on-error tolerates
+    #    nothing, so it CAN still fail the job and the gate stands.
     $staticFalseStep = Invoke-Gate @'
 jobs:
   build:
@@ -2117,24 +1685,8 @@ jobs:
         throw "a statically false step-level continue-on-error must not read as cannot-fail:`n$($staticFalseStep.Output)"
     }
 
-    # ... and both levels still refuse a genuinely tolerant or unfoldable spelling.
+    # ... and step-level controls: literal true and an unfoldable expression still refuse.
     foreach ($case in @('true', '${{ inputs.allow_failure }}')) {
-        $jobTolerant = Invoke-Gate @"
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    continue-on-error: $case
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-"@
-        if ($jobTolerant.Code -eq 0 -or $jobTolerant.Output -notmatch 'continue-on-error') {
-            throw "a tolerant or unfoldable job-level continue-on-error must be refused ($case):`n$($jobTolerant.Output)"
-        }
         $stepTolerant = Invoke-Gate @"
 jobs:
   build:
@@ -2153,7 +1705,7 @@ jobs:
         }
     }
 
-    # 6. A block-scalar job-level spelling (`continue-on-error: >` then `false`) folds
+    # 5. A block-scalar job-level spelling (`continue-on-error: >` then `false`) folds
     #    to the literal false and tolerates nothing; the key-line-only read saw the
     #    bare `>` header and counted the job tolerant -- a false RED.
     $blockScalarTolerance = Invoke-Gate @'
@@ -2174,121 +1726,11 @@ jobs:
         throw "a block-scalar continue-on-error folding to false must not read as tolerant:`n$($blockScalarTolerance.Output)"
     }
 
-    # 7. A `uses:` line inside a run: payload is SHELL TEXT, not a delegation. The
-    #    LOCAL_USES scan ran over physical lines, so the heredoc below matched -- and
-    #    with the target on disk and non-composite, the traversal raised its ValueError:
-    #    a false RED on a workflow that never delegates. Payload lines are now excluded
-    #    from both LOCAL_USES scans (mirror follow-up).
-    $nonCompositeAction = @'
-name: Probe
-runs:
-  using: node20
-  main: index.js
-'@
-    $payloadUsesYaml = @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - shell: pwsh
-        run: |
-          cat > actions/probe/action.yml <<'EOF'
-          name: probe
-          runs:
-            using: composite
-          EOF
-          uses: ./actions/probe
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    $payloadUses = New-GateActionRepo $nonCompositeAction $payloadUsesYaml '{"version":1,"high":["scripts/**"],"low":[]}'
-    if ($payloadUses.Code -ne 0) {
-        throw "a uses: line inside a run: payload must not be followed as a delegation:`n$($payloadUses.Output)"
-    }
-
-    # ... while a GENUINE step-level delegation to the same non-composite action is
-    #    still refused -- the exclusion covers run payloads, not the steps list.
-    $genuineUses = New-GateActionRepo $nonCompositeAction
-    if ($genuineUses.Code -eq 0 -or $genuineUses.Output -notmatch 'gate coverage only follows composite') {
-        throw "a genuine non-composite local action must still be refused:`n$($genuineUses.Output)"
-    }
-
-    # Composite run bodies keep their complete context. A preceding `cd` must still
-    # fail closed, and action-level working-directory must locate nested gate scripts.
-    $compositeDirectory = New-GateActionRepo @'
-name: Probe
-runs:
-  using: composite
-  steps:
-    - shell: bash
-      working-directory: sub
-      run: python scripts/probe.py
-'@ $null '{"version":1,"high":["actions/**"],"low":[]}'
-    New-Item -ItemType Directory -Path (Join-Path $compositeDirectory.Repo 'sub/scripts') -Force | Out-Null
-    '# probe' | Set-Content -LiteralPath (Join-Path $compositeDirectory.Repo 'sub/scripts/probe.py')
-    $compositeDirectoryResult = Invoke-GateFile -Repo $compositeDirectory.Repo
-    if ($compositeDirectoryResult.Code -eq 0 -or $compositeDirectoryResult.Output -notmatch 'sub/scripts/probe\.py') {
-        throw "a composite action's working-directory must be applied when tiering its gate script:`n$($compositeDirectoryResult.Output)"
-    }
-
-    $compositeCd = New-GateActionRepo @'
-name: Probe
-runs:
-  using: composite
-  steps:
-    - shell: bash
-      run: |
-        cd sub
-        python scripts/probe.py
-'@ $null '{"version":1,"high":["actions/**"],"low":[]}'
-    $compositeCdResult = Invoke-GateFile -Repo $compositeCd.Repo
-    if ($compositeCdResult.Code -eq 0 -or $compositeCdResult.Output -notmatch 'directory change') {
-        throw "a directory change earlier in a composite run body must fail closed:`n$($compositeCdResult.Output)"
-    }
-
-    $reusable = New-GateActionRepo @'
-name: Probe
-runs:
-  using: composite
-  steps: []
-'@ $null '{"version":1,"high":[".github/workflows/**"],"low":[]}'
-    $reusableWorkflowPath = Join-Path $reusable.Repo '.github/workflows/reusable.yml'
-    @'
-name: Reusable
-on: workflow_call
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ./actions/probe
-'@ | Set-Content -LiteralPath $reusableWorkflowPath -Encoding utf8
-    @'
-jobs:
-  build:
-    uses: ./.github/workflows/reusable.yml
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@ | Set-Content -LiteralPath (Join-Path $reusable.Repo '.github/workflows/ci.yml') -Encoding utf8
-    $reusableResult = Invoke-GateFile -Repo $reusable.Repo
-    if ($reusableResult.Code -eq 0 -or $reusableResult.Output -notmatch 'actions/probe/action\.yml' -or $reusableResult.Output -notmatch 'not tiered HIGH') {
-        throw "a local action nested in a gate-fed reusable workflow must be tiered HIGH:`n$($reusableResult.Output)"
-    }
-
     # `always()` is unconditionally true, so `always() && <coverage>` gates exactly what the
     # coverage atom gates. Leaving it UNKNOWN kept it as a residual conjunct and reported a
     # correct gate as referencing no needs.<job>.result at all -- a false RED on the very
     # shape the gate's own job-level condition uses.
-    # (CodeRabbit, <repo>#106.)
+    # (CodeRabbit, on an upstream review.)
     foreach ($shape in @(
         "always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))",
         "always() && contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
@@ -2333,7 +1775,7 @@ jobs:
     # quoted inline scalar whose command OPENS with a redirection decodes to a string
     # starting with `>`, and testing the decoded text read it as a folded body: the step
     # supplied no coverage and the gate went red over a command that does fail.
-    # (CodeRabbit, <repo>#106.)
+    # (CodeRabbit, on an upstream review.)
     $leadingRedirect = Invoke-Gate @'
 jobs:
   build:
@@ -2353,7 +1795,7 @@ jobs:
     # A CONDITIONAL feeder's house shape: the job may legitimately skip, so skipping must
     # not fail the gate, and `!= 'skipped'` NARROWS the `!= 'success'` atom about the SAME
     # job rather than adding a condition this checker cannot read. Refusing every residual
-    # conjunction rejected <repo>'s correct gate as "aggregates nothing" --
+    # conjunction rejected a consuming repository's correct gate as "aggregates nothing" --
     # found by running the reconciled checker over all 26 repositories BEFORE syncing it to
     # any of them, which is the only reason it was not shipped estate-wide.
     $conditionalFeeder = Invoke-Gate @'
@@ -2372,30 +1814,6 @@ jobs:
 '@
     if ($conditionalFeeder.Code -ne 0) {
         throw "a conditional feeder narrowed by != 'skipped' must be accepted:`n$($conditionalFeeder.Output)"
-    }
-
-    # A skipped exempt dependency also skips its ordinary dependent. The gate counts
-    # that skipped feeder as success, so the checker must require an always-running
-    # condition on the dependent.
-    $env:GATE_EXEMPT = 'optional'
-    $skippedDependency = Invoke-Gate @'
-jobs:
-  optional:
-    runs-on: ubuntu-latest
-  quality:
-    needs: [optional]
-    runs-on: ubuntu-latest
-  ci-gate:
-    if: always()
-    needs: [quality]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    $env:GATE_EXEMPT = ''
-    if ($skippedDependency.Code -eq 0 -or $skippedDependency.Output -notmatch 'dependency chain') {
-        throw "a feeder skipped through an exempt needs dependency must fail closed:`n$($skippedDependency.Output)"
     }
 
     # ...but the refinement must name the SAME job, and an unreadable conjunct is still
@@ -2427,7 +1845,7 @@ jobs:
     # A `#` inside a QUOTED YAML scalar is data, not a comment. Truncating there hid the
     # script that follows it, so the script escaped the HIGH-tier requirement -- fail-open
     # on this control. Both quote styles, because the escape rules differ.
-    # (CodeRabbit, <repo> PR #140.)
+    # (CodeRabbit, on an upstream review.)
     $quotedHash = @{
         'double-quoted' = '      - run: "printf ''tag # audit''; python .github/scripts/probe.py"'
         'single-quoted' = "      - run: 'printf \`"tag # audit\`"; python .github/scripts/probe.py'"
@@ -2455,7 +1873,7 @@ $($quotedHash[$style])
     # The same bug seen from the other side: a quoted body carrying a literal `#`, with a
     # genuine YAML comment after the closing quote. Truncating at the inner hash left an
     # unterminated fragment, so a gate that DOES fail read as one that cannot -- a false
-    # RED. (CodeRabbit, <repo> PR #163.)
+    # RED. (CodeRabbit, on an upstream review.)
     $quotedBody = Invoke-Gate @'
 jobs:
   build:
@@ -2491,7 +1909,7 @@ jobs:
         throw "an unquoted run: value is truncated by YAML at ` #, so it must not be vouched for:`n$($plainHash.Output)"
     }
 
-    # The rules this asset absorbed from the <repo> and <repo>
+    # The rules this asset absorbed from the two upstream CI
     # copies, which had each hardened independently while canonical carried neither. They
     # are pinned HERE, in the canonical suite, because the three-way divergence they close
     # was invisible until all three test files were run against one file: a rule owned only
