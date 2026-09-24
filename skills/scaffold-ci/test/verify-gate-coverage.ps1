@@ -1360,6 +1360,17 @@ jobs:
     if ($r.Code -eq 0 -or $r.Output -notmatch 'directory change') {
         throw "a quoted command string spanning lines must still fail closed on its cd:`n$($r.Output)"
     }
+    # Adjacent quoted spans are ONE shell argument, and a command substitution runs even
+    # inside a printed string: both still change directory before the gate script.
+    foreach ($spelling in 'bash -c "cd sub; "''python3 scripts/gate.py''',
+                          'echo "$(cd sub; python3 scripts/gate.py)"') {
+        $r = New-FollowupRepo @{
+            'scripts/gate.py'          = '# probe'
+            'sub/scripts/gate.py'      = '# probe'
+            '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          $spelling`n$followupGate"
+        } $followupPolicy
+        if ($r.Code -eq 0 -or $r.Output -notmatch 'directory change') { throw "a directory change in ($spelling) must fail closed:`n$($r.Output)" }
+    }
     # A MESSAGE that mentions cd is not a command, even beside or naming a gate script.
     foreach ($message in 'echo "cd scripts is deprecated" && python3 scripts/gate.py',
                          'echo "cd scripts/gate.py is required for setup"',
