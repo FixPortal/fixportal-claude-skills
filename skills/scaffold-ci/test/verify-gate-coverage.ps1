@@ -1370,6 +1370,8 @@ jobs:
                           'echo "$(cd sub; python3 scripts/gate.py)"',
                           'echo "cd sub; python3 scripts/gate.py" | bash',
                           'echo $(bash -c "cd sub; python3 scripts/gate.py")',
+                          'echo `cd sub; python3 scripts/gate.py`',
+                          'cd>cd.log; python3 scripts/gate.py',
                           "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $r = New-FollowupRepo @{
             'scripts/gate.py'          = '# probe'
@@ -1384,6 +1386,12 @@ jobs:
                          'echo "$(date)"; echo "cd scripts/gate.py is deprecated"',
                          'echo then cd sub; python3 scripts/gate.py',
                          'echo hi! cd sub; python3 scripts/gate.py',
+                         'echo ${cd:-x}; python3 scripts/gate.py',
+                         'echo ${cd}; python3 scripts/gate.py',
+                         'echo {cd,ls}; python3 scripts/gate.py',
+                         'echo `pwd` cd sub; python3 scripts/gate.py',
+                         "echo ``pwd`n          `` cd sub; python3 scripts/gate.py",
+                         'bash -c "echo `pwd` cd sub; python3 scripts/gate.py"',
                          'bash -c "echo then cd sub; python3 scripts/gate.py"',
                          'printf "cd scripts is deprecated, use scripts/gate.py instead\n"') {
         $r = New-FollowupRepo @{
