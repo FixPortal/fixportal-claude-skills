@@ -143,10 +143,12 @@ jobs:
 
           # Any high match tiers the PR HIGH. A bash `case` glob lets `*` cross `/`, but
           # `**/` still demands at least one directory level. So a leading `**/` is also
-          # tried as its suffix (root files), and a mid-pattern `dir/**/x` is also tried
-          # with each `**/` collapsed to `*`, which matches `dir/x` at zero depth. Both
-          # retries only ADD matches, never remove one. (item 5 of the follow-up batch)
+          # tried as its suffix (root files), and each mid-pattern `/**/` is also tried as
+          # the extglob `@(/|/*/)` -- zero or more WHOLE directories -- so `dir/**/x`
+          # matches `dir/x` without also matching a sibling like `dirx/`. Both retries only
+          # ADD matches, never remove one. (item 5 of the follow-up batch)
           if ! $high; then
+            shopt -s extglob
             while IFS= read -r file; do
               [ -n "$file" ] || continue
               while IFS= read -r pattern; do
@@ -160,7 +162,7 @@ jobs:
                 esac
                 case "$pattern" in
                   *'/**/'*) # shellcheck disable=SC2254  # policy patterns intentionally act as globs
-                    case "$file" in ${pattern//\/\*\*\//\/*}) high=true ;; esac ;;
+                    case "$file" in ${pattern//\/\*\*\//@(\/|\/*\/)}) high=true ;; esac ;;
                 esac
               done <<< "$patterns"
               $high && break
