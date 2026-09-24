@@ -606,28 +606,42 @@ def writes_bash_env_to_github_env(body):
     assignment = re.compile(r"\bBASH_ENV\s*=", re.IGNORECASE)
     environment_file = re.compile(r"\$(?:\{GITHUB_ENV\}|GITHUB_ENV|env:GITHUB_ENV)", re.IGNORECASE)
 
+    def split_shell_commands(tokens):
+        commands = [[]]
+        for token in tokens:
+            if token in (";", "&", "&&", "||"):
+                commands.append([])
+            else:
+                commands[-1].append(token)
+        return commands
+
     def writes_environment_file(tokens):
-        return any(
+        if any(
             token in (">", ">>", "&>", "&>>")
             and index + 1 < len(tokens)
             and environment_file.search(tokens[index + 1])
             for index, token in enumerate(tokens)
-        ) or any(
-            token.lower() in ("tee", "add-content", "set-content", "out-file")
-            and any(environment_file.search(argument) for argument in tokens[index + 1 :])
-            for index, token in enumerate(tokens)
-        )
+        ):
+            return True
+        at_command_start = True
+        for index, token in enumerate(tokens):
+            if token in ("|", "|&"):
+                at_command_start = True
+                continue
+            if not at_command_start:
+                continue
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+                continue
+            at_command_start = False
+            if token.lower() in ("tee", "add-content", "set-content", "out-file"):
+                return any(environment_file.search(argument) for argument in tokens[index + 1 :])
+        return False
 
     def line_writes_environment_file(line):
         try:
             lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|<>")
             lexer.whitespace_split = True
-            commands = [[]]
-            for token in lexer:
-                if token in (";", "&", "&&", "||"):
-                    commands.append([])
-                else:
-                    commands[-1].append(token)
+            commands = split_shell_commands(list(lexer))
         except ValueError:
             return bool(
                 assignment.search(line)
@@ -680,7 +694,11 @@ def writes_bash_env_to_github_env(body):
             tokens = list(lexer)
         except ValueError:
             tokens = []
-        if marker and writes_environment_file(tokens):
+        if marker and any(
+            any(token in ("<<", "<<-") for token in command)
+            and writes_environment_file(command)
+            for command in split_shell_commands(tokens)
+        ):
             heredoc = marker.group(2)
             continue
         opening = re.search(r"(?:^|\s)\{\s*", line)
