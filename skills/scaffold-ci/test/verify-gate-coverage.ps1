@@ -1352,6 +1352,24 @@ jobs:
     if ($r.Code -eq 0 -or $r.Output -notmatch 'directory change') {
         throw "a quoted command string that changes directory before a gate script must fail closed:`n$($r.Output)"
     }
+    # A quoted command string may span block-scalar lines; its cd still counts.
+    $r = New-FollowupRepo @{
+        'scripts/gate.py'          = '# probe'
+        '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          bash -c `"cd sub;`n            python3 scripts/gate.py`"`n$followupGate"
+    } $followupPolicy
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'directory change') {
+        throw "a quoted command string spanning lines must still fail closed on its cd:`n$($r.Output)"
+    }
+    # A MESSAGE that mentions cd is not a command, even beside or naming a gate script.
+    foreach ($message in 'echo "cd scripts is deprecated" && python3 scripts/gate.py',
+                         'echo "cd scripts/gate.py is required for setup"',
+                         'printf "cd scripts is deprecated, use scripts/gate.py instead\n"') {
+        $r = New-FollowupRepo @{
+            'scripts/gate.py'          = '# probe'
+            '.github/workflows/ci.yml' = "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          $message`n          python3 scripts/gate.py`n$followupGate"
+        } $followupPolicy
+        if ($r.Code -ne 0) { throw "a message line mentioning cd must not read as a directory change ($message):`n$($r.Output)" }
+    }
 
     # A BASH_ENV: line inside a run body is shell text; a real env key still fails.
     $r = Invoke-Gate "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: |`n          cat <<'EOF' > notes.yml`n          BASH_ENV: documented-here-only`n          EOF`n$followupGate"
