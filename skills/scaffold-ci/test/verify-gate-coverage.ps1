@@ -100,6 +100,55 @@ jobs:
         throw "an omitted job must fail clearly:`n$($missing.Output)"
     }
 
+    # A gate naming a job that does not exist (a typo in needs:) must fail with a
+    # message, not a Python traceback from the feeder lookup.
+    $undefinedNeed = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build, biuld]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($undefinedNeed.Code -eq 0 -or $undefinedNeed.Output -match 'Traceback' -or
+        $undefinedNeed.Output -notmatch "needs undefined job\(s\): biuld") {
+        throw "an undefined needs id must fail clearly, not crash:`n$($undefinedNeed.Output)"
+    }
+
+    # A feeder skipped through an exempt dependency must fail closed, and the remediation
+    # text is copied straight into workflows, so it must be valid YAML: a bare
+    # `if: !cancelled()` is read as a YAML tag, not an expression.
+    $env:GATE_EXEMPT = 'optional'
+    try {
+        $skippedDependency = Invoke-Gate @'
+jobs:
+  optional:
+    runs-on: ubuntu-latest
+  quality:
+    needs: [optional]
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [quality]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    }
+    finally { $env:GATE_EXEMPT = '' }
+    if ($skippedDependency.Code -eq 0 -or $skippedDependency.Output -notmatch 'dependency chain') {
+        throw "a feeder skipped through an exempt needs dependency must fail closed:`n$($skippedDependency.Output)"
+    }
+    if ($skippedDependency.Output -match '`if: !cancelled\(\)`' -or
+        $skippedDependency.Output -notmatch [regex]::Escape('`if: ${{ !cancelled() }}`')) {
+        throw "the dependency-chain remediation must recommend a valid YAML spelling of !cancelled():`n$($skippedDependency.Output)"
+    }
+
     # --- Fail-open regression: a QUOTED job key is valid Actions syntax. It used to be
     #     invisible to the job scan, so it could never appear in missing-set arithmetic
     #     and the gate printed "all N job(s) accounted for" over an ungated quality job.
