@@ -1377,6 +1377,7 @@ jobs:
     # A MESSAGE that mentions cd is not a command, even beside or naming a gate script.
     foreach ($message in 'echo "cd scripts is deprecated" && python3 scripts/gate.py',
                          'echo "cd scripts/gate.py is required for setup"',
+                         'echo "$(date)"; echo "cd scripts/gate.py is deprecated"',
                          'printf "cd scripts is deprecated, use scripts/gate.py instead\n"') {
         $r = New-FollowupRepo @{
             'scripts/gate.py'          = '# probe'
