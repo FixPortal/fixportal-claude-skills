@@ -2264,6 +2264,12 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
             "deliberately not merge-blocking."
         )
 
+    # A typo in the gate's needs: would otherwise surface as a KeyError traceback from the
+    # feeder lookup below. GitHub rejects such a workflow too, so say so plainly.
+    undefined = sorted(set(needs) - set(jobs))
+    if undefined:
+        sys.exit(f"{workflow_path}: '{gate_job}' needs undefined job(s): {', '.join(undefined)}.")
+
     # A feeder can be skipped transitively when it depends on a conditional or
     # explicitly exempt job. Since the gate treats skipped as success, require an
     # always-running condition on that feeder before accepting the chain.
@@ -2292,7 +2298,7 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
         sys.exit(
             f"{workflow_path}: gate feeder dependency chain reaches conditional or exempt "
             f"job(s): {', '.join(sorted(unsafe_feeders))}. A skipped feeder passes the gate; "
-            "add `if: always()` or `if: !cancelled()` to the dependent feeder, or remove "
+            "add `if: always()` or `if: ${{ !cancelled() }}` to the dependent feeder, or remove "
             "the unsafe dependency."
         )
 
