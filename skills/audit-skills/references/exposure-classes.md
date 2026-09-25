@@ -52,7 +52,10 @@ the agent fetch private context at runtime — and it has **no fixed severity**,
 because the severity belongs to whatever the fetched store returns rather than to
 the instruction. Grade it from what that store holds: read a sample of what the
 command actually returns, from the directory the agent will run it in, and grade
-the worst class in the output.
+the worst class in the output. Take that sample only in a first-party runtime.
+When the audit itself runs through a third-party vendor, fetching the sample IS
+the exposure the finding describes: grade from the store's documented contents
+instead and record `sample not taken (third-party runtime)` in the evidence.
 
 `generic` is a grade, not a class: a clean skill produces a 🟩 and no finding, so
 it never appears in the enum.

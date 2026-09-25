@@ -245,27 +245,37 @@ it is narrower: `audit-ci`'s cost test reads measured Actions job durations for 
 So on those repos the envelope is a target enforced by READING the workflow — job counts,
 declared `timeout-minutes`, what the required lane contains — and an audit must report it
 as unmeasured rather than clean. An envelope nothing measured is a coverage gap, never a
-pass, and the difference matters most exactly where the check is absent: a public repo's
-minutes are billed the same as a private one's.
+pass, and the difference matters most exactly where the check is absent: standard
+GitHub-hosted runner minutes are free on public repositories, so the bill never flags an
+over-budget lane there — the envelope is a runtime and capacity limit, not a cost one.
+Larger runners are charged at every visibility.
 
 ### Rolling this contract out across the estate
 
 Every rule above makes `.claude/review-policy.json` and the merge-barrier paths HIGH, and
 HIGH requires CodeRabbit. Rolling the contract into twenty-odd repositories therefore
 proposes twenty-odd HIGH PRs, against an allowance [provenance.md](provenance.md) records
-degrading at 30 reviews in seven days on this account. The rollout as written cannot be
-reviewed under the budget it exists to protect, so it gets a stated exception rather than
-an operator quietly deciding one per repo.
+degrading at 30 reviews in seven days on this account. The rollout as written cannot all
+be reviewed under the budget it exists to protect — many of those PRs will be throttled
+out — so what an asset-parity PR's coverage rests on is stated here rather than decided
+quietly per repo.
 
-**Mechanical-sync exception.** An asset-parity PR is NORMAL, not HIGH, when ALL of these
-hold — each checkable from the diff, because the exception is a coverage claim:
+**Mechanical-sync exception.** This is a coverage claim, not a tier change.
+`review-tier.yml` still labels the PR HIGH — it labels any PR touching a HIGH path and
+re-applies a removed label — and CodeRabbit still runs on it, so the label and the spend
+are unchanged. What the exception governs is what the PR's review coverage rests on: a
+byte comparison rather than a reviewer's verdict, so a throttled or absent CodeRabbit
+review is not a coverage gap for the PR. It holds only when ALL of these hold — each
+checkable from the diff:
 
 1. Every changed path is a file this contract SHIPS (`.claude/review-policy.json`,
    `.coderabbit.yaml`, `.github/workflows/review-policy-guard.yml`,
    `.github/scripts/assert_gate_coverage.py`,
    `.github/scripts/assert_workflow_hygiene.py`, `scripts/summarize-stryker.ps1`).
-2. Each is BYTE-IDENTICAL to the canonical asset under
-   `~/.agents/skills/scaffold-ci/assets/` — proved per file with
+2. Each is BYTE-IDENTICAL to the canonical file that
+   `~/.agents/skills/scaffold-ci/scripts/canonical-assets.json` names for it (under
+   `assets/` for all but the Stryker summariser, whose canonical is
+   `templates/summarize-stryker.ps1`) — proved per file with
    `audit-ci/scripts/compare-canonical-file.ps1 -IgnoreLineEndings`, output pasted into
    the PR body.
 3. The PR changes nothing else. One repo-specific glob edited alongside the copy voids
@@ -273,12 +283,14 @@ hold — each checkable from the diff, because the exception is a coverage claim
 
 The reasoning: there is nothing here for a reviewer to find. The content was reviewed
 once where it is authored, and this PR asserts only that a copy matches it — which a byte
-comparison settles better than a language model can. CI and the guard still run.
+comparison settles better than a language model can. CI, the guard and CodeRabbit still
+run; the exception changes what the coverage rests on, not what runs.
 
 The exception does NOT cover a repo-specific tier edit, a `low` list, or a change to a
 canonical asset itself; those are the judgement HIGH exists for. A PR claiming the
-exception without the comparison output is HIGH, because the claim is the thing being
-trusted and an unevidenced one is worth nothing.
+exception without the comparison output is an ordinary HIGH PR whose coverage rests on
+CodeRabbit's verdict, because the claim is the thing being trusted and an unevidenced one
+is worth nothing.
 
 ### `.coderabbit.yaml`
 

@@ -115,7 +115,7 @@ try {
     $policyAfter = [IO.File]::ReadAllText((Join-Path $adopt '.claude' 'review-policy.json'))
     $null = $policyAfter | ConvertFrom-Json -ErrorAction Stop
     if (-not $policyAfter.Contains('".github/canonical-assets.json"')) { throw 'policy must gain the manifest entry' }
-    if ($policyAfter.Contains('"assert_canonical_assets.py"')) { throw 'the glob already covers the verifier -- no named entry should have been added' }
+    if ($policyAfter.Contains('".github/scripts/assert_canonical_assets.py"')) { throw 'the glob already covers the verifier -- no named entry should have been added' }
 
     # idempotence: a second run is a clean SKIP, not a second splice
     $r = Invoke-Rollout $adopt
@@ -217,6 +217,18 @@ try {
     $namedPolicy = [IO.File]::ReadAllText((Join-Path $namedPol '.claude' 'review-policy.json'))
     if (-not $namedPolicy.Contains('".github/scripts/assert_canonical_assets.py"')) { throw 'a glob-absent policy must gain the named verifier entry' }
     if (-not $namedPolicy.Contains('".github/canonical-assets.json"')) { throw 'a glob-absent policy must gain the manifest entry' }
+
+    # A policy that ALREADY names the verifier (and has no glob) must not gain a second
+    # copy. The prior-entry probe looked for `"assert_canonical_assets.py"` -- a bare
+    # basename that no named entry ever contains, since entries are repo-relative paths --
+    # so every such repo got the entry twice.
+    $priorNamed = New-FixtureRepo 'prior-named' -PolicyOverride ('{' + "`n" + '  "version": 1,' + "`n" + '  "high": [' + "`n" + '    ".claude/review-policy.json",' + "`n" + '    ".github/workflows/ci.yml",' + "`n" + '    ".github/scripts/assert_gate_coverage.py",' + "`n" + '    ".github/scripts/assert_canonical_assets.py"' + "`n" + '  ],' + "`n" + '  "low": []' + "`n" + '}' + "`n")
+    $r = Invoke-Rollout $priorNamed
+    if ($r.Code -ne 0) { throw "prior-named adoption must exit 0; got $($r.Code)`n$($r.Output)" }
+    $priorNamedPolicy = [IO.File]::ReadAllText((Join-Path $priorNamed '.claude' 'review-policy.json'))
+    $verifierEntries = [regex]::Matches($priorNamedPolicy, 'assert_canonical_assets\.py').Count
+    if ($verifierEntries -ne 1) { throw "a policy already naming the verifier must keep exactly one entry; found $verifierEntries" }
+    if (-not $priorNamedPolicy.Contains('".github/canonical-assets.json"')) { throw 'a prior-named policy must still gain the manifest entry' }
 
     # policy splice preserves CRLF too (the adopt fixture is CRLF)
     $policyAfterCrlf = [IO.File]::ReadAllText((Join-Path $adopt '.claude' 'review-policy.json'))

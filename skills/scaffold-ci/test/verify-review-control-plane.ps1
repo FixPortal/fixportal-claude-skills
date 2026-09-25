@@ -207,6 +207,11 @@ if ($text -match [regex]::Escape($widePush) -or $guard -match [regex]::Escape($w
 # entirely. The example policy carries the same instruction in its own $comment block.
 $policyExample = Get-Content (Join-Path $assets 'review-policy.example.json') -Raw
 $policy = $policyExample | ConvertFrom-Json
+# The $comment block says the FIRST TWO high entries are the review control plane -- this
+# file and .coderabbit.yaml. The order is what the comment points at, so it is pinned.
+if ($policy.high[0] -ne '.claude/review-policy.json' -or $policy.high[1] -ne '.coderabbit.yaml') {
+    throw "the example policy's first two high entries must be the review control plane; got '$($policy.high[0])', '$($policy.high[1])'"
+}
 if ($policy.high -notcontains '.claude/ci-budget-approval.json' -or
     $guard -notmatch [regex]::Escape('.claude/ci-budget-approval.json')) {
     throw 'The committed CI-budget approval must be tiered HIGH and required by the guard.'
@@ -345,6 +350,45 @@ if ($guard -match 'grep\s+-rEn') {
 }
 if ($guard -notmatch 'assert_workflow_hygiene\.py') {
     throw 'review-policy-guard.yml no longer runs the parsed workflow hygiene checker'
+}
+
+# Standard GitHub-hosted runner minutes are FREE on public repositories (GitHub's Actions
+# billing docs), so the bill never flags an over-budget lane there; only larger runners
+# are charged at every visibility. review-policy.md used to claim the opposite, which
+# turned the envelope's "unmeasured on public repos" gap into a cost claim that was false.
+if ($text -match "(?s)public\s+repo's\s+minutes\s+are\s+billed\s+the\s+same") {
+    throw "review-policy.md claims public Actions minutes are billed like a private repo's"
+}
+if ($text -notmatch '(?s)standard\s+GitHub-hosted\s+runner\s+minutes\s+are\s+free\s+on\s+public\s+repositories') {
+    throw 'review-policy.md must state that standard runner minutes are free on public repositories'
+}
+
+# The mechanical-sync exception used to say an asset-parity PR "is NORMAL, not HIGH".
+# review-tier.yml (shipped by this same skill) labels any PR touching a HIGH path and
+# re-applies a removed label, so the PR is HIGH and CodeRabbit runs regardless. The
+# exception governs what the PR's review COVERAGE rests on (byte parity), not the label
+# or the spend, and the doc has to say so or it contradicts the workflow it ships.
+$mechanicalSync = [regex]::Match($text, '(?ms)^\*\*Mechanical-sync exception\.\*\*(?<body>.*?)(?=^### )').Groups['body'].Value
+if (-not $mechanicalSync) { throw 'review-policy.md has lost the mechanical-sync exception section' }
+if ($mechanicalSync -match '(?s)is\s+NORMAL,\s+not\s+HIGH') {
+    throw 'the mechanical-sync exception claims a parity PR tiers NORMAL; review-tier.yml labels it HIGH'
+}
+if ($mechanicalSync -notmatch '(?s)review-tier\.yml`?\s+still\s+labels\s+the\s+PR\s+HIGH' -or
+    $mechanicalSync -notmatch '(?s)CodeRabbit\s+still\s+runs') {
+    throw 'the mechanical-sync exception must state that the PR stays labelled HIGH and CodeRabbit still runs'
+}
+
+# The parity proof must point at what scripts/canonical-assets.json actually names as
+# canonical. It used to say "under assets/" for every shipped file, but the Stryker
+# summariser's canonical is templates/summarize-stryker.ps1 -- a comparison against a
+# path that does not exist proves nothing.
+if ($mechanicalSync -match '(?s)canonical\s+asset\s+under\s+`~/\.agents/skills/scaffold-ci/assets/`') {
+    throw 'the mechanical-sync exception puts every canonical asset under assets/; the Stryker summariser is under templates/'
+}
+foreach ($needle in 'scripts/canonical-assets.json', 'templates/summarize-stryker.ps1') {
+    if ($mechanicalSync -notmatch [regex]::Escape($needle)) {
+        throw "the mechanical-sync exception must locate canonical assets by the inventory: $needle"
+    }
 }
 
 'scaffold-ci review control plane OK'

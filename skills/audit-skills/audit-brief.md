@@ -173,6 +173,7 @@ a sound but superseded skill is not technically broken.
   "exposure_findings": [
     { "severity": "🟥|🟧|🟨", "class": "credential|identity-topology|attribution|runtime-fetch", "evidence": "<exact path:line and the disclosing text>", "third_party_homes": ["<home that exports it>"], "fix": "<precise fix, described not applied>" }
   ],
+  "exposure_scope": "<first-party-only: no third-party home | swept: <third-party homes>>",
   "utility_evidence": [
     { "source": "<path/report/history/user-supplied evidence>", "window": "<dates or unknown>", "signal": "<observed fact, not inference>" }
   ],
@@ -187,10 +188,12 @@ a sound but superseded skill is not technically broken.
 in the skill body. An empty or token `references_checked` means you didn't do the
 job — go back and verify.
 
-`exposure_findings` may be empty, but only after the sweep actually ran. An empty
-array asserts a clean sweep over a named scope, so the scope decision belongs in
-`top_issue` or the grade rationale when it is the reason nothing was reported. A
-🟩 exposure grade with no stated scope is the failure this axis exists to prevent:
+`exposure_findings` may be empty only after one of two things: the skill has no
+third-party home, recorded as `exposure_scope: first-party-only`, or the sweep over
+its third-party homes actually ran and found nothing, recorded as
+`exposure_scope: swept: <those homes>`. `exposure_scope` is where that decision
+lives; it is not an overload of `top_issue` or the grade rationale.
+A 🟩 exposure grade with no stated scope is the failure this axis exists to prevent:
 it reads identically whether the skill is clean or was never scanned.
 
 `utility_evidence` must also be non-empty. If no attributable evidence exists,
