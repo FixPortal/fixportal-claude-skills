@@ -64,11 +64,12 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(any("private TLD" in p for p in problems), problems)
 
     def test_flags_private_ip(self):
+        # No port here: a port would trip the credentials-or-port branch instead and the
+        # assertion would pass without ever exercising the private-IP check (CodeRabbit,
+        # PR #122).
         ip = j("192.168.", "1.5")
-        problems = scan("f", j("connect to http://", ip, ":8080/"))
-        # The non-default port also trips the credentials-or-port branch; either reason is
-        # fine, but there must be exactly one problem for the one URL match, not zero.
-        self.assertEqual(len(problems), 1)
+        problems = scan("f", j("connect to http://", ip, "/"))
+        self.assertTrue(any("private or loopback IP" in p for p in problems), problems)
 
     def test_allows_placeholder_host(self):
         self.assertEqual(scan("f", "https://<app>.example.com"), [])
