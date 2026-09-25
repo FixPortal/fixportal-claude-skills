@@ -195,6 +195,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Regression-test the sanitisation scan itself
+        run: python3 .github/scripts/test_assert_no_private_tokens.py
+
       - name: Assert tracked files carry no machine paths, org wiring, or real endpoints
         run: python3 .github/scripts/assert_no_private_tokens.py
 
