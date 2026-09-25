@@ -434,6 +434,27 @@ jobs:
     try { & $contractCheck @contractArguments 2>$null | Out-Null }
     catch { $tagIgnoreFailed = $true }
     if (-not $tagIgnoreFailed) { throw 'A tags-ignore-only publish path without ancestry validation passed.' }
+    # GitHub does not evaluate paths/paths-ignore for tag pushes, so a push block carrying
+    # ONLY a path filter fires on every tag -- yet it read as "filtered" and skipped the
+    # ancestry inspection. (CodeRabbit, public mirror PR #124.)
+    $pathsOnly = $release.Replace("    branches:`n      - main`n    tags:`n      - 'v*'`n", "    paths: ['src/**']`n")
+    if ($pathsOnly -eq $release) { throw 'the paths-only push fixture mutated nothing; the case would be vacuous' }
+    $pathsOnly = Remove-FirstShipAncestry $pathsOnly
+    [IO.File]::WriteAllText($releasePath, $pathsOnly.Replace("`r`n", "`n"))
+    $pathsOnlyFailed = $false
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { $pathsOnlyFailed = $true }
+    if (-not $pathsOnlyFailed) { throw 'A paths-only push publish path without ancestry validation passed.' }
+    # A branch comparison OR-ed with always() still runs on a tag; the job-level skip
+    # inferred "branch-only" from the comparison substring alone. (CodeRabbit, public
+    # mirror PR #124.)
+    $alwaysJob = $release.Replace("  ship:`n", "  ship:`n    if: github.ref == 'refs/heads/main' || always()`n")
+    $alwaysJob = Remove-FirstShipAncestry $alwaysJob
+    [IO.File]::WriteAllText($releasePath, $alwaysJob.Replace("`r`n", "`n"))
+    $alwaysJobFailed = $false
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { $alwaysJobFailed = $true }
+    if (-not $alwaysJobFailed) { throw 'A mainline-or-always() job without ancestry validation passed.' }
     [IO.File]::WriteAllText($releasePath, $release.Replace("`r`n", "`n"))
     $approvedContractArguments = $contractArguments.Clone()
     $repoApprovalEvidencePath = Join-Path $tempRoot 'repo-approval-evidence.json'
@@ -663,6 +684,39 @@ jobs:
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy.example.json') (Join-Path $repo '.claude/review-policy.json') -Force
     $guardPath = Join-Path $repo '.github/workflows/review-policy-guard.yml'
     $guard = Get-Content -LiteralPath $guardPath -Raw
+
+    # Permitted differences are normalised in the FIELDS that carry them -- the trigger
+    # branches and the workflow paths -- not by a global text replace. Replacing every
+    # occurrence of the mainline name let an unrelated guard line that swapped `main` for
+    # the mainline normalise back to canonical and pass the drift check. (CodeRabbit,
+    # public mirror PR #124.)
+    function Set-Mainline([string] $branch) {
+        [IO.File]::WriteAllText($workflowPath, $workflow.Replace('branches: [main]', "branches: [$branch]").Replace('origin main', "origin $branch").Replace("`r`n", "`n"))
+        [IO.File]::WriteAllText($releasePath, $release.Replace('origin main', "origin $branch").Replace("`r`n", "`n"))
+        $adapted = $guard.Replace('branches: [main]', "branches: [$branch]")
+        if ($adapted -eq $guard) { throw 'the mainline guard fixture mutated nothing; the case would be vacuous' }
+        [IO.File]::WriteAllText($guardPath, $adapted.Replace("`r`n", "`n"))
+        $adapted
+    }
+    $trunkGuard = Set-Mainline 'trunk'
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "a trunk-mainline repo with the guard's branch fields adapted failed the audit: $_" }
+    $trunkGuardComment = $trunkGuard.Replace('syntax in the main CI workflow', 'syntax in the trunk CI workflow')
+    if ($trunkGuardComment -eq $trunkGuard) { throw 'the guard comment fixture mutated nothing; the case would be vacuous' }
+    [IO.File]::WriteAllText($guardPath, $trunkGuardComment.Replace("`r`n", "`n"))
+    $unrelatedNormalised = $false
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { $unrelatedNormalised = $true }
+    if (-not $unrelatedNormalised) { throw 'an unrelated guard edit was normalised away by the mainline substitution' }
+    # The global replace also fired INSIDE other words: with mainline `develop`, the
+    # canonical comment "per developer" became "per mainer" and no adapted guard could
+    # ever pass. Field-scoped normalisation leaves the comment alone.
+    $null = Set-Mainline 'develop'
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "a develop-mainline repo failed the audit (the substitution reached into 'developer'?): $_" }
+    [IO.File]::WriteAllText($workflowPath, $workflow.Replace("`r`n", "`n"))
+    [IO.File]::WriteAllText($releasePath, $release.Replace("`r`n", "`n"))
+
     [IO.File]::WriteAllText($guardPath, $guard.Replace('run: python3 .github/scripts/assert_workflow_hygiene.py', 'run: echo skipped').Replace("`r`n", "`n"))
     $guardFailed = $false
     try { & $contractCheck @contractArguments 2>$null | Out-Null }

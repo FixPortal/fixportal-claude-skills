@@ -272,12 +272,14 @@ checkable from the diff:
    `.coderabbit.yaml`, `.github/workflows/review-policy-guard.yml`,
    `.github/scripts/assert_gate_coverage.py`,
    `.github/scripts/assert_workflow_hygiene.py`, `scripts/summarize-stryker.ps1`).
-2. Each is BYTE-IDENTICAL to the canonical file that
+2. Each is identical, line endings aside, to the canonical file that
    `~/.agents/skills/scaffold-ci/scripts/canonical-assets.json` names for it (under
    `assets/` for all but the Stryker summariser, whose canonical is
    `templates/summarize-stryker.ps1`) — proved per file with
    `audit-ci/scripts/compare-canonical-file.ps1 -IgnoreLineEndings`, output pasted into
-   the PR body.
+   the PR body. Line endings are excluded because git rewrites them per checkout, so
+   raw byte identity is not a condition a copy can reliably meet; every other byte must
+   match.
 3. The PR changes nothing else. One repo-specific glob edited alongside the copy voids
    the exception for the whole PR.
 

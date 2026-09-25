@@ -230,6 +230,17 @@ try {
     if ($verifierEntries -ne 1) { throw "a policy already naming the verifier must keep exactly one entry; found $verifierEntries" }
     if (-not $priorNamedPolicy.Contains('".github/canonical-assets.json"')) { throw 'a prior-named policy must still gain the manifest entry' }
 
+    # The coverage probe read the WHOLE policy text, so a `.github/scripts/**` glob sitting
+    # in `low` counted as covering the verifier and the rollout omitted the named entry
+    # from `high` -- then failed its own conformance proof with all four artefacts already
+    # written. Coverage is decided inside the high array. (CodeRabbit, public mirror PR #124.)
+    $lowGlob = New-FixtureRepo 'low-glob' -PolicyOverride ('{' + "`n" + '  "version": 1,' + "`n" + '  "high": [' + "`n" + '    ".claude/review-policy.json",' + "`n" + '    ".github/workflows/ci.yml",' + "`n" + '    ".github/scripts/assert_gate_coverage.py"' + "`n" + '  ],' + "`n" + '  "low": [' + "`n" + '    ".github/scripts/**"' + "`n" + '  ]' + "`n" + '}' + "`n")
+    $r = Invoke-Rollout $lowGlob
+    if ($r.Code -ne 0) { throw "a glob only in low must not count as high coverage; got $($r.Code)`n$($r.Output)" }
+    $lowGlobPolicy = [IO.File]::ReadAllText((Join-Path $lowGlob '.claude' 'review-policy.json'))
+    $lowGlobHigh = [regex]::Match($lowGlobPolicy, '(?s)"high"\s*:\s*\[(?<body>.*?)\]').Groups['body'].Value
+    if (-not $lowGlobHigh.Contains('".github/scripts/assert_canonical_assets.py"')) { throw 'a policy whose only verifier glob is in low must gain the named verifier entry in high' }
+
     # policy splice preserves CRLF too (the adopt fixture is CRLF)
     $policyAfterCrlf = [IO.File]::ReadAllText((Join-Path $adopt '.claude' 'review-policy.json'))
     if (-not $policyAfterCrlf.Contains("`r`n")) { throw 'review-policy.json CRLF endings were not preserved' }

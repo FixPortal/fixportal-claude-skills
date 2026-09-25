@@ -47,10 +47,22 @@ function Assert-CanonicalFile([string] $relativePath, [string] $assetName, [stri
     if ($PermittedDifference) {
         $canonicalText = ([IO.File]::ReadAllText($canonical) -replace "`r`n", "`n")
         $actualText = ([IO.File]::ReadAllText($actual) -replace "`r`n", "`n")
-        foreach ($difference in $PermittedDifference) {
-            $parts = $difference -split '=>', 2
-            if ($parts.Count -eq 2) { $actualText = $actualText.Replace($parts[1], $parts[0]) }
-        }
+        # Normalised ONLY on the lines that carry the permitted fields -- the trigger
+        # branch lists and workflow paths -- never across the whole file. A global replace
+        # let any other line that swapped the token pass as canonical, and it also fired
+        # inside words: mainline `develop` turned the comment "per developer" into "per
+        # mainer", so no adapted guard could ever pass. (CodeRabbit, public mirror PR #124.)
+        $fieldLine = '^\s*branches:|\.github/workflows/'
+        $actualText = @($actualText -split "`n" | ForEach-Object {
+            $line = $_
+            if ($line -match $fieldLine) {
+                foreach ($difference in $PermittedDifference) {
+                    $parts = $difference -split '=>', 2
+                    if ($parts.Count -eq 2) { $line = $line.Replace($parts[1], $parts[0]) }
+                }
+            }
+            $line
+        }) -join "`n"
         if ($actualText -cne $canonicalText) { throw "Scaffold asset drift: $relativePath" }
         return
     }
@@ -407,9 +419,14 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
     # the flow form `on: [push]` is invisible to the block regex above. All three used to
     # `continue` past the entire ancestry inspection, leaving the control fail-open for
     # the two most common publish trigger shapes.
+    #
+    # Only a BRANCH or TAG filter narrows the refs a push block fires for. GitHub does not
+    # evaluate paths/paths-ignore for tag pushes, so a block carrying only a path filter
+    # fires on every tag exactly as a bare one does -- it used to read as "filtered" and
+    # skip the inspection. (CodeRabbit, public mirror PR #124.)
     $hasTagFilter = $push -match '(?m)^    tags(?:-ignore)?:\s*(?:\[.*\]\s*|)$'
     $bareBlockPush = [regex]::IsMatch($workflowText, '(?m)^  push:\s*(?:#.*)?$') -and
-        $push -notmatch '(?m)^    (?:branches|branches-ignore|tags|tags-ignore|paths|paths-ignore):'
+        $push -notmatch '(?m)^    (?:branches|branches-ignore|tags|tags-ignore):'
     $flowPush = [regex]::IsMatch($workflowText, '(?m)^on:\s*\[[^\]]*\bpush\b[^\]]*\]\s*$')
     $releaseTrigger = [regex]::IsMatch($workflowText, '(?m)^  release:\s*(?:#.*)?$') -or
         [regex]::IsMatch($workflowText, '(?m)^on:\s*\[[^\]]*\brelease\b[^\]]*\]\s*$')
@@ -437,8 +454,18 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
         # every publish step in that job then escaped the publish detector, the ordering
         # check, the continue-on-error check and Assert-AncestryRunsOnTag. Fail-open, and
         # reachable by adding one guard to one step. (CodeRabbit, PR #135.)
-        $mainlineNameGate = $mainline -and $jobText -match ("(?m)^    if:.*github\.ref_name\s*==\s*['`"]" + [regex]::Escape($mainline) + "['`"]")
-        if (($mainlineNameGate -or $jobText -match "(?m)^    if:.*github\.ref\s*==\s*['`"]refs/heads/") -and
+        #
+        # The branch comparison proves nothing on its own: `github.ref == 'refs/heads/main'
+        # || always()` is true on every tag. The skip needs the WHOLE job condition to be
+        # a conjunction containing the comparison -- any `||` means some other disjunct
+        # may admit a tag, so the job stays under inspection. (CodeRabbit, public mirror
+        # PR #124.)
+        # ponytail: a `||` scan, not an expression parser -- `!(github.ref == ...)` and
+        # similar negations still read as branch-only; parse the expression if that bites.
+        $jobCondition = [regex]::Match($jobText, '(?m)^    if:\s*(?<condition>.*?)\s*$').Groups['condition'].Value
+        $mainlineNameGate = $mainline -and $jobCondition -match ("github\.ref_name\s*==\s*['`"]" + [regex]::Escape($mainline) + "['`"]")
+        if (($mainlineNameGate -or $jobCondition -match "github\.ref\s*==\s*['`"]refs/heads/") -and
+            $jobCondition -notmatch '\|\|' -and
             $jobText -notmatch '(?i)refs/tags|ref_type|startsWith\s*\(\s*github\.ref') { continue }
         # A `uses:` job calls a reusable workflow and has no steps of its own, so neither
         # the publish detector nor the ancestry check can see anything. Requiring the
