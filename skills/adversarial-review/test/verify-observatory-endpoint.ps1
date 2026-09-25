@@ -26,11 +26,14 @@ function Assert-ObservatoryEndpoint([string] $name, [string] $text) {
     # the env var (directly or through $observatoryUrl), and $observatoryUrl itself may only
     # ever be assigned from it.
     $allowedHosts = '$observatoryUrl', '$env:OBSERVATORY_URL'
-    $posts = [regex]::Matches($text, '(?m)(?:-Uri|\bUri\s*=)\s*"([^"]*)/api/events"')
+    # Either quote style is read. A single-quoted Uri is a literal -- '$observatoryUrl/...'
+    # never expands -- so only the double-quoted form can carry the env var; anything
+    # single-quoted is a hard-coded host by construction of the language.
+    $posts = [regex]::Matches($text, '(?m)(?:-Uri|\bUri\s*=)\s*(?<q>["''])(?<host>[^"'']*)/api/events\k<q>')
     if ($posts.Count -eq 0) { throw "$name has no /api/events post to check" }
     foreach ($post in $posts) {
-        if ($post.Groups[1].Value -notin $allowedHosts) {
-            throw "$name posts telemetry to '$($post.Groups[1].Value)' rather than OBSERVATORY_URL"
+        if ($post.Groups['q'].Value -ne '"' -or $post.Groups['host'].Value -notin $allowedHosts) {
+            throw "$name posts telemetry to '$($post.Groups['host'].Value)' rather than OBSERVATORY_URL"
         }
     }
     foreach ($assignment in [regex]::Matches($text, '(?m)\$observatoryUrl\s*=\s*([^\r\n]*)')) {
@@ -59,5 +62,13 @@ if ($mutated -eq $codex) { throw 'red check did not mutate the codex driver' }
 $rejected = $false
 try { Assert-ObservatoryEndpoint 'mutated codex-review.ps1' $mutated } catch { $rejected = $true }
 if (-not $rejected) { throw 'a driver posting to a host other than OBSERVATORY_URL was accepted' }
+
+# RED CHECK: the valid post retained, plus a SECOND post whose Uri is single-quoted. The
+# Uri regex only read double-quoted URIs, so this literal host was never inspected and the
+# driver passed on the strength of the post it kept. (CodeRabbit, public mirror PR #124.)
+$singleQuoted = $codex + "`nInvoke-RestMethod -Uri 'https://collector.example.net/api/events' -Method Post`n"
+$rejected = $false
+try { Assert-ObservatoryEndpoint 'single-quoted codex-review.ps1' $singleQuoted } catch { $rejected = $true }
+if (-not $rejected) { throw 'a driver adding a single-quoted literal-host post beside the valid one was accepted' }
 
 'adversarial-review observatory endpoint contract OK'

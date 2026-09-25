@@ -391,4 +391,18 @@ foreach ($needle in 'scripts/canonical-assets.json', 'templates/summarize-stryke
     }
 }
 
+# The criterion must describe the comparison it cites. It said BYTE-IDENTICAL while the
+# required proof is compare-canonical-file.ps1 -IgnoreLineEndings, which accepts files
+# differing only in line endings -- so a PR could pass the proof without meeting the
+# stated condition. (CodeRabbit, public mirror PR #124.)
+if ($mechanicalSync -notmatch '-IgnoreLineEndings') {
+    throw 'the mechanical-sync exception must name compare-canonical-file.ps1 -IgnoreLineEndings as the proof'
+}
+if ($mechanicalSync -match 'BYTE-IDENTICAL') {
+    throw 'the mechanical-sync exception claims byte identity, but its proof ignores line endings'
+}
+if ($mechanicalSync -notmatch '(?s)line\s+endings\s+aside') {
+    throw 'the mechanical-sync exception must state that parity is judged with line endings aside'
+}
+
 'scaffold-ci review control plane OK'

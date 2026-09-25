@@ -73,13 +73,27 @@ if (Test-Path -LiteralPath $ciPath -PathType Leaf) { $ciText = [IO.File]::ReadAl
 $policyText = $null
 if (Test-Path -LiteralPath $policyPath -PathType Leaf) { $policyText = [IO.File]::ReadAllText($policyPath) }
 
+# Every "does the policy cover X" question is asked of the HIGH array body, never the
+# whole file: a `.github/scripts/**` glob sitting in `low` read as covering the verifier,
+# so the rollout omitted the named entry from high and then failed its own conformance
+# proof with all four artefacts already written. Empty when there is no high array.
+function Get-HighArrayBody([string] $Text) {
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    $open = [regex]::Match($Text, '"high"\s*:\s*\[')
+    if (-not $open.Success) { return '' }
+    $after = $Text.Substring($open.Index + $open.Length)
+    $close = $after.IndexOf(']')
+    if ($close -ge 0) { $after.Substring(0, $close) } else { $after }
+}
+$policyHigh = Get-HighArrayBody $policyText
+
 # Idempotence is ALL FOUR artefacts, not one: a single-marker check reads a
 # half-finished adoption as complete and buries it. A partial set is a SKIP for hand
 # completion.
 $verifierPresent = Test-Path -LiteralPath $verifierPath -PathType Leaf
 $manifestPresent = Test-Path -LiteralPath $manifestPath -PathType Leaf
 $ciMentions = ($null -ne $ciText) -and $ciText.Contains('assert_canonical_assets.py')
-$policyMentions = ($null -ne $policyText) -and $policyText.Contains('".github/canonical-assets.json"')
+$policyMentions = $policyHigh.Contains('".github/canonical-assets.json"')
 $presentParts = @(
     if ($verifierPresent) { 'verifier' }
     if ($manifestPresent) { 'manifest' }
@@ -91,7 +105,7 @@ if ($presentParts.Count -eq 4) {
     $adoptPython = @('python3', 'python') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
     if (-not $adoptPython) { throw "no python interpreter on this host -- cannot prove $name verifies" }
     $proofOut = (& $adoptPython $verifierPath $repo 2>&1 | Out-String)
-    $coverage = ($LASTEXITCODE -eq 0) -and $ciText.Contains('python3 .github/scripts/assert_canonical_assets.py') -and $policyText.Contains('".github/canonical-assets.json"')
+    $coverage = ($LASTEXITCODE -eq 0) -and $ciText.Contains('python3 .github/scripts/assert_canonical_assets.py') -and $policyMentions
     if (-not $coverage) {
         $issues += "all four artefacts are present but conformance is incomplete (verifier exit $LASTEXITCODE, CI/policy wiring checked) -- inspect by hand`n$proofOut"
     }
@@ -217,8 +231,8 @@ if ([regex]::Matches($ciReread, 'assert_canonical_assets\.py').Count -ne 1) {
 # on the preflight-read $policyText -- a concurrent edit mid-run is not the threat model.
 $policyEol = if ($policyText.Contains("`r`n")) { "`r`n" } else { "`n" }
 $additions = @()
-if (-not $policyText.Contains('".github/canonical-assets.json"')) { $additions += '".github/canonical-assets.json"' }
-$verifierCovered = $policyText.Contains('".github/scripts/**"') -or $policyText.Contains('".github/scripts/assert_canonical_assets.py"')
+if (-not $policyHigh.Contains('".github/canonical-assets.json"')) { $additions += '".github/canonical-assets.json"' }
+$verifierCovered = $policyHigh.Contains('".github/scripts/**"') -or $policyHigh.Contains('".github/scripts/assert_canonical_assets.py"')
 if (-not $verifierCovered) { $additions += '".github/scripts/assert_canonical_assets.py"' }
 if ($additions.Count -gt 0) {
     $highMatch = [regex]::Match($policyText, '"high"\s*:\s*\[')

@@ -225,19 +225,29 @@ try {
     Assert-Gaps $malformedPrivateResult @($baselineGaps + 'code-security configuration attachment response has non-numeric exit_code/http_status') `
         'Malformed private attachment status produced the wrong evidence gap.'
 
-    $mismatchedAttachment = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
     # Real API shape: `status` at the top level, identity under `configuration`. The old
     # fixtures were authored to the classifier rather than to the API, so the classifier
     # could read the wrong level indefinitely with every test green.
-    $mismatchedAttachment.code_security_configuration.body_json = '{"status":"attached","configuration":{"id":99999,"name":"Different public policy"}}'
-    $mismatchedAttachmentPath = Join-Path $temp 'mismatched-public-attachment.json'
-    $mismatchedAttachment | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mismatchedAttachmentPath
-    $mismatchedAttachmentResult = @(& $classifier -EvidencePath $mismatchedAttachmentPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
-    if ($mismatchedAttachmentResult.Status -ne 'NONCOMPLIANT' -or
-        $mismatchedAttachmentResult.Findings -notcontains 'Attached code-security configuration does not match the required public configuration') {
-        throw 'A public repository attached to a different configuration must be policy drift.'
+    #
+    # ONE identity field differs per case. A fixture changing both id and name cannot
+    # catch a classifier that compares only one of them -- the wrong configuration was
+    # once accepted whenever it merely shared the required one's display name, and a
+    # both-fields fixture stayed green through it. (CodeRabbit, public mirror PR #124.)
+    foreach ($case in @(
+        @{ Name = 'id differs, name matches'; Body = '{"status":"attached","configuration":{"id":99999,"name":"Public repositories"}}' },
+        @{ Name = 'name differs, id matches'; Body = '{"status":"attached","configuration":{"id":12345,"name":"Different public policy"}}' }
+    )) {
+        $mismatchedAttachment = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+        $mismatchedAttachment.code_security_configuration.body_json = $case.Body
+        $mismatchedAttachmentPath = Join-Path $temp "mismatched-public-attachment-$($case.Name -replace '[ ,]+', '-').json"
+        $mismatchedAttachment | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mismatchedAttachmentPath
+        $mismatchedAttachmentResult = @(& $classifier -EvidencePath $mismatchedAttachmentPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
+        if ($mismatchedAttachmentResult.Status -ne 'NONCOMPLIANT' -or
+            $mismatchedAttachmentResult.Findings -notcontains 'Attached code-security configuration does not match the required public configuration') {
+            throw "A public repository attached to a different configuration ($($case.Name)) must be policy drift."
+        }
+        Assert-Gaps $mismatchedAttachmentResult $baselineGaps "Attachment identity drift ($($case.Name)) produced unrelated evidence gaps."
     }
-    Assert-Gaps $mismatchedAttachmentResult $baselineGaps 'Attachment identity drift produced unrelated evidence gaps.'
 
     # The attachment key is `status`, not `state`. Live on 2026-09-25:
     #   gh api repos/<org>/<public-repo>/code-security-configuration
