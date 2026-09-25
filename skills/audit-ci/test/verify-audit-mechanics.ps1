@@ -639,6 +639,27 @@ jobs:
         if (-not $policyFailed) { throw "Guard-required path '$requiredPath' missing from HIGH passed the audit." }
     }
 
+    # Primary-workflow selection. SKILL.md defines ONE primary workflow; the checker took
+    # whichever HIGH workflow came first in the policy array, so a repo tiering a deploy
+    # workflow HIGH beside ci.yml could be audited against the wrong file (Gitar, public
+    # mirror PR #124). ci.yml wins when present; otherwise several candidates are ambiguous.
+    $policy = $originalPolicy | ConvertFrom-Json
+    $policy.high = @('.github/workflows/deploy.yml') + @($policy.high)
+    $policy | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $policyPath
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "A HIGH deploy workflow listed before ci.yml displaced ci.yml as the primary workflow: $_" }
+
+    $policy = $originalPolicy | ConvertFrom-Json
+    $policy.high = @('.github/workflows/build.yml', '.github/workflows/deploy.yml') +
+        @($policy.high | Where-Object { $_ -ne '.github/workflows/ci.yml' })
+    $policy | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $policyPath
+    $ambiguous = $null
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { $ambiguous = "$_" }
+    if ($ambiguous -notmatch 'Ambiguous primary workflow') {
+        throw "Two HIGH workflows without ci.yml were not reported as an ambiguous primary workflow: $ambiguous"
+    }
+
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy.example.json') (Join-Path $repo '.claude/review-policy.json') -Force
     $guardPath = Join-Path $repo '.github/workflows/review-policy-guard.yml'
     $guard = Get-Content -LiteralPath $guardPath -Raw
