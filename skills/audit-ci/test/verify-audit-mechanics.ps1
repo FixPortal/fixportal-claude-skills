@@ -730,6 +730,19 @@ jobs:
         }
     }
 
+    # The permitted-difference scope must bind BOTH alternatives to the start of the line.
+    # Unanchored, `.github/workflows/` matched inside any comment that mentions a workflow
+    # path, so a comment swapping the mainline token would be normalised away (Gitar, #276).
+    $contractText = Get-Content -LiteralPath $contractCheck -Raw
+    $scope = [regex]::Match($contractText, "(?m)^\s*\`$fieldLine\s*=\s*'([^']+)'").Groups[1].Value
+    if (-not $scope) { throw 'could not read $fieldLine from test-scaffold-contract.ps1' }
+    foreach ($field in '    branches: [main]', '            .github/workflows/ci.yml .github/workflows/review-policy-guard.yml \') {
+        if ($field -notmatch $scope) { throw "the permitted-difference scope no longer matches a real field line: $field" }
+    }
+    if ('  # the `.github/workflows/**` guard on main' -match $scope) {
+        throw 'the permitted-difference scope matches a comment that mentions a workflow path'
+    }
+
     'audit-ci mechanics OK'
 }
 finally {
