@@ -59,8 +59,8 @@ dominate the wall clock:
 runs-on: blacksmith-4vcpu-ubuntu-2404   # was: ubuntu-latest
 ```
 
-The house split, as deployed across the estate (backend, frontend, engine and
-learning-platform repositories among others):
+The house split, as deployed across the estate (several .NET and frontend repos
+and others):
 
 | Lane | Runner | Why |
 |---|---|---|
@@ -159,6 +159,13 @@ jobs:
         run: dotnet restore YourSolution.sln
       - name: Build
         run: dotnet build YourSolution.sln --configuration Release --no-restore
+      # `YourSolution.sln` here means the FAST projects only. The moment an extended test
+      # project exists (scaffold-tests directs you to create one), running the solution
+      # runs it too: on every PR, against the 15-runner-minute budget, the 30s hang
+      # ceiling and timeout-minutes: 10. Keep the extended project out of the solution,
+      # or name a solution filter -- `dotnet test YourSolution.Fast.slnf` -- or list the
+      # fast projects explicitly. Excluding by filter is not the answer; the extended
+      # lane rule below says so and it applies here too.
       - name: Test
         run: dotnet test YourSolution.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults --blame-hang-timeout 30s --blame-hang-dump-type none
       - name: Upload test results
@@ -301,8 +308,27 @@ constrain tags. An adversarial-review sweep found this in three estate repos on 
 day; both repos checked had **zero** tag-target rulesets, so nothing outside the workflow
 was enforcing anything.
 
-Two fixes, and they are not alternatives — the first is the one that works without
-administrative state:
+**The control that binds has to live outside the tagged tree.** GitHub runs a
+`push: tags:` workflow from the tagged commit's own tree, so the assertion below is
+content the tag-pusher controls: `git push origin v1.2.3` naming a commit that never
+carried the step runs a workflow with no ancestry check at all. That makes the
+in-workflow assertion a belt — cheap, fail-closed, visible in the diff, worth having —
+and not the primary control. Primary is state the pusher cannot author in the same
+commit:
+
+- **restricted tag creation** (a tag ruleset — load-bearing, not defence in depth), or
+- **environment-protected deploy credentials**, so an unreviewed tag's job cannot reach
+  the secret, or
+- a **trusted release workflow reached by `workflow_call` from a protected branch**,
+  which executes the caller's tree rather than the tag's.
+
+There is also **no PR-time enforcement** of any of this: `.github/workflows/**` is
+deliberately not HIGH and `assert_workflow_hygiene.py` carries no ancestry assertion, so
+a newly added tag-fired publish workflow is NORMAL and mechanically unchecked until
+someone runs `audit-ci` against the repo. Adding one is a reviewed change on its own
+merits, not a routine workflow edit.
+
+With that ordering understood, add both:
 
 1. **Assert reachability from the default branch, before restore.** Fails closed and is
    visible in the diff:
@@ -330,9 +356,9 @@ administrative state:
    drop the `v*` tag trigger entirely if nothing needs it. A tag push satisfies
    `github.event_name == 'push'`, so the event check alone gates nothing.
 
-Add a tag ruleset as defence in depth if you want one, but write the assertion first:
-the workflow is in the repo and reviewable, the ruleset is administrative state nobody
-diffs.
+Write the assertion because it is cheap and reviewable, but do not stop there: the
+ruleset is administrative state nobody diffs, and it is also the only one of the two
+that an unreviewed tag cannot simply omit.
 
 ### Job naming — CI dashboard lane contract
 
@@ -343,9 +369,10 @@ rendered as a package) or vanish from the board entirely (a job whose name
 matches no pattern, e.g. `build-and-push` → neither lane). Always set an
 explicit job `name:` — never rely on the job id — and follow:
 
-- **Deploy job** → `Deploy (<target>)` — e.g. `Deploy (your-prod)`,
-  `Deploy (acme-dev-ui)`, `Deploy (Azure Container Apps)`. Must contain
-  `deploy`; `<target>` must NOT contain a package term (below).
+- **Deploy job** → `Deploy (<target>)` where `<target>` is a deploy target name
+  such as a production slot or a client dev UI (e.g. `Deploy (<target>)`), or
+  `Deploy (Azure Container Apps)`. Must contain `deploy`; `<target>` must NOT
+  contain a package term (below).
 - **Publish/package job** → `Publish <Artifact> (<location>)` — e.g.
   `Publish Image (GHCR)`, `Publish Image (ACR)`, `Publish Package (NuGet)`,
   `Publish Package (npm)`. Must contain a package term; must NOT contain `deploy`.
@@ -397,6 +424,9 @@ skills root, which would resolve only under that runtime.
           GATE_EXEMPT: ''
         run: python3 .github/scripts/assert_gate_coverage.py .github/workflows/ci.yml
 
+      - name: Assert canonical asset copies match the committed manifest
+        run: python3 .github/scripts/assert_canonical_assets.py
+
   ci-gate:
     name: CI Gate
     if: always()
@@ -407,8 +437,10 @@ skills root, which would resolve only under that runtime.
     steps:
       - name: Fail if any upstream job did not succeed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ join(needs.*.result, ', ') }}
         run: |
-          echo "Upstream results: ${{ join(needs.*.result, ', ') }}"
+          echo "Upstream results: $RESULTS"
           exit 1
 ```
 
@@ -450,6 +482,15 @@ Rules, each of which is a way this goes wrong:
   by accident of checkout configuration. Do not "fix" a recurrence with `.gitattributes`:
   that leaves any repo one `* text=auto eol=crlf` away from a red gate whose symptom
   points at the gate rather than at line endings. Keep the shell out of the path.
+- **The manifest step fails closed, and must never be guarded.** `assert_canonical_assets.py`
+  exits non-zero when a listed asset differs from `.github/canonical-assets.json` or is
+  gone, and exits 2 when the manifest itself is missing or unreadable. Never give the step
+  an `if:` — a skipped step renders exactly like a passed one, and the presence of the
+  check is not the presence of the verdict. A deliberate divergence regenerates the
+  manifest in the same PR: `pwsh ~/.agents/skills/scaffold-ci/scripts/sync-canonical-asset-manifest.ps1 -RepoRoot .`.
+  The verifier ships like the gate checker: `cp ~/.agents/skills/scaffold-ci/assets/assert_canonical_assets.py .github/scripts/`,
+  and allow-list `.gitignore` repos need the same explicit un-ignore for it and for
+  `.github/canonical-assets.json`.
 - **Allow-list `.gitignore` repos need an explicit un-ignore** for
   `.github/scripts/assert_gate_coverage.py`. Otherwise the file is present locally and
   absent from the clone CI checks out, and the gate fails looking like a script bug.

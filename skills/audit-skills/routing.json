@@ -1,0 +1,47 @@
+{
+  "_comment": "Per-phase model routing. The registry resolves these tiers; the judgement about what each phase is worth lives here. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "phase-0-assemble-rubric",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Enumerates skill directories, reads frontmatter, and reads session logs for attribution. Fully specified file and log traversal with no judgement about the skills themselves.",
+      "adjust": []
+    },
+    {
+      "id": "phase-1-per-skill-audit",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Each worker reads one skill, verifies the references it can see, and scores five fixed axes against a supplied brief. Bounded input, no cross-skill reasoning.",
+      "adjust": [
+        {
+          "when": "fanout > 30",
+          "step": -1,
+          "why": "A wide inventory means each worker's slice is one small skill against a fully specified brief."
+        },
+        {
+          "when": "priorUnresolvedHigh > 0",
+          "step": 1,
+          "why": "Re-auditing against an open Critical/High backlog means judging whether a claimed fix holds, which is harder than a first read."
+        }
+      ]
+    },
+    {
+      "id": "phase-2-synthesize",
+      "tier": "frontier",
+      "floor": "workhorse",
+      "why": "Cross-skill overlap and coverage-gap detection over the whole inventory, plus lifecycle dispositions and a diff against the previous report. This is the pass the per-skill workers cannot do, and a wrong answer retires a skill that should have been kept.",
+      "adjust": []
+    },
+    {
+      "id": "phase-3-write-and-deliver",
+      "tier": "workhorse",
+      "ceiling": "workhorse",
+      "why": "Renders decided findings into the report contract. The judgement was made in Phase 2; this is faithful transcription against a fixed structure.",
+      "adjust": []
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "_comment": "Per-phase model routing. Follows the skill's own five numbered phases. This is the only estate skill here that mutates anything, and the approval gate is the boundary - so phases 2, 3 and 5 all turn on the same discipline: never let inaccessible evidence read as a clean queue. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "resolve-and-authenticate",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Resolves each target to an exact owner/repository with visibility, default branch and current SHA, checks gh auth status and scopes, and reads the applicable AGENTS.md and committed review policy. Specified lookups whose results are recorded, with full pagination against the current API version.",
+      "adjust": []
+    },
+    {
+      "id": "read-only-baseline",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Inventories every security surface and builds a per-repository ledger with root causes, grouped duplicates and a proposed disposition. The load-bearing distinction is between zero open items and evidence that is not applicable by policy, inaccessible, stale, pending, failed or unavailable - four of those look like a clean queue unless the difference is held deliberately, and the skill's own rule is that a failed route never becomes an empty queue.",
+      "adjust": [
+        {
+          "when": "inaccessibleSurfaces > 0",
+          "step": 1,
+          "why": "An inaccessible surface is exactly where an audit reports clean over something it never read, and deciding what may still be claimed requires exhausting every documented route before declaring UNKNOWN."
+        },
+        {
+          "when": "repoCount > 10",
+          "step": 1,
+          "why": "Grouping root causes and duplicates across a wide estate is cross-repository reasoning that no per-repository pass produces."
+        }
+      ]
+    },
+    {
+      "id": "approval-gate",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Presents the baseline, grouped root causes, proposed API dispositions and configuration changes, expected residuals and visibility drift - then stops. Everything mutating in phase 4 is authorised from this one message, so an unclear or incomplete presentation buys approval for work the user did not actually understand.",
+      "adjust": [
+        {
+          "when": "proposedMutations > 20",
+          "step": 1,
+          "why": "A large mutation set is the case where a single approval covers the most ground, and where a grouping error authorises the widest unintended change."
+        }
+      ]
+    },
+    {
+      "id": "remediate-approved",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Applies only the approved dispositions through routes proved during the baseline capability probe, using only reasons that product's API accepts and evidence supports. Where automation is boundaried, the hand-actioned set is reported as a table rather than prose, because that set is by definition entirely the user's to action.",
+      "adjust": []
+    },
+    {
+      "id": "post-merge-evidence",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Waits for the automatic default-branch analyses without provoking them, then requires each analysis commit_sha and run head_sha to equal the current default-branch SHA before classifying a repository Clean, Accounted for, or Incomplete. The SHA comparison is mechanical; choosing Incomplete over Clean when evidence is merely stale or pending is the judgement the classification exists for.",
+      "adjust": [
+        {
+          "when": "staleSurfaces > 0",
+          "step": 1,
+          "why": "A stale or pending surface is the specific case where a passing-looking queue does not correspond to the code on the default branch, and Incomplete is the honest answer rather than the convenient one."
+        }
+      ]
+    }
+  ]
+}

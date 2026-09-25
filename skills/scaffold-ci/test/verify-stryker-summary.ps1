@@ -121,25 +121,31 @@ try {
     Assert-Value $none.Summary.valid 0 'no-valid valid'
     Assert-Value $none.Summary.score 0 'no-valid score'
 
-    # --- Hotspots rank by undetected mutants so the summary stays actionable.
+    # --- Hotspots rank by UNDETECTED mutants so the summary stays actionable.
     $hotspots = @($all.Summary.hotspots)
     if ($hotspots.Count -lt 1) { throw 'hotspots must list files with undetected mutants' }
     Assert-Value $hotspots[0].file 'Beta.cs' 'top hotspot'
 
-    # NoCoverage counts against the score even when no mutants survived.
+    # --- NoCoverage counts identically against the score, so a file whose mutants are
+    #     ALL no-coverage is a hotspot. Ranking on `survived` alone printed "No surviving
+    #     mutants" over exactly the file dragging the score down.
     $gap = Invoke-Summary (New-Report @{
-        'Covered.cs' = @('Killed', 'Killed', 'Killed', 'Killed')
+        'Covered.cs'   = @('Killed', 'Killed', 'Killed', 'Killed')
         'Uncovered.cs' = @('NoCoverage', 'NoCoverage', 'NoCoverage')
     }) 'coverage-gap'
     $gapHotspots = @($gap.Summary.hotspots)
-    if ($gapHotspots.Count -lt 1) { throw 'NoCoverage must be reported as a hotspot' }
+    if ($gapHotspots.Count -lt 1) {
+        throw 'a file whose mutants are all NoCoverage must still be reported as a hotspot'
+    }
     Assert-Value $gapHotspots[0].file 'Uncovered.cs' 'no-coverage hotspot'
     Assert-Value $gapHotspots[0].noCoverage 3 'no-coverage hotspot count'
     Assert-Value $gapHotspots[0].survived 0 'no-coverage hotspot has no survivors'
     if ($gap.Markdown -match 'No surviving mutants|No undetected mutants') {
-        throw 'the summary hid the no-coverage hotspot'
+        throw "the summary claimed nothing was undetected while ranking a no-coverage file:`n$($gap.Markdown)"
     }
-    if ($gap.Markdown -notmatch 'No coverage') { throw 'the hotspot table needs its no-coverage column' }
+    if ($gap.Markdown -notmatch 'No coverage') {
+        throw "the hotspot table must carry the no-coverage column it is now ranked by:`n$($gap.Markdown)"
+    }
 
     # --- Optional assurance preserves a client service repo's useful operational gate
     #     while every repository still receives the same canonical metric and script.
@@ -152,7 +158,9 @@ try {
     Assert-Value $timeoutDominated.ExitCode 1 'timeout-dominated assurance exit code'
     Assert-Value $timeoutDominated.Summary.assurancePassed $false 'timeout-dominated assurance verdict'
 
-    # RuntimeError is a non-viable final status, treated like CompileError.
+    # RuntimeError is an approved final status (a crashed test host, not an assurance
+    # gap): a report containing one must NOT fail -FailOnInconclusive, matching
+    # CompileError's treatment. See the rationale comment on $approvedFinalStatuses.
     $runtimeError = Invoke-AssuredSummary (New-Report @{ 'Broken.cs' = @('Killed', 'RuntimeError') }) 'runtime-error'
     Assert-Value $runtimeError.ExitCode 0 'runtime-error assurance exit code'
     Assert-Value $runtimeError.Summary.assurancePassed $true 'runtime-error assurance verdict'
@@ -164,7 +172,3 @@ finally {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
-# The exit-1 assurance children above are asserted, not fatal — clear the native status
-# so a caller that checks $LASTEXITCODE after a PASS does not read a child's failure.
-$global:LASTEXITCODE = 0

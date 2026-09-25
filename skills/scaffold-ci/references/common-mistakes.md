@@ -43,11 +43,11 @@ if explicitly asked:
 | Private package feed declared only in `nuget.config` | Add a Dependabot secret plus a referenced `registries:` entry. |
 | Committing a `codeql.yml` | Public: use default setup. Private/internal: keep CodeQL disabled under the paid-product policy. |
 | Dependabot alerts or automated security fixes left off | Enable and verify both repository settings. |
-| `.claude/` ignored as a directory | Use `.claude/*` plus `!.claude/review-policy.json`, then run `git add --dry-run` on the policy. |
+| `.claude/` ignored as a directory | Use `.claude/*` plus negations for `!.claude/review-policy.json` and `!.claude/ci-budget-approval.json`, then run `git add --dry-run` on both files. |
 | Copying another repo's `low` globs into `review-policy.json` | `low` means "unreachable from every deploy path **in this repo**" — re-derive it from this repo's own deploy jobs. |
 | `**/*.md` in `low` on a repo that publishes markdown | Docs sites, content-driven frontends and skill repos ship their `.md`; there it is NORMAL, not LOW. |
-| `auto_review.enabled: true` in `.coderabbit.yaml` | Reviews every PR regardless of tier, so `review-policy.json` decides nothing. Set `false` **and** add `labels: ["review-high"]`. |
-| `enabled: false` with no `labels` list | Worse than leaving it on: the gate's `review-high` label goes inert, no check registers, and the watch hook reads that as "not installed" and stops gating. |
+| `auto_review.enabled: true` in `.coderabbit.yaml` | Reviews every PR regardless of tier, so `review-policy.json` decides nothing. Set `false` **and** add `labels: ["review-high", "review-high-manual"]`. |
+| `enabled: false` with no `labels` list | Worse than leaving it on: the gate's `review-high` and manual override `review-high-manual` labels go inert, no check registers, and the watch hook reads that as "not installed" and stops gating. |
 | `ignore_title_keywords: ["chore:"]` | Matches this estate's Dependabot titles verbatim, so it silently skips PRs you did not mean to skip. Decide by path in `review-policy.json`. |
 | Dependency manifests in `review-policy.json` `high` | Reversed 2026-07-29 — HIGH requires CodeRabbit, which refuses bot authors, so it demands a reviewer that can never run. |
 | PR base `branches: [main]` when mainline differs | Check `git symbolic-ref refs/remotes/origin/HEAD`. |

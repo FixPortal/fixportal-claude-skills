@@ -9,6 +9,52 @@ $evidence = Get-Content -LiteralPath $EvidencePath -Raw | ConvertFrom-Json
 $findings = [Collections.Generic.List[string]]::new()
 $gaps = [Collections.Generic.List[string]]::new()
 
+# ONE source for the repository-level paid controls whose private target is `disabled`,
+# matching the paid-control table in references/github-evidence.md exactly. The private
+# branch previously carried its own shorter list, and the three it omitted were the ones a
+# private repo could silently keep enabled.
+$PRIVATE_DISABLED_CONTROLS = @(
+    'code_security',
+    'secret_scanning',
+    'secret_scanning_push_protection',
+    'secret_scanning_non_provider_patterns',
+    'secret_scanning_validity_checks'
+)
+# Same table, but GitHub returns these only where the plan exposes them, so an absent
+# field is not evidence of anything. Validated WHEN PRESENT: an enabled one is drift.
+$PRIVATE_DISABLED_CONTROLS_IF_PRESENT = @(
+    'secret_scanning_ai_detection',
+    'secret_scanning_delegated_alert_dismissal',
+    'secret_scanning_delegated_bypass'
+)
+# The PUBLIC half of the same table, which had drifted the other way: the public branch
+# read four fields and the table names eight. `code_security` and
+# `secret_scanning_ai_detection` were never checked at all, so a public repository with
+# code security switched OFF classified ACCOUNTED_FOR - the exact miss the private list
+# was widened to close, in the direction where the control is the protection rather than
+# the cost. Split present/if-present on the same rule: GitHub returns the plan-dependent
+# ones only where the plan exposes them, so absence is not evidence.
+$PUBLIC_ENABLED_CONTROLS = @(
+    'secret_scanning',
+    'secret_scanning_push_protection',
+    'secret_scanning_non_provider_patterns',
+    'secret_scanning_validity_checks'
+)
+# `code_security` is if-present on the PUBLIC side and required-present on the private
+# side, which is not an oversight. UNVERIFIED: whether GitHub returns
+# security_and_analysis.code_security for a public repository at all; refuted if a live
+# `gh api repos/{owner}/{repo} --jq .security_and_analysis` on a public repo shows the
+# key. The estate's own public baseline evidence does not carry it. Demanding it would
+# make every public repo permanently INCOMPLETE on a field that may never be returned,
+# which is the failure mode that gets an audit ignored; treating it as if-present still
+# produces a finding the moment a public repo reports it DISABLED, which is the drift
+# worth catching.
+$PUBLIC_ENABLED_CONTROLS_IF_PRESENT = @('code_security', 'secret_scanning_ai_detection')
+$PUBLIC_DISABLED_CONTROLS_IF_PRESENT = @(
+    'secret_scanning_delegated_alert_dismissal',
+    'secret_scanning_delegated_bypass'
+)
+
 function Convert-Envelope($response, [string] $name, [int[]] $statuses = @(200)) {
     if ($null -eq $response) { return [pscustomobject]@{ Success = $false; Error = "$name response is missing"; Body = $null } }
     if ($response.PSObject.Properties.Name -notcontains 'exit_code') {
@@ -17,11 +63,24 @@ function Convert-Envelope($response, [string] $name, [int[]] $statuses = @(200))
     if ($response.PSObject.Properties.Name -notcontains 'http_status') {
         return [pscustomobject]@{ Success = $false; Error = "$name response omitted http_status"; Body = $null }
     }
-    if ([int] $response.exit_code -ne 0) {
-        return [pscustomobject]@{ Success = $false; Error = "$name gh call failed with exit $($response.exit_code)"; Body = $null }
+    # TryParse, not a bare [int] cast. The cast sits outside any try, so a collector that
+    # wrote `"exit_code": "n/a"` - or any non-numeric placeholder - threw a terminating
+    # error under $ErrorActionPreference = 'Stop' and killed the whole classification,
+    # breaking the contract that every repository is classified. `[int] $null` is worse
+    # still: it is 0, so a MISSING value read as a successful call.
+    $exitCode = 0
+    $httpStatus = 0
+    if (-not [int]::TryParse([string] $response.exit_code, [ref] $exitCode)) {
+        return [pscustomobject]@{ Success = $false; Error = "$name reported a non-numeric exit_code '$($response.exit_code)'"; Body = $null }
     }
-    if ([int] $response.http_status -notin $statuses) {
-        return [pscustomobject]@{ Success = $false; Error = "$name returned HTTP $($response.http_status)"; Body = $null }
+    if (-not [int]::TryParse([string] $response.http_status, [ref] $httpStatus)) {
+        return [pscustomobject]@{ Success = $false; Error = "$name reported a non-numeric http_status '$($response.http_status)'"; Body = $null }
+    }
+    if ($exitCode -ne 0) {
+        return [pscustomobject]@{ Success = $false; Error = "$name gh call failed with exit $exitCode"; Body = $null }
+    }
+    if ($httpStatus -notin $statuses) {
+        return [pscustomobject]@{ Success = $false; Error = "$name returned HTTP $httpStatus"; Body = $null }
     }
     if ($response.PSObject.Properties.Name -notcontains 'body_json' -or $null -eq $response.body_json) {
         return [pscustomobject]@{ Success = $false; Error = "$name response omitted body_json"; Body = $null }
@@ -80,21 +139,51 @@ $ownerType = if ($hasOwnerType) { [string] $repository.owner.type } else { '' }
 
 if ($repository) {
     if ($visibility -eq 'public') {
-        foreach ($field in 'secret_scanning', 'secret_scanning_push_protection', 'secret_scanning_non_provider_patterns', 'secret_scanning_validity_checks') {
+        foreach ($field in $PUBLIC_ENABLED_CONTROLS) {
             Require-State $repository "security_and_analysis.$field.status" 'enabled' 'repository'
+        }
+        $analysisBlock = if ($repository.PSObject.Properties.Name -contains 'security_and_analysis') { $repository.security_and_analysis } else { $null }
+        foreach ($entry in @(
+            @{ Fields = $PUBLIC_ENABLED_CONTROLS_IF_PRESENT; Expected = 'enabled' },
+            @{ Fields = $PUBLIC_DISABLED_CONTROLS_IF_PRESENT; Expected = 'disabled' }
+        )) {
+            foreach ($field in $entry.Fields) {
+                if ($null -ne $analysisBlock -and $analysisBlock.PSObject.Properties.Name -contains $field) {
+                    Require-State $repository "security_and_analysis.$field.status" $entry.Expected 'repository'
+                }
+            }
         }
     }
     elseif ($visibility -in @('private', 'internal')) {
-        foreach ($field in 'code_security', 'secret_scanning', 'secret_scanning_push_protection', 'secret_scanning_non_provider_patterns', 'secret_scanning_validity_checks') {
+        # EVERY control the skill's paid-control table declares, not the five this list
+        # happened to carry. secret_scanning_ai_detection, _delegated_alert_dismissal and
+        # _delegated_bypass all have a private target of `disabled` and were never read,
+        # so a private repo returning one as `enabled` classified ACCOUNTED_FOR with no
+        # finding -- paid-control drift, which is what this audit exists to catch.
+        foreach ($field in $PRIVATE_DISABLED_CONTROLS) {
             Require-State $repository "security_and_analysis.$field.status" 'disabled' 'repository'
+        }
+        foreach ($field in $PRIVATE_DISABLED_CONTROLS_IF_PRESENT) {
+            $analysisBlock = if ($repository.PSObject.Properties.Name -contains 'security_and_analysis') { $repository.security_and_analysis } else { $null }
+            if ($null -ne $analysisBlock -and $analysisBlock.PSObject.Properties.Name -contains $field) {
+                Require-State $repository "security_and_analysis.$field.status" 'disabled' 'repository'
+            }
         }
     }
     else { $gaps.Add("repository visibility is unknown: '$visibility'") }
 }
 
 if ($visibility -eq 'public') {
+    # `state`, not `status`, and identity under `configuration`. The API returns
+    # { "state": ..., "configuration": { "id", "name", ... } }; reading a top-level
+    # `status` and top-level id/name meant every public repository produced two gaps and
+    # classified INCOMPLETE permanently, while a genuinely wrong attachment could never be
+    # identified. The fixture had been authored to the classifier rather than to the API,
+    # so the test could not catch it.
     $attachment = Read-Response $evidence.code_security_configuration 'code-security configuration attachment'
-    if ($attachment.Success) { Require-State $attachment.Body 'status' 'attached' 'code-security configuration attachment' }
+    if ($attachment.Success) { Require-State $attachment.Body 'state' 'attached' 'code-security configuration attachment' }
+    $attachedConfiguration = if ($attachment.Success -and
+        $attachment.Body.PSObject.Properties.Name -contains 'configuration') { $attachment.Body.configuration } else { $null }
 
     $defaultSetup = Read-Response $evidence.code_scanning_default_setup 'Code Scanning default setup'
     if ($defaultSetup.Success) { Require-State $defaultSetup.Body 'state' 'configured' 'Code Scanning default setup' }
@@ -114,21 +203,31 @@ if ($visibility -eq 'public') {
         $configurationEnvelope = Get-Content -LiteralPath $ConfigurationPath -Raw | ConvertFrom-Json
         $configuration = Read-Response $configurationEnvelope 'public security configuration'
         if ($configuration.Success) {
-            if ($attachment.Success) {
+            if ($null -ne $attachedConfiguration) {
+                # EVERY comparable field must match, and `id` must be one of them when it
+                # is available. Starting $false and setting $true on the first match meant
+                # a mismatch never cleared it, so the wrong configuration was accepted
+                # whenever it merely shared the required one's display NAME.
                 $comparableIdentity = $false
-                $matchingIdentity = $false
+                $matchingIdentity = $true
+                $comparedId = $false
                 foreach ($field in 'id', 'name') {
-                    $attachmentHasField = $attachment.Body.PSObject.Properties.Name -contains $field -and
-                        -not [string]::IsNullOrWhiteSpace([string] $attachment.Body.$field)
+                    $attachmentHasField = $attachedConfiguration.PSObject.Properties.Name -contains $field -and
+                        -not [string]::IsNullOrWhiteSpace([string] $attachedConfiguration.$field)
                     $configurationHasField = $configuration.Body.PSObject.Properties.Name -contains $field -and
                         -not [string]::IsNullOrWhiteSpace([string] $configuration.Body.$field)
                     if ($attachmentHasField -and $configurationHasField) {
                         $comparableIdentity = $true
-                        if ([string] $attachment.Body.$field -eq [string] $configuration.Body.$field) { $matchingIdentity = $true }
+                        if ($field -eq 'id') { $comparedId = $true }
+                        if ([string] $attachedConfiguration.$field -cne [string] $configuration.Body.$field) { $matchingIdentity = $false }
                     }
                 }
                 if (-not $comparableIdentity) { $gaps.Add('Public configuration attachment identity cannot be correlated') }
                 elseif (-not $matchingIdentity) { $findings.Add('Attached code-security configuration does not match the required public configuration') }
+                elseif (-not $comparedId) { $gaps.Add('Public configuration attachment matched on name only; id was not comparable') }
+            }
+            elseif ($attachment.Success) {
+                $gaps.Add('code-security configuration attachment carried no configuration object to correlate')
             }
 
             $targets = [ordered]@{
@@ -194,6 +293,9 @@ $orgAccessPresent = $evidence.PSObject.Properties.Name -contains 'code_quality_o
     -not [string]::IsNullOrWhiteSpace([string] $evidence.code_quality_org_access)
 if (-not $orgAccessPresent) { $gaps.Add('Code Quality org access evidence is missing') }
 elseif ([string] $evidence.code_quality_org_access -eq 'UNVERIFIED') { $gaps.Add('Code Quality org access is UNVERIFIED') }
+elseif ([string] $evidence.code_quality_org_access -eq 'VERIFIED_NO_REPOSITORIES' -and $visibility -eq 'public') {
+    $gaps.Add('Code Quality org access claims no repositories despite this public repository')
+}
 elseif ([string] $evidence.code_quality_org_access -notin @('VERIFIED_NO_REPOSITORIES', 'VERIFIED_APPROVED')) {
     $gaps.Add("Code Quality org access evidence is unknown: '$($evidence.code_quality_org_access)'")
 }
@@ -201,14 +303,21 @@ elseif ([string] $evidence.code_quality_org_access -notin @('VERIFIED_NO_REPOSIT
 $codeQuality = Read-Response $evidence.code_quality_setup 'Code Quality setup'
 if ($codeQuality.Success) {
     $state = [string] $codeQuality.Body.state
-    $approved = $evidence.PSObject.Properties.Name -contains 'code_quality_paid_approved' -and
-        $evidence.code_quality_paid_approved -eq $true -and
-        [string] $evidence.code_quality_org_access -eq 'VERIFIED_APPROVED'
-    if ($state -eq 'configured' -and $approved) {
-        Require-State $codeQuality.Body 'ai_findings_option' 'disabled' 'Code Quality setup'
+    if ($visibility -eq 'public') {
+        if ($state -eq 'configured') { Require-State $codeQuality.Body 'ai_findings_option' 'disabled' 'Code Quality setup' }
+        elseif ($state -ne 'not-configured') { $gaps.Add("Code Quality setup has unknown state '$state'") }
+        else { $findings.Add('Code Quality is disabled on a public repository') }
     }
-    elseif ($state -eq 'configured') { $findings.Add('Code Quality is configured without approved paid use') }
-    elseif ($state -ne 'not-configured') { $gaps.Add("Code Quality setup has unknown state '$state'") }
+    elseif ($visibility -in @('private', 'internal')) {
+        if ($state -eq 'configured') {
+            $approved = $evidence.PSObject.Properties.Name -contains 'code_quality_paid_approved' -and
+                $evidence.code_quality_paid_approved -eq $true -and
+                [string] $evidence.code_quality_org_access -eq 'VERIFIED_APPROVED'
+            if ($approved) { Require-State $codeQuality.Body 'ai_findings_option' 'disabled' 'Code Quality setup' }
+            else { $findings.Add('Code Quality is configured without approved paid use') }
+        }
+        elseif ($state -ne 'not-configured') { $gaps.Add("Code Quality setup has unknown state '$state'") }
+    }
 }
 
 $status = if ($findings.Count) { 'NONCOMPLIANT' } elseif ($gaps.Count) { 'INCOMPLETE' } else { 'ACCOUNTED_FOR' }

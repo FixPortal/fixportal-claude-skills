@@ -41,30 +41,19 @@ has to hold on every later commit too, because one `.gitignore` line re-excludin
 `.claude/` makes the policy file vanish and silently reverts the whole repo to NORMAL —
 and the PR making that change would be the last one reviewed properly.
 
-**Copy the shipped assets; do not retype them from this page.** The guard delegates its
-workflow assertions to a structural checker, and both must land in the repo:
+**Copy the shipped asset; do not retype it from this page.**
 
 ```bash
-mkdir -p .github/workflows .github/scripts
+mkdir -p .github/workflows
 cp ~/.agents/skills/scaffold-ci/assets/review-policy-guard.yml .github/workflows/
-cp ~/.agents/skills/scaffold-ci/assets/assert_workflow_hygiene.py .github/scripts/
 ```
 
 The path is `~/.agents/skills/`, the canonical cross-CLI home — not any single runtime's
 skills root, which would resolve only under that runtime.
 
-This used to be an inlined two-check snippet, and the snippet had drifted: the shipped
-asset additionally rejects an **empty** policy file, **invalid JSON**, a **missing `high`
-array**, and a policy that has dropped `.claude/review-policy.json`, `.coderabbit.yaml`,
-the guard workflow itself, or the hygiene checker from `high`, and it sets
-`permissions: contents: read`. A repo scaffolded from the prose therefore got a guard
-that passed on four of the states the asset was extended to catch. The guard and checker
-are tiered HIGH because the required `Review policy intact` context is produced by the
-PR's OWN copy of the workflow — a PR that replaced its assertion steps with `run: true`
-would report green while asserting nothing, and only a HIGH tier puts that diff in front
-of a reviewer. The asset's own comments record why: an automated rollout once emptied
-the policy file across 21 repos, and the first version of the guard — the two-check
-version — passed throughout, because an empty file is still tracked and still unignored.
+The shipped asset also rejects an empty/invalid policy, a missing `high` array, and
+dropped review-control paths. Copy it rather than reviving the obsolete inline guard;
+the rollout incident is recorded in [provenance.md](provenance.md).
 
 Two details worth knowing rather than rediscovering:
 
@@ -78,22 +67,50 @@ Where this workflow exists, `.gitignore` is NORMAL — do not also tier it HIGH.
 
 ### Workflow hygiene, asserted rather than reviewed
 
-The guard's workflow assertions live in the checker script it invokes,
-`.github/scripts/assert_workflow_hygiene.py` — a structural YAML parse, NOT a grep. The
-line-anchored greps it replaced were bypassable by ordinary block-style YAML (a value on
-the line after its key resolves identically but matches no key-anchored pattern), so
-`permissions:` followed by an indented `write-all`, or a `uses:` split the same way,
-both passed green. These assertions are what replaced `.github/workflows/**` in the
-policy's `high` list on 2026-08-19 (rationale under *`.claude/review-policy.json`* below):
+These assertions replaced `.github/workflows/**` in the policy's `high` list on 2026-08-19
+(rationale under *`.claude/review-policy.json`* below). They live in a second shipped asset,
+invoked by the guard:
+
+```bash
+cp ~/.agents/skills/scaffold-ci/assets/assert_workflow_hygiene.py .github/scripts/
+```
+
+The checker parses workflow structure rather than grepping text; the failed grep rollout
+and covered edge cases are recorded in [provenance.md](provenance.md).
+
+The union also folds in what seven repos had each added locally and separately — container and
+`services:` images (an image runs code exactly as an action does, including the
+`services: {db: postgres}` shorthand that names the image as a bare string), `workflow_run`
+alongside `pull_request_target`, refs inside a local composite action's own `action.yml`, bare
+`sha256:` digests as a valid pin, and a notice when a workflow omits `permissions:` entirely.
+
+An **opt-in** stricter mode is available: set `TRUSTED_THIRD_PARTY_ACTIONS` to a
+space-separated `owner/repo` list and every third-party action must be named there as well as
+pinned. It is off unless set, deliberately — the pin check validates a ref's *shape*, so the
+allowlist is the only thing that catches a *new* third-party dependency, but defaulting it on
+with any short list fails most repos in this estate, and a gate that reddens on adoption gets
+reverted rather than fixed.
+
+What is asserted:
 
 - **Third-party actions must be pinned to a full 40-character commit SHA** — a hard failure.
   A tag is mutable: whoever owns the action can change what `@v4` resolves to after review.
-- **Tag-pinned `actions/*` is conformant, not a finding.** The house standard is the
-  inverse of the third-party rule: first-party actions take the major tag, and `audit-ci`
-  grades a SHA-pinned first-party action as drift. The checker counts first-party tag
-  refs for the summary line and never fails them.
-- **No `pull_request_target`, no `permissions: write-all`** — hard failures, and both were
-  already at zero occurrences estate-wide when introduced.
+- **Unpinned `actions/*` is reported, not failed.** Scoping matters here, and the scope came
+  from measuring rather than taste. Across 28 estate repos there were **319 unpinned refs and
+  only one fully pinned repo**, so a gate on all owners would have reddened 27 repos on their
+  next PR — while **third-party unpinned was exactly zero**, making the narrower gate free to
+  enforce immediately. `actions/*` is GitHub's own namespace, where a mutable tag means
+  trusting GitHub, which every workflow already does by running on their runners. Flip it to
+  a failure once a pinning sweep lands.
+- **No `pull_request_target`, no `workflow_run`, no `permissions: write-all`** — hard
+  failures, at workflow *and* job scope for the token, and all three were at zero occurrences
+  estate-wide when introduced. Both triggers run in the base repository's context with its
+  secrets and a write-scoped token while able to reach untrusted head code.
+- **The checker fails closed.** An unparsable workflow, a document whose top level is not a
+  mapping, a `.github/workflows` that does not exist, and a run that scanned nothing all exit
+  non-zero rather than printing a pass. A document carrying both `on:` and the YAML-1.1
+  boolean `True:` key is refused outright: which one GitHub honours depends on the parser, so
+  a trigger could hide in the one the checker does not read.
 
 **The job name `Review policy intact` is load-bearing.** It is a *required* status check on
 mainline in nearly every estate repo, which is also what makes deleting this workflow safe to
@@ -103,8 +120,8 @@ arrives — so rename it only alongside a deliberate ruleset update everywhere.
 
 ## PR review policy — `.claude/review-policy.json` + `.coderabbit.yaml`
 
-Public repositories receive GitHub's free deterministic CodeQL coverage; Code Quality is a
-separate paid, explicit opt-in at every visibility. The two AI reviewers are
+Public repositories receive GitHub's free deterministic CodeQL and Code Quality coverage;
+Code Quality is a separate paid product on private/internal repositories. The two AI reviewers are
 separate products and are not equally scarce — which is why the repo declares a risk policy
 instead of every PR getting identical ceremony:
 
@@ -142,22 +159,66 @@ unrecognised path is unknown risk, and unknown risk is not low risk.
   (`nuget.config`, `global.json`, `.npmrc`, `Directory.Build.props`): a bot does not edit
   those, and a change to one redirects where dependencies come from.
 - **The review control plane must be HIGH in every repo** — `.claude/review-policy.json`
-  itself, `.coderabbit.yaml`, `.github/workflows/review-policy-guard.yml` and
-  `.github/scripts/assert_workflow_hygiene.py`. Unlisted they classify as NORMAL, which
-  means the single edit capable of disabling review across the repo would itself receive
-  the lighter review. The guard and checker are on the list because the required
-  `Review policy intact` context is produced by the PR's own copy of the workflow, so
-  neutering its steps would otherwise pass unreviewed.
-- **So must the merge barrier** — `.github/workflows/ci.yml`,
-  `.github/workflows/review-policy-guard.yml`, `.github/scripts/assert_gate_coverage.py`,
-  `.github/scripts/assert_workflow_hygiene.py`. These are named paths, not a restored
-  broad workflow glob; adjust `ci.yml` when a repository uses another main workflow name.
-- **`.gitignore` is deliberately NOT HIGH, and must not be re-added.** It was removed
-  on 2026-08-02 and replaced by `review-policy-guard.yml` (below). Tiering it HIGH does
-  work, but it bills a CodeRabbit review — metered per developer across the whole
-  estate — for every trivial ignore edit, because the policy hook tiers by path glob
-  and cannot tell "re-excludes `.claude/`" from "ignores a scratch directory". The
-  guard asserts the invariant directly instead: deterministic and free.
+  itself and `.coderabbit.yaml`. Unlisted they classify as NORMAL, which means the
+  single edit capable of disabling review across the repo would itself receive the
+  lighter review.
+- **So must the merge barrier** — `.github/workflows/ci.yml`, `.claude/ci-budget-approval.json`,
+  `.github/workflows/review-policy-guard.yml`, `.github/workflows/review-tier.yml`,
+  `.github/scripts/assert_gate_coverage.py`,
+  `.github/scripts/assert_workflow_hygiene.py`.
+  These are named paths, not a re-added broad workflow glob. Adjust `ci.yml` when
+  the main workflow has another name; a HIGH path that does not exist protects nothing.
+- **The canonical-asset manifest is HIGH wherever a repo has adopted the divergence gate** —
+  `.github/canonical-assets.json` records which canonical-asset content the repo runs, and
+  regenerating it is the act that makes a local divergence deliberate, so it is exactly the
+  judgement HIGH exists for. It is deliberately NOT in the merge-barrier path list above:
+  that list is mechanically derived and asserted estate-wide, and a required HIGH entry for
+  a file a not-yet-adopted repo does not have would fail its guard for nothing. The rollout
+  adds the entry per repo at adoption. The gate's verifier script needs no named entry here
+  at all — it is a script a gated job runs, so the derived requirement below covers it (and
+  the rollout adds it by name where a repo lists its scripts individually).
+- **And so must any script the merge barrier RUNS — this one is derived, not listed.**
+  A gated job executes the pull request's own checkout, so a checker it invokes decides
+  what can merge exactly as the workflow does. The named-path list above cannot cover a
+  checker one repository authored later: a hard-coded path would red every repository
+  that does not have that file. So `assert_gate_coverage.py` derives the requirement
+  instead — it reads the scripts each merge-blocking job actually invokes, and fails when
+  one is not covered by a `high` glob. Nothing to maintain per repo: a gate script added
+  years after scaffolding is covered the day it is wired in, and a repository that runs
+  no repo-local scripts from a gated job is unaffected.
+
+  Scoped deliberately to jobs the gate depends on, and to paths that exist on disk. A
+  script in a non-gated job cannot neuter the barrier, and a path that does not resolve
+  cannot be edited to neuter anything — asserting over either would be a false RED.
+
+  **Scoped also to a closed set of directory roots** — `.github/scripts/`, `scripts/`,
+  `build/`, `tools/` — so that path-shaped tool arguments and report files are not read as
+  scripts. This is the one limit that is not self-announcing, so state it plainly: a gate
+  script kept outside those roots (`ci/`, `eng/`, the repository root) is **not** derived
+  and must still be listed in `high` by hand, or moved under one of the four. Derivation
+  covers the estate's conventions, not every possible layout.
+
+  **Rolling the asset into a repo whose gate scripts are unlisted reds its next PR, so
+  land both edits together.** `CI Gate` is a required check, and a red required check on an
+  unrelated pull request is what gets a control reverted rather than fixed. Add the script
+  paths (or a covering glob) to `.claude/review-policy.json` in the SAME commit that syncs
+  the asset. Measured 2026-09-09 across 26 repos with both a workflow and a policy, six
+  needed that paired edit.
+
+  The glob matcher mirrors `glob_to_regex` in the `pr-review-policy` hook exactly
+  (`**/` → `(.*/)?`, `**` → `.*`, `*` → `[^/]*`, `?` → `[^/]`), so a repository covering
+  its checkers with `scripts/**` satisfies the check just as it satisfies the hook.
+  Mirrored rather than approximated: a checker stricter than the hook reds a repository
+  the hook already tiers HIGH, and a false RED on a required check is how a working
+  control gets deleted to make CI green.
+
+  Why it exists: one estate repo added `scripts/assert-coverage-floor.ps1` as a merge
+  gate on 2026-08-24 and it sat outside both the policy and the guard until an adversarial
+  review found it on 2026-09-08 — the **third** recurrence of this class in that repository,
+  three weeks after the same hole was closed for the two Python checkers. Enumeration had
+  already failed twice there; derivation is the fix.
+- **`.gitignore` is deliberately NOT HIGH, and must not be re-added.** The guard asserts
+  its review-policy invariant directly without spending a review on every ignore edit.
   `~/.agents/skills/scaffold-ci/assets/review-policy.example.json` carries the same instruction —
   do not re-add `.gitignore` to `high` without first removing the guard.
 - **`low` is the dangerous list and is repo-specific fact.** A path belongs there only if
@@ -174,6 +235,51 @@ unrecognised path is unknown risk, and unknown risk is not low risk.
 The file is committed, so classification rules get scrutinised once in a PR rather than
 re-argued per PR by an agent. Agents must never self-classify or work around a tier.
 
+### The cost envelope binds everywhere; the executable check does not
+
+SKILL.md step 6 states one envelope for every repository — 30s per test, 10 minutes per
+substantive required job, a 15 aggregate runner-minute target. The mechanical check behind
+it is narrower: `audit-ci`'s cost test reads measured Actions job durations for a private
+.NET lane, and on a public repository or a non-.NET stack it cannot run at all.
+
+So on those repos the envelope is a target enforced by READING the workflow — job counts,
+declared `timeout-minutes`, what the required lane contains — and an audit must report it
+as unmeasured rather than clean. An envelope nothing measured is a coverage gap, never a
+pass, and the difference matters most exactly where the check is absent: a public repo's
+minutes are billed the same as a private one's.
+
+### Rolling this contract out across the estate
+
+Every rule above makes `.claude/review-policy.json` and the merge-barrier paths HIGH, and
+HIGH requires CodeRabbit. Rolling the contract into twenty-odd repositories therefore
+proposes twenty-odd HIGH PRs, against an allowance [provenance.md](provenance.md) records
+degrading at 30 reviews in seven days on this account. The rollout as written cannot be
+reviewed under the budget it exists to protect, so it gets a stated exception rather than
+an operator quietly deciding one per repo.
+
+**Mechanical-sync exception.** An asset-parity PR is NORMAL, not HIGH, when ALL of these
+hold — each checkable from the diff, because the exception is a coverage claim:
+
+1. Every changed path is a file this contract SHIPS (`.claude/review-policy.json`,
+   `.coderabbit.yaml`, `.github/workflows/review-policy-guard.yml`,
+   `.github/scripts/assert_gate_coverage.py`,
+   `.github/scripts/assert_workflow_hygiene.py`, `scripts/summarize-stryker.ps1`).
+2. Each is BYTE-IDENTICAL to the canonical asset under
+   `~/.agents/skills/scaffold-ci/assets/` — proved per file with
+   `audit-ci/scripts/compare-canonical-file.ps1 -IgnoreLineEndings`, output pasted into
+   the PR body.
+3. The PR changes nothing else. One repo-specific glob edited alongside the copy voids
+   the exception for the whole PR.
+
+The reasoning: there is nothing here for a reviewer to find. The content was reviewed
+once where it is authored, and this PR asserts only that a copy matches it — which a byte
+comparison settles better than a language model can. CI and the guard still run.
+
+The exception does NOT cover a repo-specific tier edit, a `low` list, or a change to a
+canonical asset itself; those are the judgement HIGH exists for. A PR claiming the
+exception without the comparison output is HIGH, because the claim is the thing being
+trusted and an unevidenced one is worth nothing.
+
 ### `.coderabbit.yaml`
 
 Minimum house content — this is spend control, not review configuration:
@@ -183,10 +289,10 @@ reviews:
   auto_review:
     # LABEL-TRIGGERED, not automatic. `enabled: false` WITH a `labels` list means a
     # positive label match still triggers a review — the label is the TRIGGER, not an
-    # exclusion filter. pr-review-gate.sh applies `review-high` at PR-create time when
-    # the tier is HIGH.
+    # exclusion filter. The workflow applies `review-high`; `review-high-manual` is a
+    # durable manual override for an otherwise NORMAL PR and is never removed.
     enabled: false
-    labels: ["review-high"]
+    labels: ["review-high", "review-high-manual"]
     drafts: false
     # Still load-bearing under label triggering: once a PR carries the label, every
     # later push re-reviews it. Default 5; CodeRabbit's own docs suggest 1-2.
@@ -201,11 +307,11 @@ reviews:
 ```
 
 **`enabled: false` on its own is NOT the house standard, and is worse than leaving
-auto-review on.** Without the `labels` list the hook's `review-high` label is inert, so no
-CodeRabbit check ever registers — and `pr-review-watch.sh` reads a persistently absent
-check as "CodeRabbit is not installed in this repo" and stops gating on it. A HIGH-tier PR
-then merges unreviewed while every signal looks clean. The two settings go together or not
-at all.
+auto-review on.** Without the `labels` list the `review-high` and `review-high-manual`
+labels are inert, so no CodeRabbit check ever registers — and `pr-review-watch.sh` reads
+a persistently absent check as "CodeRabbit is not installed in this repo" and stops gating
+on it. A HIGH-tier PR then merges unreviewed while every signal looks clean. The two
+settings go together or not at all.
 
 - **Keep `auto_pause_after_reviewed_commits: 2`.** It is *not* dead config under label
   triggering: a labelled PR re-reviews on every subsequent push, and each one spends from

@@ -1,6 +1,6 @@
 ---
 name: audit-github-estate
-description: Use when auditing GitHub quality and security across an organization or supplied repository estate, including Code Quality, CodeQL/code scanning, Dependabot, secret scanning, repository security advisories, Actions evidence, remediation, and post-merge verification.
+description: Use when auditing GitHub quality and security posture across an organization or a supplied repository estate, or verifying remediation after a prior such audit. Triggers include "/audit-github-estate", "audit our GitHub security posture", "estate-wide GitHub audit", and "did that remediation actually land".
 ---
 
 # Audit GitHub Estate
@@ -28,8 +28,8 @@ Apply this visibility policy before classifying findings:
 
 | Repository visibility | Paid-product policy | Expected configuration |
 |---|---|---|
-| Public | Use GitHub's free public CodeQL and Secret Protection coverage. Code Quality remains a paid explicit opt-in. | Attach the public security configuration with Code Security and Secret Protection enabled. Enable CodeQL default setup, secret scanning, repository push protection, non-provider patterns, validity checks, extended metadata, generic-secret detection, and private vulnerability reporting where GitHub exposes them. Keep Code Quality disabled unless the user explicitly approves the current charges. |
-| Private or internal | No paid Code Security or Secret Protection. Code Quality remains a paid explicit opt-in. | Leave repositories unattached from paid security configurations, disable effective `code_security` and all secret-scanning features. Keep Code Quality disabled unless the user explicitly approves the current charges. Keep Dependency Graph, Dependabot alerts, and Dependabot security updates enabled. |
+| Public | Use GitHub's free public CodeQL, Secret Protection and Code Quality coverage. | Attach the public security configuration with Code Security and Secret Protection enabled. Enable CodeQL default setup, secret scanning, repository push protection, non-provider patterns, validity checks, extended metadata, generic-secret detection, and private vulnerability reporting where GitHub exposes them. Keep Code Quality enabled on public repositories. |
+| Private or internal | No paid Code Security, Secret Protection or Code Quality. | Leave repositories unattached from paid security configurations, disable effective `code_security` and all secret-scanning features, and keep Code Quality disabled. Keep Dependency Graph, Dependabot alerts, and Dependabot security updates enabled. |
 
 Derive identity and policy inputs live for each repository with
 `GET /repos/{owner}/{repo}`. Retain `.visibility`, `.owner.type`, and
@@ -65,15 +65,22 @@ default for public repositories. No paid security configuration should be the
 default for, or attached to, private/internal repositories.
 
 Apply the Code Quality capability and UI-evidence rules in
-`references/github-evidence.md`. Read-only repository setup inspection remains allowed
-while organization access is unverified. Mutations and paid findings/analysis require a
-dated operator report of Repository access, enforcement, displayed price, and explicit
-approval; otherwise record the specified `UNVERIFIED` gap and continue every other
-surface.
+`references/github-evidence.md`. Public Code Quality is free and expected to be enabled;
+private/internal Code Quality is expected to be disabled. Do not invent a paid-
+authorization gap for public Code Quality.
 
-Establish organization Repository access, enforcement, and billing before any Code Quality
-mutation. The default is **No repositories** with **Enforce access** on; an approved paid
-exception is **Selected repositories** containing exactly the approved repositories.
+Establish organization Repository access and enforcement before any Code Quality
+mutation. Free is not the same as readable: access and enforcement stay UI-only whatever
+they cost, so they can still be unverified, and `classify-security-evidence.ps1` still
+reports `Code Quality org access is UNVERIFIED` as a gap. The compliant shapes are
+**Selected repositories** holding exactly the public repositories with **Enforce access**
+on, or **All repositories** where every repository in scope is public. **No repositories**
+is a verified reading, not a compliant one, for an estate that has public repositories.
+
+Read-only repository setup inspection remains allowed while organization access is
+unverified. Mutations require a dated operator report of Repository access and
+enforcement; otherwise record the specified `UNVERIFIED` gap and continue every other
+surface. The gap gates Code Quality mutations, not the audit.
 
 Treat a private repository with Code Security, Code Quality, and Secret
 Protection disabled as **compliant by policy**, not disabled evidence, an
@@ -83,10 +90,9 @@ expected `403`/`404` as a finding. Treat any unauthorized paid product, or requi
 free public coverage disabled publicly, as configuration drift to fix after approval.
 
 Code Quality's organization access, repository setup API, and automatic
-Copilot-review ruleset are separate controls. Verify all three. Every repository
-must report `state: not-configured` unless its current charges were explicitly
-approved. An approved repository must report `state: configured` with
-`ai_findings_option: disabled`. No repository should retain the generated
+Copilot-review ruleset are separate controls. Verify all three. Public repositories
+must report `state: configured` with `ai_findings_option: disabled`; private/internal
+repositories must report `state: not-configured`. No repository should retain the generated
 `Code Quality Copilot review for default branch` ruleset.
 
 Keep delegated bypass and delegated alert dismissal disabled unless the user
@@ -106,6 +112,7 @@ advisories are also distinct from Dependabot alerts.
 
 ## Phase 1: Resolve and authenticate
 
+<!-- routing: resolve-and-authenticate -->
 1. Resolve every target to exact `OWNER/REPOSITORY`, local path when available,
    visibility, default branch, and current remote default-branch SHA.
 2. Verify `gh auth status`, required scopes, and organization role before using
@@ -117,23 +124,31 @@ advisories are also distinct from Dependabot alerts.
 
 ## Phase 2: Read-only baseline
 
+<!-- routing: read-only-baseline -->
 Inventory each repository before changing anything:
 
 - Code Quality repository setup through its read-only endpoint for every repository,
   even while organization access remains unverified.
-- Code Quality findings and current default-branch analysis only for repositories
-  where paid Code Quality is explicitly authorized and enabled.
+- Code Quality findings and current default-branch analysis for public repositories where
+  Code Quality is enabled by policy.
 - CodeQL/code-scanning alerts, analyses, tools, and default setup only where
   Code Security is expected to be available: public repositories under this
   policy.
 - Dependabot alerts, dependency graph, security updates, and updater runs.
   **Reconcile those alerts against open Dependabot PRs by invoking
-  `audit-dependabot-coverage/reconcile.ps1 -GraceHours 0`** rather than reimplementing it
-  here. Estate ledgers cannot hide younger unmatched alerts behind the standalone audit's
-  grace period. An open alert that
+  `audit-dependabot-coverage/reconcile.ps1 -GraceHours 0 -Repo <owner>/<name>`** — once
+  per audited repository — rather than reimplementing it here. Estate ledgers cannot hide
+  younger unmatched alerts behind the standalone audit's grace period.
+
+  **Pass the scope explicitly.** Given neither `-Repo` nor `-Org`, that script enumerates
+  the entire `<your-org>` organization, so an audit of three named repositories silently queried
+  every repository in it: API calls and rate-limit pressure the operator did not ask for,
+  and rows for repositories outside the declared estate landing in its output. Where the
+  subject genuinely is the whole org, pass `-Org <org>` — so the breadth is stated
+  rather than inherited from a default. An open alert that
   nothing is acting on is a finding in its own right, and it is invisible to every
   configuration check: on 2026-08-08 a high-severity nanoid advisory on
-  `your-repo` went four days with no PR because Dependabot reached a wrong
+  `<repo>` went four days with no PR because Dependabot reached a wrong
   verdict, while security updates were enabled, unpaused and correctly configured
   throughout. See `~/.agents/notes/npm-publishing-traps.md` trap 16.
 - Secret-scanning configuration only where enabled by estate policy. Capability-probe
@@ -164,9 +179,10 @@ Use only reasons accepted by that product's API and supported by evidence.
 
 ## Phase 3: Approval gate
 
+<!-- routing: approval-gate -->
 Present the baseline, grouped root causes, proposed API dispositions, proposed
-repository/configuration changes, expected residuals, visibility-policy drift,
-and any current Code Quality charges or access expansion. Then stop for approval.
+repository/configuration changes, expected residuals, and visibility-policy drift. Then
+stop for approval.
 
 Before approval, do not dismiss or resolve alerts, alter repositories or
 security configurations, push, open PRs, merge, or trigger scans. A review-policy
@@ -175,6 +191,7 @@ and run.
 
 ## Phase 4: Remediate approved findings
 
+<!-- routing: remediate-approved -->
 Public secret-scanning alerts follow the capability probe recorded during baseline. If
 the repository endpoint returned `200`, use its repository-level get/location/update
 routes normally. If only the organization inventory route worked, retain its filtered
@@ -212,8 +229,8 @@ configuration PATCH response. Disable Code Quality through
 `state: not-configured`, and remove only the generated single-rule
 `copilot_code_review` ruleset after validating its exact contents. Poll
 asynchronous attachment states and verify effective repository settings
-afterward. Enable Code Quality only for repositories covered by the user's
-explicit approval of the current charges.
+afterward. Enable Code Quality on public repositories and disable it on
+private/internal repositories.
 
 For code/configuration changes:
 
@@ -232,8 +249,9 @@ Keep unrelated cleanup and dependency churn out of scope.
 
 ## Phase 5: Post-merge evidence
 
-After merge, wait for GitHub's automatic default-branch CodeQL analysis and, only
-where paid use is explicitly authorized, Code Quality analysis. Do not toggle security
+<!-- routing: post-merge-evidence -->
+After merge, wait for GitHub's automatic default-branch CodeQL analysis and, where
+Code Quality is enabled by policy, Code Quality analysis. Do not toggle security
 products, submit an unchanged setup patch, or
 create a meaningless commit to provoke a scan. GitHub-generated default-setup
 workflows may not support manual dispatch or rerun.

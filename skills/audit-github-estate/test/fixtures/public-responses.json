@@ -23,12 +23,12 @@
   "code_quality_setup": {
     "exit_code": 0,
     "http_status": 200,
-    "body_json": "{\"state\":\"not-configured\"}"
+    "body_json": "{\"state\":\"configured\",\"ai_findings_option\":\"disabled\"}"
   },
   "code_security_configuration": {
     "exit_code": 0,
     "http_status": 200,
-    "body_json": "{\"name\":\"Public repositories\",\"status\":\"attached\"}"
+    "body_json": "{\"state\":\"attached\",\"configuration\":{\"id\":12345,\"name\":\"Public repositories\"}}"
   },
   "secret_scanning_repository_alerts": {
     "exit_code": 0,
