@@ -28,7 +28,7 @@
   "code_security_configuration": {
     "exit_code": 0,
     "http_status": 200,
-    "body_json": "{\"state\":\"attached\",\"configuration\":{\"id\":12345,\"name\":\"Public repositories\"}}"
+    "body_json": "{\"status\":\"enforced\",\"configuration\":{\"id\":12345,\"name\":\"Public repositories\"}}"
   },
   "secret_scanning_repository_alerts": {
     "exit_code": 0,

@@ -16,6 +16,7 @@ $classes = Get-Content -LiteralPath $classesPath -Raw
 foreach ($needle in @(
     'Axis 5 — Exposure',
     'exposure_findings',
+    'exposure_scope',
     'third_party_homes'
 )) {
     if ($brief -notmatch [regex]::Escape($needle)) {
@@ -77,6 +78,12 @@ if ($classes -notmatch [regex]::Escape('## The `runtime-fetch` class')) {
 }
 if ($classes -notmatch [regex]::Escape('cross-project memory store')) {
     throw 'exposure-classes.md must keep the runtime-fetch class, which no token sweep can catch.'
+}
+# Sampling what the fetch returns is itself the exposure when the audit runs through a
+# third-party vendor: the sample goes to that vendor. The rule must say where the sample
+# may be taken and what to record when it cannot be.
+if ($classes -notmatch [regex]::Escape('sample not taken (third-party runtime)')) {
+    throw 'exposure-classes.md must restrict the runtime-fetch sample to a first-party runtime.'
 }
 
 # Decisions the user has already made must be written where the grader reads them, or

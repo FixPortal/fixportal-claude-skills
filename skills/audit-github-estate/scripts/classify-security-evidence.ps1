@@ -174,14 +174,23 @@ if ($repository) {
 }
 
 if ($visibility -eq 'public') {
-    # `state`, not `status`, and identity under `configuration`. The API returns
-    # { "state": ..., "configuration": { "id", "name", ... } }; reading a top-level
-    # `status` and top-level id/name meant every public repository produced two gaps and
-    # classified INCOMPLETE permanently, while a genuinely wrong attachment could never be
-    # identified. The fixture had been authored to the classifier rather than to the API,
-    # so the test could not catch it.
+    # `status`, not `state`, and identity under `configuration`. The API returns
+    # { "status": "attached" | "enforced" | ..., "configuration": { "id", "name", ... } }
+    # (live: gh api repos/<org>/<public-repo>/code-security-configuration ->
+    # {"status":"enforced",...}). Reading `state` meant every real public repository
+    # gapped on an absent field and classified INCOMPLETE permanently, while a genuinely
+    # wrong attachment could never be identified. The fixture had been authored to the
+    # classifier rather than to the API, so the test could not catch it. Both `attached`
+    # and `enforced` are an attachment; any other status is drift.
     $attachment = Read-Response $evidence.code_security_configuration 'code-security configuration attachment'
-    if ($attachment.Success) { Require-State $attachment.Body 'state' 'attached' 'code-security configuration attachment' }
+    if ($attachment.Success) {
+        if ($attachment.Body.PSObject.Properties.Name -notcontains 'status') {
+            $gaps.Add('code-security configuration attachment omitted applicable field status')
+        }
+        elseif ([string] $attachment.Body.status -notin @('attached', 'enforced')) {
+            $findings.Add("code-security configuration attachment status is '$($attachment.Body.status)', expected 'attached' or 'enforced'")
+        }
+    }
     $attachedConfiguration = if ($attachment.Success -and
         $attachment.Body.PSObject.Properties.Name -contains 'configuration') { $attachment.Body.configuration } else { $null }
 

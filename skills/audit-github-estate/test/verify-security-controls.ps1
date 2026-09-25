@@ -204,7 +204,7 @@ try {
     $attachedPrivate = Get-Content -LiteralPath (Join-Path $fixtures 'private-responses.json') -Raw | ConvertFrom-Json
     $attachedPrivate.code_security_configuration.exit_code = 0
     $attachedPrivate.code_security_configuration.http_status = 200
-    $attachedPrivate.code_security_configuration.body_json = '{"state":"attached","configuration":{"id":54321,"name":"Paid private"}}'
+    $attachedPrivate.code_security_configuration.body_json = '{"status":"attached","configuration":{"id":54321,"name":"Paid private"}}'
     $attachedPrivatePath = Join-Path $temp 'attached-private.json'
     $attachedPrivate | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $attachedPrivatePath
     $attachedPrivateResult = @(& $classifier -EvidencePath $attachedPrivatePath) -join "`n" | ConvertFrom-Json
@@ -226,10 +226,10 @@ try {
         'Malformed private attachment status produced the wrong evidence gap.'
 
     $mismatchedAttachment = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
-    # Real API shape: `state` at the top level, identity under `configuration`. The old
+    # Real API shape: `status` at the top level, identity under `configuration`. The old
     # fixtures were authored to the classifier rather than to the API, so the classifier
     # could read the wrong level indefinitely with every test green.
-    $mismatchedAttachment.code_security_configuration.body_json = '{"state":"attached","configuration":{"id":99999,"name":"Different public policy"}}'
+    $mismatchedAttachment.code_security_configuration.body_json = '{"status":"attached","configuration":{"id":99999,"name":"Different public policy"}}'
     $mismatchedAttachmentPath = Join-Path $temp 'mismatched-public-attachment.json'
     $mismatchedAttachment | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mismatchedAttachmentPath
     $mismatchedAttachmentResult = @(& $classifier -EvidencePath $mismatchedAttachmentPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
@@ -238,6 +238,37 @@ try {
         throw 'A public repository attached to a different configuration must be policy drift.'
     }
     Assert-Gaps $mismatchedAttachmentResult $baselineGaps 'Attachment identity drift produced unrelated evidence gaps.'
+
+    # The attachment key is `status`, not `state`. Live on 2026-09-25:
+    #   gh api repos/<org>/<public-repo>/code-security-configuration
+    #   -> {"status":"enforced","configuration":{...}}
+    # Reading `state` made every real public repository gap on an absent field and
+    # classify INCOMPLETE forever, while the fixture, authored to the classifier, stayed
+    # green. `attached` and `enforced` are both an attachment; anything else is drift.
+    foreach ($case in @(
+        @{ Name = 'legacy state key'; Body = '{"state":"attached","configuration":{"id":12345,"name":"Public repositories"}}'
+           Status = 'INCOMPLETE'; Gaps = @($baselineGaps + 'code-security configuration attachment omitted applicable field status'); Finding = $null },
+        @{ Name = 'detached'; Body = '{"status":"detached","configuration":{"id":12345,"name":"Public repositories"}}'
+           Status = 'NONCOMPLIANT'; Gaps = $baselineGaps; Finding = "code-security configuration attachment status is 'detached', expected 'attached' or 'enforced'" },
+        @{ Name = 'enforced'; Body = '{"status":"enforced","configuration":{"id":12345,"name":"Public repositories"}}'
+           Status = 'INCOMPLETE'; Gaps = $baselineGaps; Finding = $null }
+    )) {
+        $attachmentCase = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+        $attachmentCase.code_security_configuration.body_json = $case.Body
+        $attachmentCasePath = Join-Path $temp "attachment-$($case.Name -replace ' ', '-').json"
+        $attachmentCase | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $attachmentCasePath
+        $attachmentCaseResult = @(& $classifier -EvidencePath $attachmentCasePath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
+        if ($attachmentCaseResult.Status -ne $case.Status) {
+            throw "attachment '$($case.Name)' must classify $($case.Status): $($attachmentCaseResult | ConvertTo-Json -Compress)"
+        }
+        if ($case.Finding -and $attachmentCaseResult.Findings -notcontains $case.Finding) {
+            throw "attachment '$($case.Name)' produced no finding: $($attachmentCaseResult | ConvertTo-Json -Compress)"
+        }
+        if (-not $case.Finding -and $attachmentCaseResult.Findings.Count -ne 0) {
+            throw "attachment '$($case.Name)' must produce no finding: $($attachmentCaseResult | ConvertTo-Json -Compress)"
+        }
+        Assert-Gaps $attachmentCaseResult $case.Gaps "attachment '$($case.Name)' produced the wrong gaps."
+    }
 
     $internal = Get-Content -LiteralPath (Join-Path $fixtures 'private-responses.json') -Raw | ConvertFrom-Json
     $repository = $internal.repository.body_json | ConvertFrom-Json
@@ -364,8 +395,20 @@ if ([regex]::Matches($skill, '(?is)after (every|each).*`PATCH`.*?GET /repos/\{ow
 # reading rather than a compliant one. What did NOT move is that access and enforcement
 # are UI-only, so they can still be unverified whatever the product costs -- which is why
 # classify-security-evidence.ps1 still raises `Code Quality org access is UNVERIFIED`.
-if ($skill -notmatch '(?is)before any Code Quality\s+mutation.*Selected repositories.*Enforce access.*No repositories') {
+if ($skill -notmatch '(?is)before any Code Quality\s+mutation.*Selected repositories.*Enforce access.*All repositories.*in the organization.*No repositories') {
     throw 'Organization access evidence must gate Code Quality mutations.'
+}
+# Private/internal Code Quality is paid and GATED, not banned: the classifier's approval
+# branch accepts `state: configured` there with `code_quality_paid_approved` and a
+# VERIFIED_APPROVED org access reading. Prose that says "disabled" or "must report
+# not-configured" unconditionally contradicts the classifier it fronts.
+foreach ($needle in 'keep Code Quality disabled unless paid use is explicitly approved',
+                    'expected to be disabled unless paid use is explicitly approved',
+                    'must report `state: not-configured` unless paid use is explicitly approved') {
+    $wrapped = @($needle -split ' ' | ForEach-Object { [regex]::Escape($_) }) -join '\s+'
+    if ($skill -notmatch $wrapped) {
+        throw "Private/internal Code Quality must be gated on approval, not banned: $needle"
+    }
 }
 if ($skill -match '(?is)before any repository\s+mutation') {
     throw 'Missing Code Quality UI evidence must not gate unrelated repository mutations.'

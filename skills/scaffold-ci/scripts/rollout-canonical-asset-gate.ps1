@@ -218,7 +218,7 @@ if ([regex]::Matches($ciReread, 'assert_canonical_assets\.py').Count -ne 1) {
 $policyEol = if ($policyText.Contains("`r`n")) { "`r`n" } else { "`n" }
 $additions = @()
 if (-not $policyText.Contains('".github/canonical-assets.json"')) { $additions += '".github/canonical-assets.json"' }
-$verifierCovered = $policyText.Contains('".github/scripts/**"') -or $policyText.Contains('"assert_canonical_assets.py"')
+$verifierCovered = $policyText.Contains('".github/scripts/**"') -or $policyText.Contains('".github/scripts/assert_canonical_assets.py"')
 if (-not $verifierCovered) { $additions += '".github/scripts/assert_canonical_assets.py"' }
 if ($additions.Count -gt 0) {
     $highMatch = [regex]::Match($policyText, '"high"\s*:\s*\[')

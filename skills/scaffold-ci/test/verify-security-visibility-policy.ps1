@@ -59,7 +59,19 @@ function Assert-NoUnsafeCodeQualityDefault {
         if ($line -notmatch '(?i)Code Quality') { continue }
         if ($line -notmatch '(?i)\b(enable(?:d|s)?|configur(?:e|ed))\b') { continue }
 
-        $saysDisabled = $line -match '(?i)\b(disabled?|not-configured)\b'
+        # "disabled" inside the AI-findings clause says nothing about the PRODUCT:
+        # "Private repositories enable Code Quality with AI findings disabled." enables
+        # paid Code Quality, and the guard accepted it because it saw that one word.
+        # Strip the clause before deciding whether the product is disabled; the
+        # AI-findings check itself still reads the full line.
+        $withoutAiClause = $line -replace '(?i)\bAI findings\b[^.;,]*?\b(disabled|off)\b', ''
+        # "off" is in the vocabulary because it is what the stripped clause used to lend
+        # the rest of the line: "AI findings disabled; private/internal keep it off" is a
+        # disablement of the product, and without "off" the strip leaves it looking like
+        # an enablement.
+        $disabledWords = '(?i)\b(disabled?|not-configured|off)\b'
+        $saysDisabled = $withoutAiClause -match $disabledWords
+        $aiSaysDisabled = $line -match $disabledWords
         # Anchored on the VISIBILITY, not on the bare word: the public row of the estate
         # policy table contains "private vulnerability reporting", and matching that read
         # the public row as a private-enablement rule.
@@ -71,7 +83,7 @@ function Assert-NoUnsafeCodeQualityDefault {
         if ($blanket -and $line -notmatch '(?i)\bpublic\b' -and -not $saysDisabled) {
             throw "$Name enables Code Quality with no visibility qualifier: $line"
         }
-        if ($line -match '(?i)AI findings' -and -not $saysDisabled) {
+        if ($line -match '(?i)AI findings' -and -not $aiSaysDisabled) {
             throw "$Name enables Code Quality AI findings: $line"
         }
     }
@@ -179,7 +191,11 @@ foreach ($mutation in @(
     @{ Name = 'private enablement'; Line = 'Private repositories enable paid Code Quality automatically.' },
     @{ Name = 'internal enablement'; Line = 'Configure Code Quality on internal repositories too.' },
     @{ Name = 'visibility-agnostic default'; Line = 'Enable Code Quality by default for all repositories.' },
-    @{ Name = 'AI findings'; Line = 'Leave Code Quality AI findings enabled so Copilot can comment.' }
+    @{ Name = 'AI findings'; Line = 'Leave Code Quality AI findings enabled so Copilot can comment.' },
+    # The only "disabled" on this line belongs to the AI-findings clause; the product
+    # itself is being enabled on private repositories. The guard read that one word as
+    # the whole line being a disablement and accepted it.
+    @{ Name = 'private enablement masked by AI-findings clause'; Line = 'Private repositories enable Code Quality with AI findings disabled.' }
 )) {
     $rejected = $false
     try {

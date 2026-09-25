@@ -29,7 +29,7 @@ Apply this visibility policy before classifying findings:
 | Repository visibility | Paid-product policy | Expected configuration |
 |---|---|---|
 | Public | Use GitHub's free public CodeQL, Secret Protection and Code Quality coverage. | Attach the public security configuration with Code Security and Secret Protection enabled. Enable CodeQL default setup, secret scanning, repository push protection, non-provider patterns, validity checks, extended metadata, generic-secret detection, and private vulnerability reporting where GitHub exposes them. Keep Code Quality enabled on public repositories. |
-| Private or internal | No paid Code Security, Secret Protection or Code Quality. | Leave repositories unattached from paid security configurations, disable effective `code_security` and all secret-scanning features, and keep Code Quality disabled. Keep Dependency Graph, Dependabot alerts, and Dependabot security updates enabled. |
+| Private or internal | No paid Code Security, Secret Protection or Code Quality. | Leave repositories unattached from paid security configurations, disable effective `code_security` and all secret-scanning features, and keep Code Quality disabled unless paid use is explicitly approved. Keep Dependency Graph, Dependabot alerts, and Dependabot security updates enabled. |
 
 Derive identity and policy inputs live for each repository with
 `GET /repos/{owner}/{repo}`. Retain `.visibility`, `.owner.type`, and
@@ -66,7 +66,9 @@ default for, or attached to, private/internal repositories.
 
 Apply the Code Quality capability and UI-evidence rules in
 `references/github-evidence.md`. Public Code Quality is free and expected to be enabled;
-private/internal Code Quality is expected to be disabled. Do not invent a paid-
+private/internal Code Quality is paid and expected to be disabled unless paid use is
+explicitly approved (`code_quality_paid_approved` with a `VERIFIED_APPROVED` access
+reading, which `classify-security-evidence.ps1` accepts). Do not invent a paid-
 authorization gap for public Code Quality.
 
 Establish organization Repository access and enforcement before any Code Quality
@@ -74,8 +76,10 @@ mutation. Free is not the same as readable: access and enforcement stay UI-only 
 they cost, so they can still be unverified, and `classify-security-evidence.ps1` still
 reports `Code Quality org access is UNVERIFIED` as a gap. The compliant shapes are
 **Selected repositories** holding exactly the public repositories with **Enforce access**
-on, or **All repositories** where every repository in scope is public. **No repositories**
-is a verified reading, not a compliant one, for an estate that has public repositories.
+on, or **All repositories** where every repository in the organization is public (All
+repositories enables it org-wide, including private repositories outside the audit
+scope); otherwise **Selected repositories**. **No repositories** is a
+verified reading, not a compliant one, for an estate that has public repositories.
 
 Read-only repository setup inspection remains allowed while organization access is
 unverified. Mutations require a dated operator report of Repository access and
@@ -92,8 +96,9 @@ free public coverage disabled publicly, as configuration drift to fix after appr
 Code Quality's organization access, repository setup API, and automatic
 Copilot-review ruleset are separate controls. Verify all three. Public repositories
 must report `state: configured` with `ai_findings_option: disabled`; private/internal
-repositories must report `state: not-configured`. No repository should retain the generated
-`Code Quality Copilot review for default branch` ruleset.
+repositories must report `state: not-configured` unless paid use is explicitly approved,
+in which case `state: configured` with `ai_findings_option: disabled`. No repository should
+retain the generated `Code Quality Copilot review for default branch` ruleset.
 
 Keep delegated bypass and delegated alert dismissal disabled unless the user
 explicitly defines the actors and governance workflow. They grant administrative

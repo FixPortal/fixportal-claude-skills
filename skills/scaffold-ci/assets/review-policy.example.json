@@ -90,8 +90,8 @@
 
   "high": [
     ".claude/review-policy.json",
-    ".claude/ci-budget-approval.json",
     ".coderabbit.yaml",
+    ".claude/ci-budget-approval.json",
     ".github/workflows/ci.yml",
     ".github/workflows/review-policy-guard.yml",
     ".github/workflows/review-tier.yml",

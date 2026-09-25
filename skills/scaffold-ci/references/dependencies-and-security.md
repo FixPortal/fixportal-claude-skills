@@ -166,9 +166,10 @@ repository; in that case restore the charge-approval gate at every visibility.
 Before any Code Quality change, inspect the organization's Code Quality **Repository
 access** selection and enforcement. A repository-level setup call does not configure
 access. Use **Selected repositories** containing exactly the public repositories with
-**Enforce access** on, or **All repositories** where every repository in scope is public.
-Treat `Let repositories decide`, enforcement off, or any private/internal repository in
-the selection as drift. Keep Code Quality disabled on private/internal repositories:
+**Enforce access** on, or **All repositories** where every repository in the organization
+is public (All repositories enables it org-wide, including private repositories outside
+the audit scope); otherwise **Selected repositories**. Treat `Let repositories decide`,
+enforcement off, or any private/internal repository in the selection as drift. Keep Code Quality disabled on private/internal repositories:
 
 ```powershell
 $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
