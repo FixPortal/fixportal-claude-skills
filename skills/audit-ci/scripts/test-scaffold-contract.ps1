@@ -19,9 +19,16 @@ $scaffold = (Resolve-Path -LiteralPath $ScaffoldRoot).Path
 $policyPath = Join-Path $repository '.claude/review-policy.json'
 if (-not (Test-Path -LiteralPath $policyPath)) { throw 'Missing review policy.' }
 $policy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json
-$primaryWorkflow = @($policy.high | Where-Object { $_ -match '^\.github/workflows/[^*]+\.ya?ml$' } |
-    Where-Object { $_ -notmatch '(?:review-policy-(?:guard|tier)|review-tier)\.ya?ml$' -and $_ -notmatch 'canonical-asset-drift' } | Select-Object -First 1)
-$primaryWorkflow = if ($primaryWorkflow) { [string]$primaryWorkflow[0] } else { '.github/workflows/ci.yml' }
+# One primary workflow, chosen deterministically: ci.yml when the policy tiers it HIGH (a
+# repo may also tier a deploy workflow HIGH, and array order must not decide which file is
+# audited), else the single remaining candidate, else ci.yml by default. Two or more
+# candidates without ci.yml is ambiguous and fails rather than guessing.
+$candidates = @($policy.high | Where-Object { $_ -match '^\.github/workflows/[^*]+\.ya?ml$' } |
+    Where-Object { $_ -notmatch '(?:review-policy-(?:guard|tier)|review-tier)\.ya?ml$' -and $_ -notmatch 'canonical-asset-drift' })
+$primaryWorkflow = if ($candidates -contains '.github/workflows/ci.yml') { '.github/workflows/ci.yml' }
+    elseif ($candidates.Count -eq 1) { [string]$candidates[0] }
+    elseif ($candidates.Count -eq 0) { '.github/workflows/ci.yml' }
+    else { throw "Ambiguous primary workflow: HIGH lists $($candidates -join ', ') and no ci.yml; tier exactly one primary workflow, or name ci.yml." }
 $ciPath = Join-Path $repository $primaryWorkflow
 $ciContract = Get-Content -LiteralPath (Join-Path $scaffold 'references/ci-workflow.md') -Raw
 $securityContract = Get-Content -LiteralPath (Join-Path $scaffold 'references/dependencies-and-security.md') -Raw
