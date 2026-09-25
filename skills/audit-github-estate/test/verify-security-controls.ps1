@@ -37,6 +37,15 @@ Assert-Gaps $private $baselineGaps 'Private baseline evidence gaps changed.'
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('audit-github-estate-' + [guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp | Out-Null
+    $noOrgRepos = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+    $noOrgRepos.code_quality_org_access = 'VERIFIED_NO_REPOSITORIES'
+    $noOrgReposPath = Join-Path $temp 'public-no-org-repositories.json'
+    $noOrgRepos | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $noOrgReposPath
+    $noOrgReposResult = @(& $classifier -EvidencePath $noOrgReposPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
+    if ($noOrgReposResult.EvidenceGaps -notcontains 'Code Quality org access claims no repositories despite this public repository') {
+        throw 'Public repository evidence must reject VERIFIED_NO_REPOSITORIES org access.'
+    }
+
     $failedProbe = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
     $failedProbe.repository.exit_code = 1
     $failedProbe.repository.body_json = '{not json'
@@ -102,6 +111,43 @@ try {
         Assert-Gaps $result $case.Expected "$($case.Name) produced the wrong evidence-gap delta."
     }
 
+    # A non-numeric envelope field must be a GAP, not a crash. `[int] 'n/a'` threw a
+    # terminating error under $ErrorActionPreference = 'Stop', which killed the whole
+    # classification and broke the contract that every repository gets a verdict; and
+    # `[int] $null` is 0, so a missing value read as a SUCCESSFUL call.
+    foreach ($field in 'exit_code', 'http_status') {
+        $nonNumeric = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+        $nonNumeric.actions_run.$field = 'n/a'
+        $nonNumericPath = Join-Path $temp "non-numeric-$field.json"
+        $nonNumeric | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $nonNumericPath
+        $nonNumericResult = @(& $classifier -EvidencePath $nonNumericPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
+        if ($nonNumericResult.Status -ne 'INCOMPLETE') { throw "A non-numeric $field must classify INCOMPLETE, not abort." }
+        Assert-Gaps $nonNumericResult @($baselineGaps + "Actions run reported a non-numeric $field 'n/a'") "A non-numeric $field produced the wrong gaps."
+    }
+
+    # The PUBLIC half of the paid-control table. These two were read on the private
+    # branch and on no other, so a public repository reporting them off classified
+    # ACCOUNTED_FOR - a missing control, not a surplus cost.
+    foreach ($case in @(
+        @{ Field = 'secret_scanning_ai_detection'; Value = 'disabled'; Expected = 'enabled' },
+        @{ Field = 'code_security'; Value = 'disabled'; Expected = 'enabled' },
+        @{ Field = 'secret_scanning_delegated_bypass'; Value = 'enabled'; Expected = 'disabled' }
+    )) {
+        $drift = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+        $body = $drift.repository.body_json | ConvertFrom-Json
+        $body.security_and_analysis | Add-Member -NotePropertyName $case.Field `
+            -NotePropertyValue ([pscustomobject]@{ status = $case.Value }) -Force
+        $drift.repository.body_json = $body | ConvertTo-Json -Depth 10 -Compress
+        $driftPath = Join-Path $temp "public-drift-$($case.Field).json"
+        $drift | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $driftPath
+        $driftResult = @(& $classifier -EvidencePath $driftPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
+        $expectedFinding = "repository security_and_analysis.$($case.Field).status is '$($case.Value)', expected '$($case.Expected)'"
+        if ($driftResult.Findings -notcontains $expectedFinding) {
+            throw "a public repository reporting $($case.Field) as '$($case.Value)' produced no finding: $($driftResult | ConvertTo-Json -Compress)"
+        }
+        if ($driftResult.Status -ne 'NONCOMPLIANT') { throw "public $($case.Field) drift must classify NONCOMPLIANT." }
+    }
+
     $stale = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
     $analysis = $stale.code_scanning_analysis.body_json | ConvertFrom-Json
     $analysis.commit_sha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -158,7 +204,7 @@ try {
     $attachedPrivate = Get-Content -LiteralPath (Join-Path $fixtures 'private-responses.json') -Raw | ConvertFrom-Json
     $attachedPrivate.code_security_configuration.exit_code = 0
     $attachedPrivate.code_security_configuration.http_status = 200
-    $attachedPrivate.code_security_configuration.body_json = '{"name":"Paid private","status":"attached"}'
+    $attachedPrivate.code_security_configuration.body_json = '{"state":"attached","configuration":{"id":54321,"name":"Paid private"}}'
     $attachedPrivatePath = Join-Path $temp 'attached-private.json'
     $attachedPrivate | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $attachedPrivatePath
     $attachedPrivateResult = @(& $classifier -EvidencePath $attachedPrivatePath) -join "`n" | ConvertFrom-Json
@@ -180,7 +226,10 @@ try {
         'Malformed private attachment status produced the wrong evidence gap.'
 
     $mismatchedAttachment = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
-    $mismatchedAttachment.code_security_configuration.body_json = '{"name":"Different public policy","status":"attached"}'
+    # Real API shape: `state` at the top level, identity under `configuration`. The old
+    # fixtures were authored to the classifier rather than to the API, so the classifier
+    # could read the wrong level indefinitely with every test green.
+    $mismatchedAttachment.code_security_configuration.body_json = '{"state":"attached","configuration":{"id":99999,"name":"Different public policy"}}'
     $mismatchedAttachmentPath = Join-Path $temp 'mismatched-public-attachment.json'
     $mismatchedAttachment | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mismatchedAttachmentPath
     $mismatchedAttachmentResult = @(& $classifier -EvidencePath $mismatchedAttachmentPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
@@ -211,6 +260,15 @@ try {
     $approvedResult = @(& $classifier -EvidencePath $approvedPath -ConfigurationPath (Join-Path $fixtures 'public-configuration-response.json')) -join "`n" | ConvertFrom-Json
     if ($approvedResult.Status -ne 'ACCOUNTED_FOR' -or $approvedResult.Findings.Count -ne 0 -or $approvedResult.EvidenceGaps.Count -ne 0) {
         throw 'Explicitly approved configured Code Quality with AI disabled must be accounted for.'
+    }
+
+    $disabled = Get-Content -LiteralPath (Join-Path $fixtures 'public-responses.json') -Raw | ConvertFrom-Json
+    $disabled.code_quality_setup.body_json = '{"state":"not-configured"}'
+    $disabledPath = Join-Path $temp 'disabled-public-code-quality.json'
+    $disabled | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $disabledPath
+    $disabledResult = @(& $classifier -EvidencePath $disabledPath) -join "`n" | ConvertFrom-Json
+    if ($disabledResult.Status -ne 'NONCOMPLIANT' -or $disabledResult.Findings -notcontains 'Code Quality is disabled on a public repository') {
+        throw 'A public repository without Code Quality must be noncompliant.'
     }
 }
 finally {
@@ -254,20 +312,32 @@ if ($contract -notmatch [regex]::Escape('do not use `advanced_security` as a sub
     throw 'The legacy advanced_security aggregate must not replace individual product readback.'
 }
 
-function Get-PrivateDrift([hashtable] $State) {
-    @($controls.Keys | Where-Object {
-        $State.ContainsKey($_) -and $State[$_] -ne $controls[$_].Private
-    })
-}
-
-# Regression: code_security=disabled is not enough when any Secret Protection
-# child remains enabled. Exercise every child independently so a dead row cannot
-# hide behind another failing control.
-foreach ($secretControl in @($controls.Keys | Where-Object { $_ -like 'secret_scanning*' })) {
-    $state = @{ code_security = 'disabled'; $secretControl = 'enabled' }
-    if ((Get-PrivateDrift $state) -notcontains $secretControl) {
-        throw "Private drift failed to identify enabled control: $secretControl"
+# Regression: code_security=disabled is not enough when any Secret Protection child
+# remains enabled. Driven through the REAL CLASSIFIER on a mutated fixture, one control at
+# a time -- the previous version defined both the drift function and its control table in
+# this file, so the loop proved only that the table listed the control while
+# classify-security-evidence.ps1 was never invoked with any of the three enabled. It was
+# green while the classifier had exactly the hole it claimed to guard.
+$driftTemp = Join-Path ([IO.Path]::GetTempPath()) "audit-github-estate-drift-$([Guid]::NewGuid())"
+New-Item -ItemType Directory -Path $driftTemp | Out-Null
+try {
+    foreach ($secretControl in @($controls.Keys | Where-Object { $_ -like 'secret_scanning*' })) {
+        $drift = Get-Content -LiteralPath (Join-Path $fixtures 'private-responses.json') -Raw | ConvertFrom-Json
+        $repositoryBody = $drift.repository.body_json | ConvertFrom-Json
+        $repositoryBody.security_and_analysis | Add-Member -NotePropertyName $secretControl `
+            -NotePropertyValue ([pscustomobject]@{ status = 'enabled' }) -Force
+        $drift.repository.body_json = $repositoryBody | ConvertTo-Json -Compress -Depth 8
+        $driftPath = Join-Path $driftTemp "drift-$secretControl.json"
+        $drift | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $driftPath
+        $driftResult = @(& $classifier -EvidencePath $driftPath) -join "`n" | ConvertFrom-Json
+        $expectedFinding = "repository security_and_analysis.$secretControl.status is 'enabled', expected 'disabled'"
+        if ($driftResult.Status -ne 'NONCOMPLIANT' -or $driftResult.Findings -notcontains $expectedFinding) {
+            throw "The classifier did not report private drift for '$secretControl'. Findings: $($driftResult.Findings -join '; ')"
+        }
     }
+}
+finally {
+    Remove-Item -LiteralPath $driftTemp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 foreach ($needle in '.visibility', '.owner.type', '.security_and_analysis', 'GET /repos/{owner}/{repo}') {
@@ -287,7 +357,14 @@ if ($skill -notmatch '(?is)after every approved repository `PATCH`.*GET /repos/\
 if ([regex]::Matches($skill, '(?is)after (every|each).*`PATCH`.*?GET /repos/\{owner\}/\{repo\}').Count -ne 1) {
     throw 'One controller rule must own repository PATCH readback.'
 }
-if ($skill -notmatch '(?is)before any Code Quality\s+mutation.*No repositories.*Enforce access.*Selected repositories') {
+# The GATE is asserted, and so are the shapes -- but which shape is COMPLIANT moved when
+# Code Quality became free on public repositories. It used to be `No repositories` with
+# enforcement on, an approved paid exception being the only reason to widen it; now the
+# public repositories are expected to be in the set, and `No repositories` is a verified
+# reading rather than a compliant one. What did NOT move is that access and enforcement
+# are UI-only, so they can still be unverified whatever the product costs -- which is why
+# classify-security-evidence.ps1 still raises `Code Quality org access is UNVERIFIED`.
+if ($skill -notmatch '(?is)before any Code Quality\s+mutation.*Selected repositories.*Enforce access.*No repositories') {
     throw 'Organization access evidence must gate Code Quality mutations.'
 }
 if ($skill -match '(?is)before any repository\s+mutation') {

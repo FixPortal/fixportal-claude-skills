@@ -111,6 +111,26 @@ function Test-Contract {
 }
 
 $problems = Test-Contract -Text $text -SweepText $sweep
+
+# The INSTALLED workflow, not only the asset it was copied from. This repository's own
+# copy shipped the bare `version: 3.96.0` tag directly beneath the comment explaining why
+# an unpinned scanner is unacceptable, and had drifted on the detector list too - while
+# this test read the asset and nothing else, so both differences were invisible. The copy
+# that actually runs is the one that decides what counts as a live credential.
+#
+# Field-level, not byte-level: the asset's own header forbids copying its cron value
+# across the estate, so a repository-specific schedule and header are correct differences.
+# The scanner pin, detector allowlist, verified-results restriction and action SHA are not.
+# This mirror nests the skill under skills/, so the repository root is two levels up.
+$repoRoot = Split-Path (Split-Path $root -Parent) -Parent
+$installedSweepPath = Join-Path $repoRoot '.github' 'workflows' 'secret-sweep.yml'
+if (Test-Path -LiteralPath $installedSweepPath) {
+    $installed = (Get-Content -LiteralPath $installedSweepPath -Raw) -replace "`r`n", "`n"
+    foreach ($installedProblem in (Test-Contract -Text $text -SweepText $installed)) {
+        if ($installedProblem -notin $problems) { $problems += "installed workflow: $installedProblem" }
+    }
+}
+
 if ($problems.Count -gt 0) { throw ($problems -join "`n") }
 
 # --- red checks: prove each assertion family can actually fail --------------------

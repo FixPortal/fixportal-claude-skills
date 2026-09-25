@@ -83,7 +83,7 @@ Keep the full nuget group set even if some families (serilog, nodatime, azure-sd
 yet dependencies — Dependabot ignores empty groups, and the file won't need editing when
 those packages appear later.
 
-Lighter fallback (simulator repos): a single grouped `nuget-minor-and-patch` /
+Lighter fallback (smaller repositories): a single grouped `nuget-minor-and-patch` /
 `npm-minor-and-patch` group + `github-actions`, weekly, no time/limit/prefix detail. Use the
 richer variant by default.
 
@@ -94,7 +94,9 @@ that cannot install.
 
 **Private GitHub Packages:** Dependabot cannot read Actions secrets or NuGet credentials
 from `nuget.config`. Add the token separately under *Settings → Secrets → Dependabot*, then
-declare and reference the registry:
+declare and reference the registry. `YourOrg` is the GitHub owner of the feed, as in
+`scaffold-dotnet`'s `nuget.config`; use the secret name the organisation already uses
+for this token rather than inventing one per repo:
 
 ```powershell
 gh secret set YOURORG_PACKAGES_TOKEN --app dependabot
@@ -105,7 +107,7 @@ registries:
   your-github-packages:
     type: nuget-feed
     url: https://nuget.pkg.github.com/YourOrg/index.json
-    username: <your-org>
+    username: YourOrg
     password: ${{secrets.YOURORG_PACKAGES_TOKEN}}
 
 updates:
@@ -135,8 +137,8 @@ durable policy.
 
 | Visibility | Required state |
 |---|---|
-| Public | Enable free Code Security and CodeQL default setup, secret scanning, and push protection. Keep paid Code Quality disabled unless the user explicitly approves the current charges. |
-| Private or internal | Disable paid Code Security and all secret scanning. Do not attach a paid security configuration. Keep paid Code Quality disabled unless the user explicitly approves the current charges. Keep Dependabot alerts and automated security fixes enabled. |
+| Public | Enable free Code Security and CodeQL default setup, secret scanning, and push protection. Enable free public Code Quality with AI findings disabled. |
+| Private or internal | Disable paid Code Security and all secret scanning. Do not attach a paid security configuration. Keep paid Code Quality disabled. Keep Dependabot alerts and automated security fixes enabled. |
 
 For a public repository, prefer attaching the existing public security configuration over
 duplicating settings repository by repository. Configure CodeQL default setup headlessly:
@@ -149,14 +151,24 @@ $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
 gh api -X PATCH "repos/$repo/code-scanning/default-setup" -f state=configured
 ```
 
+Code Quality is free on PUBLIC repositories and paid on private/internal ones, so
+visibility is the policy input, not an approval record.
+
+UNVERIFIED: that public Code Quality is free. The maintainer verified it against the
+organization's own billing and UI on 2026-09-09, and the estate has run it on all eight public
+repositories since 2026-08-14 with `ai_findings_option: disabled`. GitHub's published docs
+do NOT state a public exemption — its changelog calls Code Quality a purchasable product
+from GA on 2026-07-20, billed as a base subscription plus metered per-committer usage, and
+its enablement flow shows a costs dialog. Refuted if GitHub's billing documentation, or
+the organization's own bill, shows a charge attributable to Code Quality on a public
+repository; in that case restore the charge-approval gate at every visibility.
+
 Before any Code Quality change, inspect the organization's Code Quality **Repository
-access** selection, enforcement, and displayed billing impact. A repository-level setup
-call is not authorization: do not enable the product until the user explicitly approves
-the current charges. The safe default is **No repositories** with **Enforce access** on.
-When paid use is approved, use **Selected repositories** containing exactly the approved
-repositories, again with **Enforce access** on. Treat `Let repositories decide`, a broader
-selection, or enforcement off as drift unless the user explicitly approved that exact
-scope. Keep Code Quality disabled by default at every visibility:
+access** selection and enforcement. A repository-level setup call does not configure
+access. Use **Selected repositories** containing exactly the public repositories with
+**Enforce access** on, or **All repositories** where every repository in scope is public.
+Treat `Let repositories decide`, enforcement off, or any private/internal repository in
+the selection as drift. Keep Code Quality disabled on private/internal repositories:
 
 ```powershell
 $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
@@ -166,8 +178,10 @@ $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
 gh api -X PATCH "repos/$repo/code-quality/setup" -f state=not-configured
 ```
 
-When that paid use is explicitly approved, enable only the authorized repository, keep
-Code Quality AI findings disabled, and create no automatic Copilot review ruleset:
+On a public repository, enable it with Code Quality AI findings disabled, and create no
+automatic Copilot review ruleset. AI findings stay disabled at every visibility: they are
+Copilot-generated review comments with no dismissal API, which is why `ai-findings-ledger`
+exists, and free coverage is not a reason to turn them on:
 
 ```powershell
 $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
@@ -270,13 +284,43 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
           tar --extract --gzip --file "${archive}" gitleaks
           install -m 0755 gitleaks "$RUNNER_TEMP/gitleaks"
 
+      # The range is EVENT-DEPENDENT, and the step condition is what makes it honest.
+      # `github.event.pull_request.base.sha` renders EMPTY on push, tag push and
+      # workflow_dispatch; `set -u` does not fire on empty-but-set, so the range
+      # collapsed to `HEAD..<sha>` -- zero commits, exit 0 -- and this gate passed every
+      # non-pull_request run having scanned nothing. That is the state this document
+      # calls worse than no gate, shipped as the default. The `secrets` job cannot carry
+      # a job-level `if:` (assert_gate_coverage.py refuses one), but a STEP-level `if:`
+      # is permitted, which is where the split belongs.
       - name: Scan the PR commit range for secrets
+        if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # Fail CLOSED: on a pull_request an empty BASE_SHA means the range could not be
+          # resolved, never "nothing to scan".
+          if [ -z "${BASE_SHA}" ]; then
+            echo "::error::pull_request base sha did not resolve; the range scan cannot run."
+            exit 1
+          fi
           "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" .
+
+      - name: Scan the pushed commit range for secrets
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # An all-zero `before` is a new branch or tag with no predecessor, so there is
+          # no range to walk. The tree scan below still covers the checked-out tree.
+          if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+            echo "No predecessor commit for this push; range scan skipped, tree scan still runs."
+            exit 0
+          fi
+          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BEFORE_SHA}..${HEAD_SHA}" .
 
       # BOTH SCANS ARE LOAD-BEARING. The range scan above is a commit-list scan: `git
       # log -p` emits no merge-commit diffs at all without --diff-merges, so content
@@ -292,6 +336,24 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
           set -euo pipefail
           "$RUNNER_TEMP/gitleaks" dir -v --redact .
 ```
+
+**What covers which event.** Two of the three steps are conditional, so read the coverage
+per event rather than per step — the conditions are what keep each range honest, and each
+one leaves a gap that another step fills:
+
+| Event | PR-range step | Push-range step | Tree scan |
+|---|---|---|---|
+| `pull_request` | runs | skipped | runs |
+| `push` (branch or tag) | **skipped** | runs, unless `before` is all-zero | runs |
+| `workflow_dispatch`, `schedule` | **skipped** | **skipped** | runs |
+
+The skips are correct: outside a pull request `github.event.pull_request.base.sha` renders
+EMPTY, and a range built from an empty base scans zero commits and exits 0, which is a gate
+that passes having examined nothing. Skipping it says so. What holds the floor on every
+event is the UNCONDITIONAL tree scan, so no event is ever unscanned — but on the bottom row
+only the current tree is examined, and a secret committed and then removed earlier in the
+branch is invisible there. That is the accepted limit of a dispatch or scheduled run, not
+an oversight; the range scans are what close it on the paths that have a range.
 
 `gitleaks dir` is the current spelling of what older versions called `detect --no-git`.
 It exists in 8.30.1; on an older pin, check before copying. Observed running clean on
@@ -327,11 +389,46 @@ Triggers are `workflow_dispatch` plus one **staggered weekly UTC schedule**, the
 mutation workflows follow: choose a repository-specific weekday and time, and do not copy
 one cron value across the estate.
 
+**What none of these controls sees, at any interval.** A secret pushed and then
+force-pushed away leaves an UNREACHABLE commit. It is not in the pushed range (the range
+is computed from the new history), not in the tree, and not in the sweep either — "full
+history" means every commit reachable from a ref, and this one is reachable from none.
+Waiting for the next weekly run does not help: the gap is not a window, it is the object
+graph. The commit stays fetchable by SHA on GitHub, from forks, and from anyone who
+cloned in between, so the exposure is real while the detection is nil.
+
+Nothing here closes that. Treat a force-push over a suspected secret as a ROTATION event
+under the owner/action/record rule below, not as a cleanup — the credential is
+compromised the moment it is pushed, and removing it from history changes who can find
+it, never whether it works.
+
 Verification calls the issuing provider's API to test whether each candidate is live. That
 is outbound traffic carrying suspected secrets out of a private repository, to the provider
 that issued them. It is how verification works at all, and it is an accepted trade-off
 rather than an oversight — but say so when scaffolding it, rather than letting a repository
 acquire the behaviour silently.
+
+**A verified hit has an owner, an action and a record.** Everything above specifies how the
+sweep finds a live credential and nothing specified what happens next, so the only artefact
+a hit produced was a failed workflow run and a default failure email — a working credential
+becoming known-exposed and recorded nowhere, which is a worse evidentiary position than not
+scanning at all.
+
+- **Owner:** the repository owner, on the day the run fails. A red scheduled sweep is not a
+  flaky test to be re-run.
+- **Action:** *rotate first, then fingerprint.* Revoke and reissue the credential at the
+  provider, then add its fingerprint to `.gitleaksignore` so the now-dead string stops
+  failing the gate. Fingerprinting without rotating hides a live credential behind an
+  accepted baseline, which is the one outcome this file must never make convenient.
+  Rewriting history is not rotation: the credential is compromised the moment it is
+  verified, and forks, clones and caches keep it reachable.
+- **Record:** the rotation goes in the repository's own durable record — the AI-findings
+  ledger where the repo keeps one, otherwise a dated note in the repo — with the date, the
+  provider, and the commit the fingerprint was added in. A rotation nobody can find later
+  is indistinguishable from one that never happened.
+
+`state-of-play` surfaces a failed `secret-sweep` run in its punch list, so an unactioned
+hit stays visible past the day the email arrives.
 
 ## Dependabot security settings
 

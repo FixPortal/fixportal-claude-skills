@@ -10,13 +10,17 @@
       "name": "Backend (.NET)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:06:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1000,
+      "run_attempt": 1
     },
     {
       "name": "Frontend (UI)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:04:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1001,
+      "run_attempt": 1
     }
   ]
 }

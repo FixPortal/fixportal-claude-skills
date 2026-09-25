@@ -525,8 +525,8 @@ jobs:
     #     without the distinction the manifest lookup demanded action.yml from every
     #     reusable workflow. That failed `Review policy intact` -- a REQUIRED check --
     #     in every repo with a reusable deploy workflow, so those repos could not merge
-    #     at all. Found 2026-09-02 against ci-frontend, simulator-backend and
-    #     simulator-frontend; latent until then only because no repo carrying the
+    #     at all. Found 2026-09-02 against three consuming repositories;
+    #     latent until then only because no repo carrying the
     #     canonical copy happened to use one.
     $reusableWorkflow = @'
 name: ci
@@ -585,11 +585,28 @@ jobs:
         throw "a local composite action with no manifest must still fail:`n$($compositeMissing.Output)"
     }
 
-    # --- THE GUARD MUST NOT FLAG ITSELF. Its predecessor greps matched the comments
-    #     explaining their own rules, so the guard failed in every repo it was installed
-    #     into. A parser cannot do that -- this pins the property rather than assuming it.
-    $selfScan = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $clean; '.github/scripts/assert_workflow_hygiene.py' = (Get-Content $script -Raw) }
+    # --- THE GUARD MUST NOT FLAG ITSELF, and its SCOPE is what makes that true. Its
+    #     predecessor greps matched the comments explaining their own rules, so the
+    #     guard failed in every repo it was installed into. The parser cannot, because
+    #     main() globs `.github/workflows/*.y{a,}ml` and opens nothing else.
+    #
+    #     Asserting only that exit code stayed 0 was vacuous on its own: the dropped-in
+    #     source sits outside the glob, so the checker never opens it and would pass
+    #     whatever that file contained. The second assertion is the load-bearing one -
+    #     the planted file carries every shape the checker refuses, and the output must
+    #     not NAME it. That fails the moment anyone widens the scan beyond the
+    #     workflows directory, which is the only way the historic failure can return.
+    $bait = @"
+# pull_request_target and workflow_run appear here on purpose, as does
+# permissions: write-all and uses: actions/checkout@main, so that a checker
+# which started reading files outside .github/workflows would have to report them.
+$(Get-Content $script -Raw)
+"@
+    $selfScan = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $clean; '.github/scripts/assert_workflow_hygiene.py' = $bait }
     if ($selfScan.Code -ne 0) { throw "the checker's own source in the repo must not trip it:`n$($selfScan.Output)" }
+    if ($selfScan.Output -match [regex]::Escape('assert_workflow_hygiene.py')) {
+        throw "the checker read a file outside .github/workflows; its scope has widened and self-flagging is reachable again:`n$($selfScan.Output)"
+    }
 
     'assert_workflow_hygiene.py OK - triggers (key/list/dup), no-checkout exemption, first-party vN-tag enforcement, write-all scopes, pin forms, container/services, composite recursion, reusable-workflow refs, opt-in allowlist, fail-closed'
 }

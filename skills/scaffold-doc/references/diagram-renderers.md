@@ -47,9 +47,37 @@ Do not convert a whole document. The cost is per-figure and so is the benefit.
 
 The installed `diagram-design` skill ships its portable self-check, but its
 geometry and skin gates live only in a full verifier checkout. Set
-`DIAGRAM_DESIGN_VERIFIER_ROOT` to that checkout's `diagram-design` directory;
-the runner fails closed when the root or any required script is absent. No
-machine-specific clone path is assumed.
+`DIAGRAM_DESIGN_VERIFIER_ROOT` to the root of that checkout, the directory whose
+`scripts/` holds `verify-geometry.py` and `lint-skin.py`; the runner fails closed
+when the root or any required script is absent. No machine-specific clone path is
+assumed.
+
+**Where that checkout comes from.** The verifier scripts
+(`scripts/verify-geometry.py`, `scripts/lint-skin.py`) are not part of the installed
+skill — the install carries `scripts/self_check.py` and nothing else — so on a machine
+that has only ever installed the skill, the root does not exist and the runner is
+fail-closed by design rather than misconfigured. Acquire it by cloning the upstream
+repository and pointing the variable at the clone's root. The installed skill does not
+record where it came from — its frontmatter carries only name, description, licence and
+version — so the source is stated here: `https://github.com/cathrynlavery/diagram-design`,
+listed on skills.sh as `cathrynlavery/diagram-design@diagram-design`. Checked 2026-09-25:
+an installed `SKILL.md` (version 2.3) was byte-identical to that repository's
+`skills/diagram-design/SKILL.md` at commit `a5e3978088cf89c7caff5c20cabd99fbc2a301de`,
+and the verifiers sit at the repository root under `scripts/`. Nothing here vendors or
+fetches the checkout, deliberately: it is third-party code.
+
+**Pin the revision and record it.** These scripts are third-party Python that the runner
+EXECUTES, so a floating clone means the gate's behaviour changes without a review — the
+same mutable-dependency problem a review-bound skill install exists to close. Check out a
+reviewed tag or commit, not a branch:
+`git -C <verifier-root> checkout --detach <reviewed-sha>`, verify it with
+`git -C <verifier-root> rev-parse HEAD`, and record that SHA beside the gate result. A
+verifier whose revision is not recorded has produced an unattributable pass.
+
+If the checkout is unavailable, the geometry and skin gates are **not run**, and that
+is a coverage gap to state — say which gates were skipped and why. The portable
+self-check passing on its own is not a substitute for them and must not be reported as
+one.
 
 ```powershell
 $diagramVerifierRoot = Resolve-Path $env:DIAGRAM_DESIGN_VERIFIER_ROOT

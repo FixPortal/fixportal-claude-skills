@@ -10,31 +10,41 @@
       "name": "Backend (.NET)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:06:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1000,
+      "run_attempt": 1
     },
     {
       "name": "Frontend (UI)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:04:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1001,
+      "run_attempt": 1
     },
     {
       "name": "Secrets",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:02:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1002,
+      "run_attempt": 1
     },
     {
       "name": "Gate coverage",
       "started_at": "2026-08-26T10:06:00Z",
       "completed_at": "2026-08-26T10:06:10Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1003,
+      "run_attempt": 1
     },
     {
       "name": "CI Gate",
       "started_at": "2026-08-26T10:06:10Z",
       "completed_at": "2026-08-26T10:06:20Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1004,
+      "run_attempt": 1
     }
   ]
 }

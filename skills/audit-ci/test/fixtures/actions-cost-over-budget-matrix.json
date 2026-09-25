@@ -10,25 +10,33 @@
       "name": "Backend (.NET)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:07:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1000,
+      "run_attempt": 1
     },
     {
       "name": "Frontend (UI) (node 22)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:05:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1001,
+      "run_attempt": 1
     },
     {
       "name": "Frontend (UI) (node 24)",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:05:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1002,
+      "run_attempt": 1
     },
     {
       "name": "Secrets",
       "started_at": "2026-08-26T10:00:00Z",
       "completed_at": "2026-08-26T10:01:00Z",
-      "conclusion": "success"
+      "conclusion": "success",
+      "id": 1003,
+      "run_attempt": 1
     }
   ]
 }

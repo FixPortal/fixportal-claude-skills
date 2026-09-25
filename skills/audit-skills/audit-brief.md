@@ -1,7 +1,7 @@
-# Audit Brief — one skill, four axes, five runtime surfaces
+# Audit Brief — one skill, five axes, six runtime surfaces
 
 You are auditing **one** skill the user authored. Read its `SKILL.md` (and any
-supporting files in its directory). Score the four axes below, **verify every
+supporting files in its directory). Score the five axes below, **verify every
 reference on disk**, and return the JSON contract at the end. Report only —
 make no edits to any skill.
 
@@ -72,12 +72,39 @@ Check only the conventions relevant to this skill's domain. Do NOT assert
 - **Azure/CI skills:** point at `~/.agents/notes/deploy-and-ci-traps.md`;
   EF/Wolverine/SignalR skills point at `dotnet-runtime-traps.md`.
 
+## Axis 5 — Exposure
+
+**What this skill discloses when its text leaves this machine.** Read
+`references/exposure-classes.md` in this skill's directory for the grade table,
+the token sweep pattern, and the three classes the pattern cannot catch.
+
+Two steps, in order:
+
+1. **Scope.** From the `homes` you found, name every one that is a **third-party**
+   runtime — a runtime configured to a model vendor other than the user's own
+   first-party provider. `~/.pi/skills` and `~/.pi/agent/skills` are the current
+   case: PI is routinely pointed at OpenRouter-hosted third-party models. If the
+   skill is mounted in no third-party home, grade 🟩 and record that as the
+   reason. Do not grade content you have established nobody exports.
+2. **Content.** Run the token sweep over the skill directory and read for the
+   three unscannable classes. Grade to the worst class present.
+
+A skill body is loaded from the runtime's home, **not** from the working
+directory, so a workspace sandbox restricts file access and never prompt
+contents. Never treat a directory restriction as exposure containment; if a
+finding's fix depends on that assumption, the fix is wrong.
+
+Record exposure hits in `exposure_findings`, not `findings` — a skill that
+discloses the org name is not technically broken, and mixing the two makes the
+defect buckets unreadable.
+
 ## Cross-home drift (this skill only)
 
-You were told this skill's path(s). Compare the **five runtime surfaces**:
+You were told this skill's path(s). Compare the **six runtime surfaces**:
 `~/.claude/skills`, `~/.agents/skills`, `~/.kimi-code/skills`,
-`~/.gemini/config/skills`, and `~/.gemini/antigravity-cli/skills`. If it
-exists in two or more, diff the bodies pairwise and report divergence. If it
+`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`, and
+`~/.pi/skills` (with `~/.pi/agent/skills`, which PI reads as a second root). If
+it exists in two or more, diff the bodies pairwise and report divergence. If it
 exists in only one home, report which (e.g. Claude-home-only, or
 gemini-home-only for a skill authored only in Antigravity).
 
@@ -136,12 +163,15 @@ a sound but superseded skill is not technically broken.
 {
   "skill": "<name>",
   "homes": ["<every runtime surface where the skill exists>"],
-  "grades": { "reach": "🟩|🟨|🟧|🟥", "impl": "🟩|🟨|🟧|🟥", "correctness": "🟩|🟨|🟧|🟥", "utility": "🟩|🟨|🟧|🟥" },
+  "grades": { "reach": "🟩|🟨|🟧|🟥", "impl": "🟩|🟨|🟧|🟥", "correctness": "🟩|🟨|🟧|🟥", "utility": "🟩|🟨|🟧|🟥", "exposure": "🟩|🟨|🟧|🟥" },
   "references_checked": [
     { "ref": "<path/command/package/constant>", "kind": "path|command|package|constant|crossref", "status": "resolved|broken", "evidence": "<what you ran / result>" }
   ],
   "findings": [
     { "severity": "🟥|🟧|🟨", "axis": "reach|impl|correctness", "evidence": "<exact path/line/phrase>", "fix": "<precise fix, described not applied>" }
+  ],
+  "exposure_findings": [
+    { "severity": "🟥|🟧|🟨", "class": "credential|identity-topology|attribution|runtime-fetch", "evidence": "<exact path:line and the disclosing text>", "third_party_homes": ["<home that exports it>"], "fix": "<precise fix, described not applied>" }
   ],
   "utility_evidence": [
     { "source": "<path/report/history/user-supplied evidence>", "window": "<dates or unknown>", "signal": "<observed fact, not inference>" }
@@ -157,6 +187,26 @@ a sound but superseded skill is not technically broken.
 in the skill body. An empty or token `references_checked` means you didn't do the
 job — go back and verify.
 
+`exposure_findings` may be empty, but only after the sweep actually ran. An empty
+array asserts a clean sweep over a named scope, so the scope decision belongs in
+`top_issue` or the grade rationale when it is the reason nothing was reported. A
+🟩 exposure grade with no stated scope is the failure this axis exists to prevent:
+it reads identically whether the skill is clean or was never scanned.
+
 `utility_evidence` must also be non-empty. If no attributable evidence exists,
 record the searched source and window with that negative result, then choose
 `insufficient-evidence`; never silently omit the utility assessment.
+
+`lifecycle.confidence` is a claim about the EVIDENCE behind the disposition, not about how
+sure you feel. Pick it from what `utility_evidence` actually holds:
+
+| Value | The evidence looks like |
+|---|---|
+| `high` | Two or more independent attributable observations agreeing, inside a stated window — e.g. session history plus a committed report, or invocations across two runtimes. A `retire` or `merge` needs this. |
+| `medium` | One attributable observation in a stated window, with nothing contradicting it; or several observations that agree on direction but not on magnitude. |
+| `low` | The window is unknown or very short, the source is indirect (the skill is mentioned but not shown running), or two sources disagree. |
+
+If the disposition is `insufficient-evidence`, confidence is `low` by construction — there
+is no evidence to be confident about, and any other value would be reporting an opinion as
+a measurement. A `high` alongside a single source is the specific error this table exists
+to prevent: it is what makes an unread skill look like a measured one.

@@ -1,0 +1,57 @@
+{
+  "_comment": "Per-phase model routing. Follows the skill's own spine. The standard itself lives in scaffold-ci and is read at audit time, so evaluate is comparison against a supplied contract rather than recall - which is what keeps it off frontier. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "discover",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Resolves the in-scope repositories and each one's mainline branch by named command. The one discipline is that an unresolvable remote HEAD makes trigger and ref-gating findings unverifiable rather than defaulting to main.",
+      "adjust": [
+        {
+          "when": "repoCount > 15",
+          "step": 1,
+          "why": "A long sweep has to carry a per-repository sequence across the whole run, and the characteristic failure is silently dropping repositories from the tail rather than getting any single one wrong."
+        }
+      ]
+    },
+    {
+      "id": "inventory",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Runs the workflow inventory script and reads each artefact by literal path. The paths are specified precisely because a ** glob skips the dotted .github directory and a .yaml-suffixed repository then reads as having no CI at all - an absence produced by the tool, not the repository.",
+      "adjust": []
+    },
+    {
+      "id": "evaluate",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Compares each inventoried workflow against scaffold-ci's control surfaces, workflow contract and shipped assets, read at audit time. The core principle is to measure against that standard and never improvise a best practice, so the judgement is whether a difference is a gap, deliberate drift, or a non-house extra - and every inventoried workflow needs its own evidence row.",
+      "adjust": []
+    },
+    {
+      "id": "blacksmith-lens",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Scores each Docker-building or heavy-compute job for a runner move. This is the skill's headline lens and the recommendation carries real cost either way, but it is scored against documented criteria rather than reasoned from scratch.",
+      "adjust": []
+    },
+    {
+      "id": "report",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Renders per-repository findings, and on a sweep a cross-repository consistency matrix. The single-repository case is transcription of decided findings.",
+      "adjust": [
+        {
+          "when": "repoCount > 3",
+          "step": 1,
+          "why": "The consistency matrix is the one output no per-repository pass produces: it has to see every repository at once to tell a house-wide gap from one repository's local choice, and that is the finding a reader acts on estate-wide."
+        }
+      ]
+    }
+  ]
+}

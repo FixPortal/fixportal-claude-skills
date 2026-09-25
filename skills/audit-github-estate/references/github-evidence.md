@@ -35,20 +35,26 @@ Inventory legacy `advanced_security`, but do not use `advanced_security` as a su
 
 | Evidence | Public | Private/internal |
 |---|---|---|
-| `GET /repos/{owner}/{repo}` | Derive visibility, owner type, and the secret-scanning fields actually returned. An omitted legacy `code_security` field is not required. | Require effective `code_security`, `secret_scanning`, push protection, non-provider patterns, and validity checks to be disabled. Delegated and AI-detection fields may be omitted and are not evidence gaps. |
-| `GET /repos/{owner}/{repo}/code-security-configuration` | Require `200` with `status: attached`; its `id` or `name` must match the separately loaded required public configuration. | Require the documented no-content `204`; `200` is paid configuration drift. |
+| `GET /repos/{owner}/{repo}` | Derive visibility, owner type, and the secret-scanning fields actually returned. An omitted legacy `code_security` field is not required. | Require effective `code_security`, `secret_scanning`, push protection, non-provider patterns, and validity checks to be disabled. Delegated and AI-detection fields may be omitted and are not evidence gaps — but where one **is** returned it must also be `disabled`, since an enabled paid control is the drift this audit exists to catch. |
+| `GET /repos/{owner}/{repo}/code-security-configuration` | Require `200` with `state: attached` (the API's key is `state`, and identity lives under the response's `configuration` object, not at the top level). **Every** comparable field of that object — `id`, `name` — must match the separately loaded required public configuration; a match on `name` alone is an evidence gap, not a pass, because the wrong configuration can share a display name. | Require the documented no-content `204`; `200` is paid configuration drift. |
 | Named code-security configuration | Verify every field returned by the named public configuration. `code_security` and `secret_protection` may be omitted; use product-specific endpoints for those products. | Not applicable when unattached. |
 | `GET /repos/{owner}/{repo}/code-scanning/default-setup` | Required `state: configured`. | Not queried under the paid-product policy. |
 | Code Scanning analyses | Latest successful default-branch analysis uses `commit_sha`; compare it with the live default-branch SHA. | Not queried under the paid-product policy. |
 | Actions workflow runs | Latest required run uses `head_sha`; compare it with the live default-branch SHA. | Same. |
-| `GET /repos/{owner}/{repo}/code-quality/setup` | Always safe to inspect read-only. Default is `not-configured` without approved paid use. | Same. |
-| Code Quality findings/analysis | Query only when paid use and current charges are explicitly approved. | Same. |
+| `GET /repos/{owner}/{repo}/code-quality/setup` | Require the policy-expected enabled/configured state for public repositories. | Require the policy-expected disabled/not-configured state for private/internal repositories. |
+| Code Quality findings/analysis | Query for public repositories where Code Quality is enabled by policy. | Do not query when Code Quality is disabled by policy. |
 
-Organization Code Quality repository access, enforcement, and displayed price remain
-UI-only. When the operator has not supplied them, record `Code Quality org access:
-UNVERIFIED (UI-only, awaiting operator)`. Continue read-only repository setup inspection
-and every non-Code-Quality surface. Gate Code Quality mutations and paid
-findings/analysis queries, not the whole audit.
+Organization Code Quality repository access and enforcement remain UI-only, and being
+free does not make them readable. When the operator has not supplied them, record
+`Code Quality org access: UNVERIFIED (UI-only, awaiting operator)`. Continue read-only
+repository setup inspection and every non-Code-Quality surface. Gate Code Quality
+mutations, not the whole audit — `classify-security-evidence.ps1` still raises
+`Code Quality org access is UNVERIFIED` as a gap, and it is a gap in what was READ.
+
+Free public Code Quality changed the EXPECTATION, not this evidence rule: public
+repositories are expected enabled and private/internal disabled. Do not record a
+paid-authorization gap for public Code Quality, and do not gate public findings reads on
+billing evidence.
 
 ## Secret-scanning alert capability probe
 

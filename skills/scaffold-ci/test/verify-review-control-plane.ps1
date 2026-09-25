@@ -17,7 +17,7 @@ if ($text -match '`\.claude/review-policy\.json`\s*\r?\n?\s*itself, `\.coderabbi
 # The guard workflow that replaced it must be scaffolded as its own control surface.
 foreach ($needle in 'review-policy-guard.yml',
                     'git check-ignore --no-index',
-                    'ten control surfaces') {
+                    'review-tier.yml') {
     if ($text -notmatch [regex]::Escape($needle)) {
         throw "SKILL.md missing the review-policy guard: $needle"
     }
@@ -29,33 +29,170 @@ foreach ($needle in 'review-policy-guard.yml',
 # policy or none, and a repo with no policy tiers every PR NORMAL: the exact failure the
 # section exists to prevent. ci-workflow.md already states the rule ("not any single
 # runtime's skills root"); this holds the assets to it.
-#
-# The hygiene checker is on the list because the guard now delegates to it: copying the
-# workflow without the script leaves the required check red on a missing file, and the
-# references must say so (the copy instruction is the text check below).
 $assets = Join-Path $root 'assets'
-foreach ($asset in 'review-policy-guard.yml', 'review-policy.example.json', 'assert_gate_coverage.py', 'assert_workflow_hygiene.py') {
+foreach ($asset in 'review-policy-guard.yml', 'review-policy.example.json', 'review-tier.yml', 'assert_gate_coverage.py', 'assert_workflow_hygiene.py') {
     if (-not (Test-Path -LiteralPath (Join-Path $assets $asset) -PathType Leaf)) {
         throw "scaffold-ci must ship $asset under assets/, not reference a runtime-specific path"
     }
 }
+# This mirror nests the skill under skills/, so the repository root is two levels up.
+$repoCodeRabbit = Get-Content (Join-Path $root '..' '..' '.coderabbit.yaml') -Raw
+if (-not $repoCodeRabbit.Contains('labels: ["review-high", "review-high-manual"]')) {
+    throw 'the repository CodeRabbit config must enable both the tier label and manual HIGH override'
+}
 if ($text -match [regex]::Escape('~/.claude/resources/')) {
     throw 'scaffold-ci cites a Claude-only asset path; use ~/.agents/skills/scaffold-ci/assets/'
-}
-# The references must tell the consumer to copy the checker alongside the guard workflow;
-# without that instruction a scaffolded repo gets a guard whose one assertion step fails
-# on a missing .github/scripts/assert_workflow_hygiene.py.
-if ($text -notmatch [regex]::Escape('cp ~/.agents/skills/scaffold-ci/assets/assert_workflow_hygiene.py .github/scripts/')) {
-    throw 'references must carry the copy instruction for assert_workflow_hygiene.py next to the guard copy'
 }
 
 # The guard must be COPIED, not paraphrased. An inlined snippet drifted from the asset and
 # silently lost four of its checks; these are the ones that were missing.
 $guard = Get-Content (Join-Path $assets 'review-policy-guard.yml') -Raw
+$tierWorkflow = Get-Content (Join-Path $assets 'review-tier.yml') -Raw
+if ($tierWorkflow -notmatch '\.previous_filename') {
+    throw 'review-tier.yml must include previous_filename so renames retain HIGH coverage'
+}
+# That a leading **/ also matches repository-root files is asserted by EXECUTING the match
+# block below ('**/secrets.json' vs 'secrets.json', and the doubled '**/**/' cases), not by
+# grepping for one spelling of the suffix strip.
+# That renames keep HIGH, and that the completeness count is of FILES rather than of names,
+# is asserted by executing the enumeration and match blocks below, not by grepping for a
+# particular jq spelling.
+foreach ($needle in 'cancel-in-progress: false', 'trap tier_high_on_failure ERR', 'tier_high_on_failure', 'review-high-manual', 'Could not enumerate the complete changed-file list') {
+    if ($tierWorkflow -notmatch [regex]::Escape($needle)) {
+        throw "review-tier.yml is missing fail-high control: $needle"
+    }
+}
+
+# The completeness check, EXECUTED rather than grepped: the shipped enumeration block runs
+# under bash with `gh` stubbed to return a chosen changed_files and file count. The files
+# endpoint stops at 3000, and whether changed_files is capped there too is unverified, so
+# an enumeration that reaches 3000 must tier HIGH even when the two counts agree.
+$bash = Get-Command bash -ErrorAction SilentlyContinue
+$block = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if ! expected=\$\(gh api.*?^\k<i>fi\r?$')
+if (-not $block.Success) { throw 'review-tier.yml: could not locate the changed-file enumeration block' }
+if (-not $bash) {
+    Write-Host 'SKIP: no bash on this host; review-tier enumeration block not executed'
+}
+else {
+    $indent = $block.Groups['i'].Value.Length
+    $body = ($block.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $indent) { $_.Substring($indent) } else { $_.TrimStart() } }) -join "`n"
+    foreach ($case in @(
+        @{ Expected = 0;    Retrieved = 0;    High = 'false'; Why = 'a PR with no changed files (follow-up batch, item 2)' },
+        @{ Expected = 2;    Retrieved = 2;    High = 'false'; Why = 'a small, complete list' },
+        @{ Expected = 5;    Retrieved = 4;    High = 'true';  Why = 'a short enumeration' },
+        @{ Expected = 3000; Retrieved = 3000; High = 'true';  Why = 'an enumeration at the 3000-file ceiling with matching counts' },
+        @{ Expected = 3500; Retrieved = 3000; High = 'true';  Why = 'an enumeration capped below changed_files' }
+    )) {
+        $script = @"
+set -euo pipefail
+GITHUB_REPOSITORY=o/r PR_NUMBER=1 high=false
+gh() { case "`$*" in *'/files'*) seq 1 $($case.Retrieved) | sed 's/^/f/' ;; *) echo $($case.Expected) ;; esac; }
+$body
+echo "HIGH=`$high"
+"@
+        $out = ($script -replace "`r", '') | & $bash.Source -s 2>&1 | Out-String
+        if ($out -notmatch "HIGH=$($case.High)\b") {
+            throw "review-tier.yml tiered $($case.Why) wrong (expected high=$($case.High)):`n$out"
+        }
+    }
+    # A RENAME is one file with two names: the count must not double (which would force every
+    # rename HIGH), while the match list must carry the vacated path (so moving a HIGH file
+    # out of its tier still tiers HIGH). Enumeration and match run together here.
+    if (-not $match) { $match = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if ! \$high; then.*?^\k<i>fi\r?$') }
+    $rIndent = $match.Groups['i'].Value.Length
+    $rMatch = ($match.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $rIndent) { $_.Substring($rIndent) } else { $_.TrimStart() } }) -join "`n"
+    foreach ($case in @(
+        @{ Records = 'moved/policy.json\t.claude/review-policy.json'; High = 'true';  Why = 'a rename out of a HIGH path' },
+        @{ Records = 'src/b.cs\tsrc/a.cs';                             High = 'false'; Why = 'a rename between NORMAL paths, counted once' }
+    )) {
+        $script = @"
+set -euo pipefail
+GITHUB_REPOSITORY=o/r PR_NUMBER=1 high=false
+patterns='.claude/review-policy.json'
+gh() { case "`$*" in *'/files'*) printf '$($case.Records)\n' ;; *) echo 1 ;; esac; }
+$body
+$rMatch
+echo "HIGH=`$high"
+"@
+        $out = ($script -replace "`r", '') | & $bash.Source -s 2>&1 | Out-String
+        if ($out -notmatch "HIGH=$($case.High)\b") {
+            throw "review-tier.yml tiered $($case.Why) wrong (expected high=$($case.High)):`n$out"
+        }
+    }
+
+    # The changed-file list is enumerated ONCE: a second paginated call doubled the API
+    # cost and let the count and the list disagree mid-run (follow-up batch, item 1).
+    $filesCalls = [regex]::Matches($block.Value, 'pulls/\$PR_NUMBER/files').Count
+    if ($filesCalls -ne 1) {
+        throw "review-tier.yml must enumerate the changed files once; found $filesCalls /files call(s)"
+    }
+
+    # The pattern match, EXECUTED: a mid-pattern `**/` must match zero directories as well
+    # as many (follow-up batch, item 5), without narrowing what the bash `case` glob matched before.
+    $match = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if ! \$high; then.*?^\k<i>fi\r?$')
+    if (-not $match.Success) { throw 'review-tier.yml: could not locate the pattern-match block' }
+    $mIndent = $match.Groups['i'].Value.Length
+    $mBody = ($match.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $mIndent) { $_.Substring($mIndent) } else { $_.TrimStart() } }) -join "`n"
+    foreach ($case in @(
+        @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/certs/a.pem';         High = 'true';  Why = 'mid-pattern ** at zero depth' },
+        @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/prod/eu/certs/a.pem'; High = 'true';  Why = 'mid-pattern ** at depth' },
+        @{ Pattern = '**/secrets.json';    File = 'secrets.json';               High = 'true';  Why = 'leading ** at the root' },
+        @{ Pattern = 'infra/*';            File = 'infra/a/b.bicep';            High = 'true';  Why = 'a single * still crossing /, as bash case always did' },
+        @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/foocerts/a.pem';      High = 'false'; Why = 'a sibling directory whose name merely ends in certs' },
+        @{ Pattern = 'a/**/b/**/c';        File = 'a/b/x/c';                    High = 'true';  Why = 'two embedded ** segments, one at zero depth' },
+        @{ Pattern = '**/scripts/**/*.py'; File = 'scripts/foo.py';             High = 'true';  Why = 'leading AND mid ** both at zero depth' },
+        @{ Pattern = '**/scripts/**/*.py'; File = 'a/scripts/foo.py';           High = 'true';  Why = 'leading ** at depth, mid ** at zero depth' },
+        @{ Pattern = '**/scripts/**/*.py'; File = 'xscripts/foo.py';            High = 'false'; Why = 'a sibling of the combined pattern' },
+        @{ Pattern = '**/**/secrets.yml';  File = 'secrets.yml';                High = 'true';  Why = 'a doubled leading **/ at the root' },
+        @{ Pattern = '**/**/secrets.yml';  File = 'a/secrets.yml';              High = 'true';  Why = 'a doubled leading **/ at depth one' },
+        @{ Pattern = 'deploy/**/certs/**'; File = 'docs/readme.md';             High = 'false'; Why = 'an unrelated path' }
+    )) {
+        $script = @"
+set -euo pipefail
+high=false
+patterns='$($case.Pattern)'
+files='$($case.File)'
+$mBody
+echo "HIGH=`$high"
+"@
+        $out = ($script -replace "`r", '') | & $bash.Source -s 2>&1 | Out-String
+        if ($out -notmatch "HIGH=$($case.High)\b") {
+            throw "review-tier.yml matched $($case.Why) wrong ($($case.Pattern) vs $($case.File), expected high=$($case.High)):`n$out"
+        }
+    }
+
+    # A label-read failure on a NORMAL PR keeps HIGH coverage AND fails the job, like
+    # every other failure path (follow-up batch, item 3).
+    $label = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if \$high; then.*?^\k<i>fi\r?$')
+    if (-not $label.Success) { throw 'review-tier.yml: could not locate the label block' }
+    $lIndent = $label.Groups['i'].Value.Length
+    $lBody = ($label.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $lIndent) { $_.Substring($lIndent) } else { $_.TrimStart() } }) -join "`n"
+    $script = @"
+set -euo pipefail
+GITHUB_REPOSITORY=o/r PR_NUMBER=1 high=false
+tier_high_on_failure() { echo TIERED_HIGH; }
+gh() { case "`$*" in 'pr view'*) return 1 ;; *) return 0 ;; esac; }
+$lBody
+echo REACHED_END
+"@
+    $out = ($script -replace "`r", '') | & $bash.Source -s 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    if ($out -notmatch 'TIERED_HIGH' -or $code -eq 0 -or $out -match 'REACHED_END') {
+        throw "a label-read failure must apply HIGH and fail the job (exit $code):`n$out"
+    }
+}
 foreach ($check in '-s "$policy"', 'jq -e . "$policy"', 'has("high")', 'permissions:') {
     if ($guard -notmatch [regex]::Escape($check)) {
         throw "the shipped review-policy guard has lost a content check: $check"
     }
+}
+foreach ($needle in '.github/canonical-assets.json', '[ ! -f "$required" ]', '[ -f "$required" ]') {
+    if ($guard -notmatch [regex]::Escape($needle)) {
+        throw "review-policy-guard.yml is missing a control-plane presence/high check: $needle"
+    }
+}
+if ($guard -notmatch '(?s)for required in \.claude/ci-budget-approval\.json \.github/canonical-assets\.json \\\s+nuget\.config NuGet\.config global\.json \.config/dotnet-tools\.json \.npmrc Directory\.Build\.props; do') {
+    throw 'the guard must check optional HIGH paths, including the manifest, with both NuGet casings'
 }
 
 $widePush = "branches: ['**']"
@@ -70,182 +207,144 @@ if ($text -match [regex]::Escape($widePush) -or $guard -match [regex]::Escape($w
 # entirely. The example policy carries the same instruction in its own $comment block.
 $policyExample = Get-Content (Join-Path $assets 'review-policy.example.json') -Raw
 $policy = $policyExample | ConvertFrom-Json
+if ($policy.high -notcontains '.claude/ci-budget-approval.json' -or
+    $guard -notmatch [regex]::Escape('.claude/ci-budget-approval.json')) {
+    throw 'The committed CI-budget approval must be tiered HIGH and required by the guard.'
+}
 if ($policy.high -contains '.github/workflows/**') {
     throw "the example policy tiers .github/workflows/** HIGH again; the guard's assertions replaced it"
 }
+if ($policy.high -notcontains '.config/dotnet-tools.json' -or
+    $guard -notmatch [regex]::Escape('.config/dotnet-tools.json')) {
+    throw '.config/dotnet-tools.json must be HIGH when present and included in the example policy'
+}
 # The trade only holds while the assertions that replaced the glob are actually shipped.
-# They live in the structural checker now, not in the guard: the line-anchored greps were
-# bypassable by ordinary block-style YAML (a value on the line after its key), so the
-# guard delegates to a YAML parse. The checker must carry all three rules.
-$checkerPath = Join-Path $assets 'assert_workflow_hygiene.py'
-$checker = Get-Content $checkerPath -Raw
-# The checker ships in two places that must stay byte-identical: this asset, which a
-# scaffolded repo copies from, and the live copy gating THIS repository. A text check on
-# the asset alone certifies nothing about the copy that actually runs here - compare
-# bytes, so the two cannot drift apart silently.
-$liveCheckerPath = Join-Path (Join-Path (Join-Path (Join-Path $root '..') '..') '.github') (Join-Path 'scripts' 'assert_workflow_hygiene.py')
-if (-not (Test-Path -LiteralPath $liveCheckerPath -PathType Leaf)) {
-    throw 'live hygiene checker missing at .github/scripts/assert_workflow_hygiene.py; the asset has no live copy to stay in parity with'
+# They moved OUT of this workflow on 2026-08-24: the two grep steps became one call to
+# assert_workflow_hygiene.py, so the assertions are pinned in the script and the guard is
+# pinned to invoke it. Checking only the guard would now pass over a deleted checker.
+$hygiene = Get-Content (Join-Path $assets 'assert_workflow_hygiene.py') -Raw
+if ($guard -notmatch [regex]::Escape('python3 .github/scripts/assert_workflow_hygiene.py')) {
+    throw 'the guard no longer invokes assert_workflow_hygiene.py; the hygiene assertions would never run'
 }
-if ((Get-FileHash $checkerPath).Hash -ne (Get-FileHash $liveCheckerPath).Hash) {
-    throw 'assets/assert_workflow_hygiene.py and .github/scripts/assert_workflow_hygiene.py have drifted; edit both together'
-}
-foreach ($assertion in 'SHA_LEN = 40', 'pull_request_target', 'write-all') {
-    if ($checker -notmatch [regex]::Escape($assertion)) {
-        throw "the shipped hygiene checker has lost the assertion that replaced the high glob: $assertion"
+
+# The scheduled drift sweep is a workflow of the canonical (private) skills repository, not
+# of this mirror. Skip with a stated reason where it is absent rather than fail on a file
+# this repository deliberately does not own.
+$driftWorkflowPath = Join-Path $root '..' '..' '.github' 'workflows' 'canonical-asset-drift.yml'
+if (Test-Path -LiteralPath $driftWorkflowPath) {
+    $driftWorkflow = Get-Content -LiteralPath $driftWorkflowPath -Raw
+    if (-not $driftWorkflow.Contains("steps.mirror_semantics.outcome == 'success'") -or
+        -not $driftWorkflow.Contains('absent from the public mirror; nothing compared')) {
+        throw 'drift issue closure must require a successful mirror comparison, and missing mirror assets must fail'
     }
 }
-# ...and the guard must actually invoke it, or the checker ships but never runs.
-if ($guard -notmatch [regex]::Escape('python3 .github/scripts/assert_workflow_hygiene.py')) {
-    throw 'the shipped review-policy guard no longer invokes the structural hygiene checker'
+else {
+    Write-Host "SKIP: canonical-asset-drift.yml not present in this tree - $driftWorkflowPath"
+}
+foreach ($assertion in 'SHA_LEN', 'pull_request_target', 'workflow_run', 'write-all') {
+    if ($hygiene -notmatch [regex]::Escape($assertion)) {
+        throw "assert_workflow_hygiene.py has lost the assertion that replaced the high glob: $assertion"
+    }
 }
 # Scoped to third-party owners on purpose: a gate on all owners would have failed 27 of 28
-# estate repos, since every unpinned ref measured was actions/* -- and the house standard
-# gives first-party actions the major tag, so a tag-pinned actions/* ref is conformant.
-if ($checker -notmatch [regex]::Escape('startswith("actions/")')) {
-    throw 'the checker must exempt first-party actions/* from the pin FAILURE, or it reddens the estate'
+# estate repos, since every unpinned ref measured was actions/*.
+# Matched on the METHOD CALL, not on the receiver's name. This used to pin the literal
+# `ref.startswith("actions/")`, and on 2026-09-05 the receiver legitimately became
+# `owner` when comparisons were normalised to lowercase -- GitHub resolves an action's
+# owner/repository case-insensitively, so `Actions/checkout@<sha>` was being classified
+# third-party and slipping the first-party rule entirely. The behaviour this assertion
+# exists to protect was unchanged by that; only the spelling moved. Pinning a spelling
+# turns a correct refactor into a red required check, so pin the branch instead.
+if ($hygiene -notmatch 'startswith\("actions/"\)') {
+    throw 'the hygiene checker must exempt first-party actions/* from the third-party pin FAILURE, or it reddens the estate'
 }
-# The exemption must not carry the superseded "pin it when convenient / flip to a failure"
-# framing: the house standard is the inverse (audit-ci grades a SHA-pinned first-party
-# action as drift), so the notice told repos to do the wrong thing.
-foreach ($stale in 'pin it when convenient', 'Flip this to a failure', 'Flip it to a failure') {
-    if ($checker -match [regex]::Escape($stale) -or $guard -match [regex]::Escape($stale)) {
-        throw "superseded first-party pinning instruction still present: $stale"
-    }
+# The allowlist must stay OPT-IN. Defaulting it on fails any repo using a third-party
+# action not in it, which across this estate is most of them.
+if ($hygiene -notmatch [regex]::Escape('os.environ.get("TRUSTED_THIRD_PARTY_ACTIONS", "")')) {
+    throw 'the third-party allowlist must be read from the environment, not hardcoded on'
 }
 # Required status check across the estate; renaming it detaches the branch rule silently.
 if ($guard -notmatch [regex]::Escape('name: Review policy intact')) {
     throw 'the guard job must stay named "Review policy intact" - it is a required status check'
 }
 
-# The required context is produced by the PR's OWN copy of the guard, so the guard and its
-# checker must themselves tier HIGH in the example policy - otherwise a PR neutering them
-# (assertion steps replaced with `run: true`) reports green under the lighter review.
-foreach ($controlPlane in '.github/workflows/review-policy-guard.yml', '.github/scripts/assert_workflow_hygiene.py') {
-    if ($policy.high -notcontains $controlPlane) {
-        throw "the example policy must tier its own control plane HIGH: $controlPlane"
+# THE MERGE BARRIER MUST BE HIGH, and the guard must assert it. Added 2026-08-23 after an
+# adversarial-review sweep found the same hole in six estate repos: "CI Gate" is a required
+# check produced by the PR's own copy of ci.yml, so a PR that keeps the job, its name and
+# its needs: list, and only guts the aggregation step, reports green while gating nothing.
+# The policy and the guard have to agree, or the guard fails every repo it is installed
+# into (it exits 1 on a required path missing from .high).
+$mergeBarrier = @(
+    '.github/workflows/ci.yml',
+    '.github/workflows/review-policy-guard.yml',
+    '.github/workflows/review-tier.yml',
+    '.github/scripts/assert_gate_coverage.py',
+    '.github/scripts/assert_workflow_hygiene.py'
+)
+foreach ($path in $mergeBarrier) {
+    if ($policy.high -notcontains $path) {
+        throw "the example policy no longer tiers the merge barrier HIGH: $path"
     }
-    if ($guard -notmatch [regex]::Escape($controlPlane)) {
-        throw "the guard's required-paths loop no longer asserts $controlPlane stays HIGH"
+    if ($guard -notmatch [regex]::Escape($path)) {
+        throw "the guard's required-high loop no longer asserts: $path"
     }
 }
+if ($policy.high -notcontains '.github/canonical-assets.json' -or
+    $guard -notmatch [regex]::Escape('.github/canonical-assets.json')) {
+    throw 'the example policy and optional-file guard must keep the canonical-asset manifest HIGH when present'
+}
 
-# THE SHIPPED CHECKER MUST CATCH WHAT THE GREPS MISSED. The greps were replaced because
-# ordinary block-style YAML bypassed them: a value may sit on the line after its key, so
-# `permissions:` with an indented `write-all`, or a `uses:` split the same way, resolved
-# to a violation while matching no pattern. Asserting the guard's TEXT carries the rules
-# certifies nothing about that; the divergent input has to be fed to the shipped checker
-# and must FAIL it. A clean fixture guards the other direction.
+# Keep this contract tied to the guard's actual required list so adding a new
+# control path cannot leave the example policy and its test behind.
+$requiredLoop = [regex]::Match($guard, '(?s)for required in (?<paths>.*?)\s*; do')
+if (-not $requiredLoop.Success) { throw 'review-policy-guard.yml required-high loop was not found' }
+$requiredPaths = @([regex]::Matches($requiredLoop.Groups['paths'].Value, '\.github/[^\s\\]+|\.claude/[^\s\\]+|\.coderabbit\.yaml') | ForEach-Object Value)
+foreach ($path in $requiredPaths) {
+    if ($policy.high -notcontains $path) { throw "the example policy omits guard-required HIGH path: $path" }
+}
+
+# The gate checker must assert the gate's OWN semantics, not just its needs: membership.
+# A gate with no `if: always()` is skipped exactly when an upstream job fails, and a gate
+# with no step keyed on a needs.<job>.result aggregates nothing - both report green.
+$gateChecker = Get-Content (Join-Path $assets 'assert_gate_coverage.py') -Raw
+foreach ($semantic in 'always()', 'GATE_CONDITIONAL_EXEMPT') {
+    if ($gateChecker -notmatch [regex]::Escape($semantic)) {
+        throw "assert_gate_coverage.py has lost a gate-semantics assertion: $semantic"
+    }
+}
+# The needs.<job>.result pattern is asserted by SHAPE rather than as a literal. It used
+# to be pinned as the exact string `needs\.[A-Za-z0-9_*-]+\.result`, and on 2026-09-05 a
+# capture group was added around the job id so the checker could require the gate's
+# condition to cover EVERY declared dependency rather than merely one of them -- a gate
+# declaring `needs: [build, lint]` whose condition named only `build` had been passing
+# while a lone lint failure left the required context green. The literal no longer
+# matched, so a strictly stronger checker failed the assertion protecting it.
+# It has now broken a SECOND time for the same reason, on 2026-09-09: the character
+# class moved behind the shared $ID interpolation when the checker absorbed the
+# per-outcome coverage rule from <repo>, so the pattern is spelt
+# `needs\.({ID}|\*)\.result` and `needs\.({ID})\.result`. Twice is a signal about the
+# assertion, not about the checker -- pinning one spelling of a regex fails every time
+# that regex gets stronger, which is the wrong direction for a guard.
 #
-# The checker resolves .github/workflows relative to the working directory, so each
-# fixture runs from its own temp root. Exit code, not a thrown error: a failing child
-# process is the EXPECTED outcome of the negative fixtures, and $ErrorActionPreference
-# does not intercept native exit codes.
-$fixtures = @(
-    @{
-        Name     = 'clean fixture passes'
-        WantExit = 0
-        Workflow = @(
-            'name: ok'
-            'on: [push]'
-            'permissions:'
-            '  contents: read'
-            'jobs:'
-            '  build:'
-            '    runs-on: ubuntu-latest'
-            '    steps:'
-            '      - uses: actions/checkout@v7'
-            '      - uses: third/party@0123456789abcdef0123456789abcdef01234567'
-        ) -join "`n"
-    },
-    @{
-        Name     = 'block-style write-all fails'
-        WantExit = 1
-        Workflow = @(
-            'name: bad'
-            'on: [push]'
-            'permissions:'
-            '  write-all'
-            'jobs:'
-            '  build:'
-            '    runs-on: ubuntu-latest'
-            '    steps: []'
-        ) -join "`n"
-    },
-    @{
-        Name     = 'split uses ref fails'
-        WantExit = 1
-        Workflow = @(
-            'name: bad'
-            'on: [push]'
-            'jobs:'
-            '  build:'
-            '    runs-on: ubuntu-latest'
-            '    steps:'
-            '      - uses:'
-            '          third/party@v1'
-        ) -join "`n"
-    },
-    @{
-        # `on:` spelled as a YAML MAPPING: the trigger rule is otherwise only
-        # string-asserted against the checker's source, while the two rules above
-        # already prove themselves against the shipped checker. YAML 1.1 reads the
-        # bare key as boolean True, so this also exercises the True-key lookup.
-        Name     = 'mapping-style pull_request_target fails'
-        WantExit = 1
-        Workflow = @(
-            'name: bad'
-            'on:'
-            '  pull_request_target:'
-            '    branches: [main]'
-            'jobs:'
-            '  build:'
-            '    runs-on: ubuntu-latest'
-            '    steps: []'
-        ) -join "`n"
-    },
-    @{
-        # The first-party exemption is the vN major tag, not any ref: a branch ref is
-        # mutable and must fail the same way an unpinned third-party action does.
-        Name     = 'first-party branch ref fails'
-        WantExit = 1
-        Workflow = @(
-            'name: bad'
-            'on: [push]'
-            'jobs:'
-            '  build:'
-            '    runs-on: ubuntu-latest'
-            '    steps:'
-            '      - uses: actions/checkout@main'
-        ) -join "`n"
-    }
-)
+# So this now asserts only that the checker still keys on `needs.<something>.result`,
+# and that the constant carrying those semantics is present. What the pattern MEANS is
+# owned by scaffold-ci/test/verify-gate-coverage.ps1, which exercises per-job and
+# per-outcome coverage against real workflows rather than grepping for a spelling.
+if ($gateChecker -notmatch 'needs\\\.[^\\\s]{0,24}\\\.result') {
+    throw 'assert_gate_coverage.py has lost the needs.<job>.result gate-semantics assertion'
+}
+if ($gateChecker -notmatch 'FAILURE_CONDITION_ATOM') {
+    throw 'assert_gate_coverage.py has lost the failure/cancellation condition atom'
+}
 
-$python = Get-Command python3 -ErrorAction SilentlyContinue
-if (-not $python) {
-    Write-Host 'SKIP: python3 not on PATH; hygiene checker fixtures not run'
-} else {
-    foreach ($fixture in $fixtures) {
-        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("hygiene-fixture-" + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path (Join-Path $tmp '.github/workflows') -Force | Out-Null
-        # WriteAllText, not Set-Content: the fixture must be LF-only and encoding-exact.
-        [IO.File]::WriteAllText((Join-Path $tmp '.github/workflows/fixture.yml'), $fixture.Workflow + "`n")
-        Push-Location $tmp
-        try {
-            & python3 $checkerPath *>$null
-            $code = $LASTEXITCODE
-        } finally {
-            Pop-Location
-            Remove-Item $tmp -Recurse -Force
-        }
-        if ($code -ne $fixture.WantExit) {
-            throw "hygiene checker fixture '$($fixture.Name)': expected exit $($fixture.WantExit), got $code"
-        }
-    }
+# The old grep self-match probe was dormant: the guard no longer contains those greps.
+# Assert the actual parser-based control remains wired instead of looping over zero
+# patterns and reporting a vacuous pass.
+if ($guard -match 'grep\s+-rEn') {
+    throw 'review-policy-guard.yml reintroduced workflow greps; the current parsed hygiene check must own this control'
+}
+if ($guard -notmatch 'assert_workflow_hygiene\.py') {
+    throw 'review-policy-guard.yml no longer runs the parsed workflow hygiene checker'
 }
 
 'scaffold-ci review control plane OK'
-
-# The last hygiene fixture may deliberately exit nonzero — asserted, not fatal. Clear
-# its native status so a caller that checks $LASTEXITCODE after a PASS does not read it.
-$global:LASTEXITCODE = 0

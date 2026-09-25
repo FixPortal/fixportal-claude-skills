@@ -34,18 +34,45 @@ $agents = if (Test-Path -LiteralPath $agentsPath) { [string](Get-Content -Litera
     $null
 }
 
+# Code Quality is FREE on public repositories and PAID on private/internal ones, so the
+# unsafe direction is no longer "enabled without charge approval" -- public enablement is
+# now the expected state. What is still unsafe:
+#
+#   * enabling it on a private/internal repository, where it is billed;
+#   * enabling it as a blanket default with no visibility qualifier, which reaches the
+#     private repositories by omission;
+#   * enabling its AI findings at ANY visibility. Those are Copilot-generated review
+#     comments with no dismissal API -- the whole reason ai-findings-ledger exists -- and
+#     free deterministic coverage is not a reason to turn them on.
+#
+# UNVERIFIED: that public Code Quality is free. The maintainer verified it against
+# the organization's billing and UI on 2026-09-09, and the estate has run it on all eight
+# public repositories since 2026-08-14. GitHub's published docs state no public exemption:
+# its changelog calls Code Quality purchasable from GA on 2026-07-20, billed as a base
+# subscription plus metered per-committer usage. Refuted if the organization's bill shows a
+# charge attributable to Code Quality on a public repository -- restore the charge-approval
+# gate at every visibility if so.
 function Assert-NoUnsafeCodeQualityDefault {
     param([string]$Name, [string]$Text)
 
     foreach ($line in $Text -split '\r?\n') {
-        $mentionsDefaultEnablement = $line -match '(?i)Code Quality' -and (
-            ($line -match '(?i)\b(public|default)\b' -and $line -match '(?i)\b(enable(?:d|s)?|configur(?:e|ed))\b') -or
-            $line -match '(?i)(enable|configure).*Code Quality.*automatic' -or
-            $line -match '(?i)Code Quality.*(enabled|configured).*automatic'
-        )
-        $hasApprovalGuard = $line -match '(?i)disabled.*(explicit.*charges|charges.*explicit)'
-        if ($mentionsDefaultEnablement -and -not $hasApprovalGuard) {
-            throw "$Name enables paid Code Quality without explicit current-charge approval: $line"
+        if ($line -notmatch '(?i)Code Quality') { continue }
+        if ($line -notmatch '(?i)\b(enable(?:d|s)?|configur(?:e|ed))\b') { continue }
+
+        $saysDisabled = $line -match '(?i)\b(disabled?|not-configured)\b'
+        # Anchored on the VISIBILITY, not on the bare word: the public row of the estate
+        # policy table contains "private vulnerability reporting", and matching that read
+        # the public row as a private-enablement rule.
+        $privateScope = '(?i)(private/internal|private or internal|private repositor\w*|internal repositor\w*)'
+        if ($line -match $privateScope -and -not $saysDisabled) {
+            throw "$Name enables paid Code Quality on private/internal repositories: $line"
+        }
+        $blanket = $line -match '(?i)(automatic(?:ally)?|by default|every visibility|all repositories)'
+        if ($blanket -and $line -notmatch '(?i)\bpublic\b' -and -not $saysDisabled) {
+            throw "$Name enables Code Quality with no visibility qualifier: $line"
+        }
+        if ($line -match '(?i)AI findings' -and -not $saysDisabled) {
+            throw "$Name enables Code Quality AI findings: $line"
         }
     }
 }
@@ -93,11 +120,16 @@ $collapsedDependabotPattern = 'automated-security-fixes[^\r\n]*HTTP 204 means en
 $forbidden = @{
     'scaffold-ci enables CodeQL for every repository' = $ci -match 'CodeQL \*\*default setup\*\* \| code scanning \| always'
     'scaffold-ci calls paid private features free' = $ci -match 'CodeQL and Code Quality are GitHub-side and free per commit'
-    'scaffold-ci enables Code Quality by public visibility' = $ci -match 'Public[^\r\n]*Enable[^\r\n]*deterministic Code Quality'
-    'scaffold-repo enables Code Quality by public visibility' = $repo -match 'Public[^\r\n]*receive[^\r\n]*deterministic Code Quality'
-    'audit-ci calls public Code Quality free coverage' = $audit -match 'public:[^|\r\n]*deterministic Code Quality|public free coverage off'
-    'audit-github-estate enables Code Quality by public visibility' = $estate -match 'Public[^\r\n]*Enable deterministic Code Quality'
+    # These four used to FORBID public Code Quality enablement, when it was a paid opt-in at
+    # every visibility. It is free on public repositories now, so public enablement is the
+    # expected state and forbidding it would fail the correct policy. What replaces them is
+    # the private half, which is still billed -- see the four entries below.
+    'scaffold-ci enables Code Quality on private repositories' = $ci -match '(?i)private[^\r\n]*(enable|configure)[^\r\n]*Code Quality'
+    'scaffold-repo enables Code Quality on private repositories' = $repo -match '(?i)private[^\r\n]*(enable|configure)[^\r\n]*Code Quality'
+    'audit-ci expects Code Quality on private repositories' = $audit -match '(?i)private/internal:[^|\r\n]*Code Quality (configured|enabled)'
+    'audit-github-estate enables Code Quality on private repositories' = $estate -match '(?i)Private or internal \|[^\r\n]*Keep Code Quality enabled'
     'scaffold-ci enables paid Code Quality by default' = $ci -match 'Enable paid Code Quality by default'
+    'scaffold-ci enables Code Quality AI findings' = $ci -match '(?i)Code Quality AI findings[^\r\n]*enabled(?![^\r\n]*disabled)'
     'scaffold-ci mistakes a dynamic CodeQL workflow for default setup' = $ci -match 'dynamic/github-code-scanning/codeql[^\r\n]*(means|=)[^\r\n]*default setup'
     'audit-ci mistakes a dynamic CodeQL workflow for default setup' = $audit -match 'dynamic/github-code-scanning/codeql[^\r\n]*(means|=)[^\r\n]*default setup'
     'audit-ci collapses both Dependabot GET contracts to HTTP 204' = $audit -match $collapsedDependabotPattern
@@ -139,19 +171,31 @@ Assert-NoUnsafeCodeQualityDefault 'audit-ci' $audit
 Assert-NoUnsafeCodeQualityDefault 'audit-github-estate' $estate
 if ($null -ne $agents) { Assert-NoUnsafeCodeQualityDefault 'AGENTS.md' $agents }
 
-$unsafeWasRejected = $false
-try {
-    Assert-NoUnsafeCodeQualityDefault 'mutation check' ($ci + "`nPublic repositories enable paid Code Quality automatically.")
-} catch {
-    $unsafeWasRejected = $true
+# RED CHECKS for the guard itself. The old mutation was "Public repositories enable paid
+# Code Quality automatically", which the current guard correctly ACCEPTS -- public
+# enablement is the expected state now -- so it would have silently stopped testing
+# anything. Each mutation below must still be rejected.
+foreach ($mutation in @(
+    @{ Name = 'private enablement'; Line = 'Private repositories enable paid Code Quality automatically.' },
+    @{ Name = 'internal enablement'; Line = 'Configure Code Quality on internal repositories too.' },
+    @{ Name = 'visibility-agnostic default'; Line = 'Enable Code Quality by default for all repositories.' },
+    @{ Name = 'AI findings'; Line = 'Leave Code Quality AI findings enabled so Copilot can comment.' }
+)) {
+    $rejected = $false
+    try {
+        Assert-NoUnsafeCodeQualityDefault 'mutation check' ($ci + "`n" + $mutation.Line)
+    } catch {
+        $rejected = $true
+    }
+    if (-not $rejected) { throw "Unsafe Code Quality mutation was not rejected: $($mutation.Name)" }
 }
-if (-not $unsafeWasRejected) { throw 'Unsafe Code Quality default mutation was not rejected' }
 
 foreach ($required in @(
-    @{ Name = 'scaffold-ci public free policy'; Text = $ci; Pattern = '(?m)^\| Public \|[^\r\n]*CodeQL[^\r\n]*secret scanning[^\r\n]*push protection[^\r\n]*Keep paid Code Quality disabled[^\r\n]*explicitly approves' },
-    @{ Name = 'scaffold-ci paid Code Quality opt-in'; Text = $ci; Pattern = 'Code Quality.*paid.*explicit' },
-    @{ Name = 'scaffold-ci enforced default-off scope'; Text = $ci; Pattern = 'No repositories.*Enforce\s+access' },
-    @{ Name = 'scaffold-ci enforced approved scope'; Text = $ci; Pattern = 'Selected repositories.*exactly.*approved' },
+    @{ Name = 'scaffold-ci public free policy'; Text = $ci; Pattern = '(?m)^\| Public \|[^\r\n]*CodeQL[^\r\n]*secret scanning[^\r\n]*push protection[^\r\n]*Code Quality[^\r\n]*AI findings disabled' },
+    @{ Name = 'scaffold-ci private paid Code Quality stays off'; Text = $ci; Pattern = '(?m)^\| Private or internal \|[^\r\n]*Keep paid Code Quality disabled' },
+    @{ Name = 'scaffold-ci states which visibility pays'; Text = $ci; Pattern = 'Code Quality is free on PUBLIC repositories and paid on private/internal' },
+    @{ Name = 'scaffold-ci records the free-public premise as UNVERIFIED'; Text = $ci; Pattern = 'UNVERIFIED: that public Code Quality is free.*Refuted if' },
+    @{ Name = 'scaffold-ci enforced public access scope'; Text = $ci; Pattern = 'Selected repositories.*exactly the public repositories.*Enforce access' },
     @{ Name = 'scaffold-ci CodeQL setup verification'; Text = $ci; Pattern = 'GET.*code-scanning/default-setup.*state.*configured' },
     @{ Name = 'scaffold-ci vulnerability-alerts GET contract'; Text = $ci; Pattern = 'GET.{0,100}?vulnerability-alerts.{0,100}?HTTP 204' },
     @{ Name = 'scaffold-ci automated-security-fixes GET contract'; Text = $ci; Pattern = 'GET.{0,100}?automated-security-fixes.{0,150}?HTTP 200.{0,100}?enabled.{0,50}?true.{0,100}?paused.{0,50}?false' },
@@ -160,18 +204,21 @@ foreach ($required in @(
     @{ Name = 'scaffold-ci live public push-protection verification'; Text = $security; Pattern = 'verify.*live.*security_and_analysis\.secret_scanning_push_protection.*enabled' },
     @{ Name = 'scaffold-ci disables Code Quality AI'; Text = $ci; Pattern = 'Code Quality AI.*disabled' },
     @{ Name = 'audit-ci visibility-aware CodeQL'; Text = $audit; Pattern = 'CodeQL.*public' },
-    @{ Name = 'audit-ci paid Code Quality default'; Text = $audit; Pattern = 'GitHub security surfaces.*every visibility: paid Code Quality disabled unless current charges were explicitly approved' },
-    @{ Name = 'audit-ci organization Code Quality gate'; Text = $audit; Pattern = 'Repository access.*enforcement.*billing' },
+    @{ Name = 'audit-ci visibility-split Code Quality'; Text = $audit; Pattern = 'GitHub security surfaces.*public:.*Code Quality configured.*every visibility: Code Quality AI findings disabled.*private/internal:.*paid Code Quality disabled' },
+    @{ Name = 'audit-ci organization Code Quality gate'; Text = $audit; Pattern = 'Repository access.*enforcement.*free on\s+public repositories and paid on private/internal' },
+    @{ Name = 'audit-ci keeps the UI-only org access gap'; Text = $audit; Pattern = 'Code Quality org access: UNVERIFIED \(UI-only, awaiting operator\)' },
     @{ Name = 'audit-ci CodeQL setup verification'; Text = $audit; Pattern = 'GET.*code-scanning/default-setup.*state.*configured' },
     @{ Name = 'audit-ci vulnerability-alerts GET contract'; Text = $audit; Pattern = 'vulnerability-alerts.{0,150}?HTTP 204' },
     @{ Name = 'audit-ci automated-security-fixes GET contract'; Text = $audit; Pattern = 'automated-security-fixes.{0,150}?HTTP 200.{0,100}?enabled.{0,50}?true.{0,100}?paused.{0,50}?false' },
     @{ Name = 'audit-ci automated-security-fixes noncompliant states'; Text = $audit; Pattern = 'automated-security-fixes.{0,250}?404.{0,100}?enabled.{0,50}?false.{0,100}?paused.{0,50}?true.{0,100}?non-compliant' },
-    @{ Name = 'audit estate organization Code Quality gate'; Text = $estate; Pattern = 'organization.*Repository access.*billing.*before.*repository' },
-    @{ Name = 'audit estate enforced default-off scope'; Text = $estate; Pattern = 'No repositories.*Enforce\s+access' },
-    @{ Name = 'audit estate enforced approved scope'; Text = $estate; Pattern = 'Selected repositories.*exactly.*approved' },
-    @{ Name = 'audit estate paid Code Quality default'; Text = $estate; Pattern = '(?m)^\| Public \|[^\r\n]*Code Quality remains a paid explicit opt-in[^\r\n]*Keep Code Quality disabled[^\r\n]*explicitly approves' },
-    @{ Name = 'scaffold-repo organization Code Quality gate'; Text = $repo; Pattern = 'Repository access.*enforcement.*billing' },
-    @{ Name = 'scaffold-repo paid Code Quality default'; Text = $repo; Pattern = 'Keep paid Code Quality disabled at every visibility unless the user explicitly.*approves the current charges' },
+    @{ Name = 'audit estate organization Code Quality gate'; Text = $estate; Pattern = 'organization Repository access and enforcement before any Code Quality\s+mutation' },
+    @{ Name = 'audit estate enforced public access scope'; Text = $estate; Pattern = 'Selected repositories.*exactly the public repositories.*Enforce access' },
+    @{ Name = 'audit estate keeps No repositories as verified-not-compliant'; Text = $estate; Pattern = 'No repositories.*verified reading, not a compliant one' },
+    @{ Name = 'audit estate visibility-split Code Quality'; Text = $estate; Pattern = '(?m)^\| Public \|[^\r\n]*free public CodeQL, Secret Protection and Code Quality[^\r\n]*Keep Code Quality enabled on public repositories' },
+    @{ Name = 'audit estate private Code Quality stays off'; Text = $estate; Pattern = '(?m)^\| Private or internal \|[^\r\n]*keep Code Quality disabled' },
+    @{ Name = 'scaffold-repo organization Code Quality gate'; Text = $repo; Pattern = 'Repository\s+access and enforcement before any repository setup change' },
+    @{ Name = 'scaffold-repo private paid Code Quality stays off'; Text = $repo; Pattern = 'Keep paid Code\s+Quality disabled on private/internal repositories' },
+    @{ Name = 'scaffold-repo public free Code Quality'; Text = $repo; Pattern = 'free deterministic Code Quality with AI findings disabled' },
     @{ Name = 'quality gate checks only applicable surfaces'; Text = $gate; Pattern = 'expected enabled tool with no result is a gap.*disabled.*N/A' },
     @{ Name = 'scaffold-dotnet delegates visibility policy'; Text = $dotnet; Pattern = 'visibility-appropriate' }
 )) {
@@ -183,8 +230,8 @@ foreach ($required in @(
     }
 }
 
-if ($null -ne $agents -and $agents -notmatch '(?is)Public\s+CodeQL and Secret Protection remain enabled.*Code Quality is paid.*disabled.*explicitly approves') {
-    throw 'Global AGENTS.md contradicts the mandatory public baseline or paid Code Quality opt-in'
+if ($null -ne $agents -and $agents -notmatch '(?is)Public\s+CodeQL and Secret Protection remain enabled.*so is Code Quality.*enabled on public repositories.*disabled\s+on\s+private/internal.*AI findings stay disabled at every visibility') {
+    throw 'Global AGENTS.md contradicts the mandatory public baseline or the Code Quality visibility split'
 }
 
 $copilotAsset = Join-Path $root 'scaffold-repo' 'assets' 'ruleset-copilot-review.json'

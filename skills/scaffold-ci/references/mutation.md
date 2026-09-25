@@ -102,18 +102,9 @@ jobs:
   no killed/survived result exists, or timeouts outnumber killed plus survived. Do not fork
   the script to add that gate.
 
-**Scores rose when this script was corrected on 2026-08-13, and the thresholds did not.**
-The superseded version computed `killed / (total - ignored)`, which erred twice in the same
-direction — Timeout missing from the numerator, CompileError and RuntimeError left in the
-denominator — so every score it ever printed was understated. Re-running one real
-`your-repo` report moved it from 52.6% to 64.9%. A repository normalized onto the
-corrected script will therefore show a jump that is **a metric correction, not a suite
-improvement**; say so when it happens, or the next reader books it as progress. Any
-`thresholds.high`/`low` tuned against the old number is now slack by an unmeasured amount and
-needs re-baselining — against **two** consecutive runs, never one, because mutation scores
-are not reproducible run to run (two runs of the same `your-repo` project over
-identical code gave 84.9% and 87.9%, with 63 of 892 mutants flipping status in both
-directions).
+If a repository used the superseded score formula, treat the first corrected score as a
+metric correction and re-baseline thresholds against two runs. The measurements and
+formula history are recorded in [provenance.md](provenance.md).
 
 ### Scope MTP mutation lanes structurally
 

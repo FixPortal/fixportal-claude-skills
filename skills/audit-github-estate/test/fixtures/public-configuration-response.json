@@ -1,5 +1,5 @@
 {
   "exit_code": 0,
   "http_status": 200,
-  "body_json": "{\"name\":\"Public repositories\",\"code_scanning_default_setup\":\"enabled\",\"code_scanning_delegated_alert_dismissal\":\"disabled\",\"secret_scanning\":\"enabled\",\"secret_scanning_push_protection\":\"enabled\",\"secret_scanning_validity_checks\":\"enabled\",\"secret_scanning_non_provider_patterns\":\"enabled\",\"secret_scanning_generic_secrets\":\"enabled\",\"secret_scanning_delegated_alert_dismissal\":\"disabled\",\"secret_scanning_extended_metadata\":\"enabled\",\"secret_scanning_delegated_bypass\":\"disabled\",\"private_vulnerability_reporting\":\"enabled\"}"
+  "body_json": "{\"name\":\"Public repositories\",\"code_scanning_default_setup\":\"enabled\",\"code_scanning_delegated_alert_dismissal\":\"disabled\",\"secret_scanning\":\"enabled\",\"secret_scanning_push_protection\":\"enabled\",\"secret_scanning_validity_checks\":\"enabled\",\"secret_scanning_non_provider_patterns\":\"enabled\",\"secret_scanning_generic_secrets\":\"enabled\",\"secret_scanning_delegated_alert_dismissal\":\"disabled\",\"secret_scanning_extended_metadata\":\"enabled\",\"secret_scanning_delegated_bypass\":\"disabled\",\"private_vulnerability_reporting\":\"enabled\",\"id\":12345}"
 }

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "assets": [
+    { "canonical": "assets/assert_canonical_assets.py", "relative": ".github/scripts/assert_canonical_assets.py", "verbatim": true },
+    { "canonical": "assets/assert_gate_coverage.py", "relative": ".github/scripts/assert_gate_coverage.py", "verbatim": true },
+    { "canonical": "assets/assert_workflow_hygiene.py", "relative": ".github/scripts/assert_workflow_hygiene.py", "verbatim": true },
+    { "canonical": "assets/review-policy-guard.yml", "relative": ".github/workflows/review-policy-guard.yml", "verbatim": false },
+    { "canonical": "assets/review-tier.yml", "relative": ".github/workflows/review-tier.yml", "verbatim": false },
+    { "canonical": "assets/secret-sweep.yml", "relative": ".github/workflows/secret-sweep.yml", "verbatim": false },
+    { "canonical": "templates/summarize-stryker.ps1", "relative": "scripts/summarize-stryker.ps1", "verbatim": true }
+  ]
+}
