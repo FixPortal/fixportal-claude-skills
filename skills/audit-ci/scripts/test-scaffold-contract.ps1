@@ -52,7 +52,9 @@ function Assert-CanonicalFile([string] $relativePath, [string] $assetName, [stri
         # let any other line that swapped the token pass as canonical, and it also fired
         # inside words: mainline `develop` turned the comment "per developer" into "per
         # mainer", so no adapted guard could ever pass. (CodeRabbit, public mirror PR #124.)
-        $fieldLine = '^\s*branches:|\.github/workflows/'
+        # Both alternatives anchored: unanchored, the workflow-path branch also matched
+        # comment lines that merely mention a path. (Gitar, #276.)
+        $fieldLine = '^\s*(?:branches:|\.github/workflows/)'
         $actualText = @($actualText -split "`n" | ForEach-Object {
             $line = $_
             if ($line -match $fieldLine) {
