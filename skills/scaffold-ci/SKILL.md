@@ -33,7 +33,7 @@ A local edit to a copied asset fails the consumer's canonical-asset manifest gat
 3. Apply the relevant references. Control surfaces include `ci.yml`, `mutation.yml`, Dependabot, Stryker support files, GitHub security settings, Dependabot security settings, AI-review policy, `.gitignore`, `review-policy-guard.yml`, `review-tier.yml`, and secret scanning. Tier both review workflows HIGH in `.claude/review-policy.json`.
 4. Actionlint is the first validation step after checkout in substantive jobs; the zero-authority gate-control jobs are exempt.
 5. Keep Stryker outside per-commit CI: every mutation workflow has manual dispatch plus one staggered weekly UTC schedule.
-6. Enforce the PR cost envelope: 30 seconds per test, 10 minutes per substantive required job, and a 15 aggregate runner-minute target. Route extended coverage to weekly/manual jobs capped at 45 minutes.
+6. Enforce the PR cost envelope: 30 seconds per test, 10 minutes per substantive required job, and a 15 aggregate runner-minute target. Route extended coverage to weekly/manual jobs capped at 45 minutes; cap each mutation job at 30 minutes.
 7. Never mutate GitHub settings or create secrets without approval. Public repositories enable free deterministic Code Quality, AI findings disabled; private/internal keep it off.
 
 ## Load-bearing checks

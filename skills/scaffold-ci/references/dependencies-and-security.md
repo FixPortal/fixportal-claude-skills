@@ -63,6 +63,24 @@ updates:
       npm-minor-and-patch:
         update-types: [minor, patch]
 
+  # uv: only if the repo has Python (scaffold-python layout). uv, not pip: the
+  # project locks with uv.lock and CI installs with `uv sync --frozen`, so a bump
+  # must move the lock, not only pyproject.toml.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/London
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      uv-minor-and-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -306,7 +324,7 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
             echo "::error::pull_request base sha did not resolve; the range scan cannot run."
             exit 1
           fi
-          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" .
+          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .
 
       - name: Scan the pushed commit range for secrets
         if: github.event_name == 'push'
@@ -315,23 +333,27 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # An all-zero `before` is a new branch or tag with no predecessor, so there is
-          # no range to walk. The tree scan below still covers the checked-out tree.
+          # An all-zero `before` is a new branch or tag with no predecessor. Scan all
+          # history reachable from HEAD rather than none: a new v* tag can carry a
+          # secret added and removed in commits the tree scan never sees.
+          range="${BEFORE_SHA}..${HEAD_SHA}"
           if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
-            echo "No predecessor commit for this push; range scan skipped, tree scan still runs."
-            exit 0
+            range="${HEAD_SHA}"
           fi
-          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BEFORE_SHA}..${HEAD_SHA}" .
+          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .
 
-      # BOTH SCANS ARE LOAD-BEARING. The range scan above is a commit-list scan: `git
-      # log -p` emits no merge-commit diffs at all without --diff-merges, so content
-      # written during a CONFLICT RESOLUTION — which exists only in the merge commit —
-      # is present in the HEAD tree and never presented to gitleaks. Dropping
-      # --no-merges does not fix it; it changes which commits are listed, not whether
-      # their diffs are emitted. Scanning the tree closes the hole directly.
+      # --diff-merges=remerge, NOT --no-merges. `git log -p` emits no merge-commit diff
+      # by default, so content written during a CONFLICT RESOLUTION exists only in the
+      # merge commit and is never presented to gitleaks. The tree scan catches it only
+      # while it is still in the tree: resolve a conflict with a secret, remove it in the
+      # next commit, and --no-merges, dropping --no-merges, and the tree scan all find
+      # nothing. remerge emits what the resolution changed relative to git's own
+      # automatic merge -- not the merged-in side -- so it adds the hole and no noise.
+      # Observed 2026-09-26, gitleaks 8.30.1, throwaway repo: --no-merges and the tree
+      # scan found nothing, remerge found it.
       #
-      # Keep the range scan too: it sees a secret that was committed and then removed
-      # later in the same branch, which the tree scan cannot.
+      # BOTH SCANS ARE LOAD-BEARING. The range scans see a secret committed and removed
+      # within the range; the tree scan is the floor on events that have no range.
       - name: Scan the checked-out tree for secrets
         run: |
           set -euo pipefail
@@ -345,7 +367,7 @@ one leaves a gap that another step fills:
 | Event | PR-range step | Push-range step | Tree scan |
 |---|---|---|---|
 | `pull_request` | runs | skipped | runs |
-| `push` (branch or tag) | **skipped** | runs, unless `before` is all-zero | runs |
+| `push` (branch or tag) | **skipped** | runs; an all-zero `before` walks all history reachable from HEAD | runs |
 | `workflow_dispatch`, `schedule` | **skipped** | **skipped** | runs |
 
 The skips are correct: outside a pull request `github.event.pull_request.base.sha` renders

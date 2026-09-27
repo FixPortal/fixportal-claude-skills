@@ -201,7 +201,11 @@ try {
     Copy-Item (Join-Path $scaffoldRoot 'assets/assert_gate_coverage.py') (Join-Path $repo '.github/scripts/assert_gate_coverage.py')
     Copy-Item (Join-Path $scaffoldRoot 'assets/assert_workflow_hygiene.py') (Join-Path $repo '.github/scripts/assert_workflow_hygiene.py')
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy-guard.yml') (Join-Path $repo '.github/workflows/review-policy-guard.yml')
-    Set-Content -LiteralPath (Join-Path $repo '.github/workflows/review-tier.yml') -Value 'name: Review tier'
+    # A real target-context trigger, as the rollout ships it. A stub with no `on:` let the
+    # contract pass while it ran hygiene without the guard's PRIVILEGED_TRIGGER_NO_CHECKOUT,
+    # which failed every real repo carrying review-tier.yml.
+    $reviewTier = "name: Review tier`non:`n  pull_request_target:`n    types: [opened, synchronize]`npermissions:`n  pull-requests: write`njobs:`n  tier:`n    runs-on: ubuntu-latest`n    timeout-minutes: 5`n    steps:`n      - run: echo tier`n"
+    [IO.File]::WriteAllText((Join-Path $repo '.github/workflows/review-tier.yml'), $reviewTier)
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy.example.json') (Join-Path $repo '.claude/review-policy.json')
 
     $workflow = @'
@@ -247,10 +251,10 @@ jobs:
           fetch-depth: 0
       - if: github.event_name == 'pull_request'
         run: |
-          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" .
+          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .
       - if: github.event_name == 'push'
         run: |
-          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BEFORE_SHA}..${HEAD_SHA}" .
+          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .
       - run: |
           "$RUNNER_TEMP/gitleaks" dir -v --redact .
   publish:
@@ -496,12 +500,15 @@ jobs:
         'tag ancestry shell failure' = @{ Old = '          set -euo pipefail'; New = '          echo no-fail-closed-shell' }
         'tag ancestry explicit failure' = @{ Old = '            exit 1'; New = '            echo accepted' }
         'tag ancestry before restore' = @{ Old = '      - name: Assert the tagged commit is reachable from main'; New = "      - run: dotnet restore Publish.sln`n      - name: Assert the tagged commit is reachable from main" }
-        'PR range secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" .'; New = '          echo no-range-scan' }
+        'PR range secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .'; New = '          echo no-range-scan' }
         # The push-event range scan is load-bearing in its own right: without it, every
         # non-pull_request run of this job scanned a zero-commit range and exited 0.
-        'push range secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--no-merges ${BEFORE_SHA}..${HEAD_SHA}" .'; New = '          echo no-push-range-scan' }
+        'push range secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .'; New = '          echo no-push-range-scan' }
         'checked-out-tree secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" dir -v --redact .'; New = '          echo no-tree-scan' }
-        'PR range secret scan arguments' = @{ Old = '--log-opts="--no-merges ${BASE_SHA}..${HEAD_SHA}" .'; New = '--log-opts="--no-merges ${HEAD_SHA}" .' }
+        'PR range secret scan arguments' = @{ Old = '--log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .'; New = '--log-opts="--diff-merges=remerge ${HEAD_SHA}" .' }
+        # --no-merges emits no merge diff, so a secret written in a conflict resolution
+        # and removed later reached neither range scan nor the tree scan.
+        'range secret scan sees merge resolutions' = @{ Old = '--log-opts="--diff-merges=remerge ${range}" .'; New = '--log-opts="--no-merges ${range}" .' }
         'checked-out-tree secret scan target' = @{ Old = '"$RUNNER_TEMP/gitleaks" dir -v --redact .'; New = '"$RUNNER_TEMP/gitleaks" dir -v --redact src' }
     }
 

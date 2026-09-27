@@ -1008,7 +1008,7 @@ jobs:
     # the estate today (checked, 2026-09-09, 26 repos); they stay in the pattern because a
     # gate script the check does not SEE is the fail-open direction, and are pinned here so
     # they cannot rot unnoticed. (Gitar, PR #142.)
-    foreach ($prefix in @('.github/scripts', 'build', 'tools')) {
+    foreach ($prefix in @('.github/scripts', 'build', 'tools', 'src/scripts')) {
         $rooted = New-GateRepo '{"version":1,"high":[],"low":[]}' @("$prefix/probe.py") @"
 jobs:
   build:
@@ -1163,6 +1163,8 @@ jobs:
     $pwshCases = @(
         @{ Name = 'trailing comment';      Body = 'throw "an upstream job did not succeed" # keep the message greppable' }
         @{ Name = 'hash inside message';   Body = 'throw "an upstream job did not succeed # see the runbook"' }
+        @{ Name = 'backtick-escaped quote'; Body = 'throw "an escaped quote `" then # still inside message" # trailing comment' }
+        @{ Name = 'doubled single quote'; Body = "throw 'it''s # still inside message' # trailing comment" }
         @{ Name = 'comment on its own line'; Body = "# the gate`n          throw `"an upstream job did not succeed`"" }
     )
     foreach ($case in $pwshCases) {
@@ -1183,6 +1185,44 @@ jobs:
         if ($pwshGate.Code -ne 0) {
             throw "a pwsh throw with a $($case.Name) must be accepted:`n$($pwshGate.Output)"
         }
+    }
+
+    foreach ($shellCase in @(
+        @{ Shell = 'bash --noprofile --norc -eo pipefail {0}'; Run = 'exit 1' },
+        @{ Shell = 'pwsh -command ". ''{0}''"'; Run = 'throw "upstream failed"' }
+    )) {
+        $defaultShell = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: $($shellCase.Shell)
+        run: $($shellCase.Run)
+"@
+        if ($defaultShell.Code -ne 0) {
+            throw "the documented default shell template '$($shellCase.Shell)' must be recognized:`n$($defaultShell.Output)"
+        }
+    }
+    $customShell = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: bash -x {0}
+        run: exit 1
+'@
+    if ($customShell.Code -eq 0 -or $customShell.Output -notmatch 'unsupported shell') {
+        throw "an unreviewed custom shell template must remain refused:`n$($customShell.Output)"
     }
 
     # Stripping comments must not have widened what the pwsh arm ACCEPTS. A body that is
@@ -1438,6 +1478,49 @@ jobs:
                     throw "the refusal must name the over-climbed file actually reached ('$overExecuted'):`n$overText"
                 }
             }
+        }
+    }
+
+    # A gate script reached through a directory symlink also needs its physical target
+    # tiered. The lexical alias is HIGH here; only the real path is intentionally left
+    # uncovered, so a checker resolving links cannot pass on the alias alone.
+    $realDirectory = Join-Path $symlinkRepo 'scripts' 'real'
+    New-Item -ItemType Directory -Path $realDirectory -Force | Out-Null
+    '# target' | Set-Content -LiteralPath (Join-Path $realDirectory 'probe.py') -Encoding utf8
+    $directoryLinkMade = $false
+    foreach ($kind in @('SymbolicLink', 'Junction')) {
+        try {
+            New-Item -ItemType $kind -Path (Join-Path $symlinkRepo 'scripts' 'alias') -Target $realDirectory -ErrorAction Stop | Out-Null
+            $directoryLinkMade = $true
+            break
+        }
+        catch { $directoryLinkMade = $false }
+    }
+    if (-not $directoryLinkMade) {
+        Write-Host 'SKIP: cannot create a directory symlink or junction on this host; the direct symlink target case was NOT checked'
+    }
+    else {
+        '{"version":1,"high":["scripts/alias/**"],"low":[]}' | Set-Content -LiteralPath (Join-Path $symlinkRepo '.claude' 'review-policy.json') -Encoding utf8
+        @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python scripts/alias/probe.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
+        $targetText = Join-Path $symlinkRepo 'target-output.txt'
+        & $python.Source -S $script (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') *> $targetText
+        $targetCode = $LASTEXITCODE
+        $targetOutput = Get-Content -LiteralPath $targetText -Raw
+        if ($targetCode -eq 0 -or $targetOutput -notmatch 'scripts/real/probe\.py') {
+            throw "a gate script symlink's physical target must be tiered independently of the HIGH alias:`n$targetOutput"
         }
     }
 
@@ -1919,6 +2002,108 @@ jobs:
         throw "a job-level defaults.run.working-directory must still apply to its steps:`n$($jobDefaults.Output)"
     }
 
+    $workspaceWorkdir = New-GateRepo '{"version":1,"high":["app dir/scripts/**"],"low":[]}' @('app dir/scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: "${{ github.workspace }}/app dir"
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($workspaceWorkdir.Code -ne 0) {
+        throw "a quoted github.workspace working-directory with spaces must resolve to the full repo-relative path:`n$($workspaceWorkdir.Output)"
+    }
+    $blockWorkdir = New-GateRepo '{"version":1,"high":["sub/scripts/**"],"low":[]}' @('sub/scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: >-
+          ${{ github.workspace }}/sub
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($blockWorkdir.Code -ne 0) {
+        throw "a block-scalar working-directory must expand github.workspace and resolve the script:`n$($blockWorkdir.Output)"
+    }
+    $unknownWorkdir = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($unknownWorkdir.Code -eq 0 -or $unknownWorkdir.Output -notmatch 'unsupported working-directory expression') {
+        throw "an unknown working-directory expression must fail closed:`n$($unknownWorkdir.Output)"
+    }
+    $dynamicWorkdirWithoutGateScript = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.path }}
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($dynamicWorkdirWithoutGateScript.Code -ne 0) {
+        throw "an unresolved directory must not fail when no gate script path needs resolution:`n$($dynamicWorkdirWithoutGateScript.Output)"
+    }
+    $absoluteWorkdir = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: /tmp/build
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($absoluteWorkdir.Code -eq 0 -or $absoluteWorkdir.Output -notmatch 'unsupported absolute working-directory') {
+        throw "an absolute working-directory must be refused before it can escape the repository root:`n$($absoluteWorkdir.Output)"
+    }
+
     # Follow-up item 2: `; cd` inside a QUOTED message is not a directory change...
     $quotedCd = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @'
 jobs:
@@ -1993,6 +2178,11 @@ jobs:
                           'cd$X; python3 scripts/gate.py',
                           'cd${SUB}; python3 scripts/gate.py',
                           'cd$(printf " sub"); python3 scripts/gate.py',
+                          'command cd sub; python3 scripts/gate.py',
+                          'builtin cd sub; python3 scripts/gate.py',
+                          'X=1 cd sub; python3 scripts/gate.py',
+                          'X="1 2" cd sub; python3 scripts/gate.py',
+                          'Push-Location sub; python3 scripts/gate.py',
                           "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $quotedSpelling = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py', 'sub/scripts/gate.py') @"
 jobs:
@@ -2112,6 +2302,61 @@ jobs:
         }
     }
 
+    $bashEnvFlow = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: { BASH_ENV: /tmp/override }
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvFlow.Code -eq 0 -or $bashEnvFlow.Output -notmatch 'BASH_ENV') {
+        throw "an inline flow-mapping BASH_ENV must fail like its block-mapping form:`n$($bashEnvFlow.Output)"
+    }
+    $bashEnvWrite = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "BASH_ENV=/tmp/override" >> "$GITHUB_ENV"
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvWrite.Code -eq 0 -or $bashEnvWrite.Output -notmatch 'BASH_ENV') {
+        throw "writing BASH_ENV into GITHUB_ENV from a gated job must fail:`n$($bashEnvWrite.Output)"
+    }
+
+    $bashEnvHeredoc = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat >> "$GITHUB_ENV" <<'EOF'
+          BASH_ENV=/tmp/override
+          EOF
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvHeredoc.Code -eq 0 -or $bashEnvHeredoc.Output -notmatch 'BASH_ENV') {
+        throw "a BASH_ENV heredoc written into GITHUB_ENV must fail closed:`n$($bashEnvHeredoc.Output)"
+    }
+
     # Follow-up item 4: in DIRECTORY mode, a file-exempt workflow with no gate job is not subject to
     # the gate's BASH_ENV rule -- its jobs never feed the gate.
     $dirMode = Join-Path $root ('dir-' + [guid]::NewGuid().ToString('N'))
@@ -2183,16 +2428,30 @@ jobs:
     @'
 name: Reusable
 on: workflow_call
+defaults:
+  run:
+    working-directory: ${{ github.workspace }}/app
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: ./actions/probe
+      - run: python scripts/workflow-default.py
+  job-default:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nested
+    steps:
+      - run: python scripts/job-default.py
 '@ | Set-Content -LiteralPath $reusableWorkflowPath -Encoding utf8
+    New-Item -ItemType Directory -Path (Join-Path $reusable.Repo 'app/scripts'), (Join-Path $reusable.Repo 'nested/scripts') -Force | Out-Null
+    '# probe' | Set-Content -LiteralPath (Join-Path $reusable.Repo 'app/scripts/workflow-default.py')
+    '# probe' | Set-Content -LiteralPath (Join-Path $reusable.Repo 'nested/scripts/job-default.py')
     @'
 jobs:
   build:
-    uses: ./.github/workflows/reusable.yml
+    uses: $/.github/workflows/reusable.yml
   ci-gate:
     if: always()
     needs: [build]
@@ -2204,6 +2463,9 @@ jobs:
     $reusableResult = Invoke-GateFile -Repo $reusable.Repo
     if ($reusableResult.Code -eq 0 -or $reusableResult.Output -notmatch 'actions/probe/action\.yml') {
         throw "a local action nested in a gate-fed reusable workflow must be tiered HIGH:`n$($reusableResult.Output)"
+    }
+    if ($reusableResult.Output -notmatch 'app/scripts/workflow-default\.py' -or $reusableResult.Output -notmatch 'nested/scripts/job-default\.py') {
+        throw "workflow- and job-level working-directory defaults inside a called reusable workflow must locate its scripts:`n$($reusableResult.Output)"
     }
 
     # `always()` is unconditionally true, so `always() && <coverage>` gates exactly what the
@@ -2369,6 +2631,22 @@ jobs:
         if ($refused.Code -eq 0) {
             throw "$($case.Name) must not count as coverage:`n$($refused.Output)"
         }
+    }
+    $windowsPwshExit = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: windows-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: exit 256
+'@
+    if ($windowsPwshExit.Code -ne 0) {
+        throw "a positive PowerShell exit code above 255 must remain valid on a literal Windows runner:`n$($windowsPwshExit.Output)"
     }
 
     # A `#` inside a QUOTED YAML scalar is data, not a comment. Truncating there hid the
@@ -2728,6 +3006,35 @@ jobs:
 "@
         if ($subexpressionGate.Code -eq 0) {
             throw "a command subexpression must be refused ($subexpression):`n$($subexpressionGate.Output)"
+        }
+    }
+
+    foreach ($case in @(
+        @('exit 1', $true),
+        @('Write-Host "upstream failed"' + "`n" + 'exit 1', $true),
+        @('exit 0' + "`n" + 'throw "unreachable"', $false),
+        @('exit 0', $false),
+        @('exit 256', $false)
+    )) {
+        $pwshFailure = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: |
+          $($case[0] -replace "`n", "`n          ")
+"@
+        if ($case[1] -and $pwshFailure.Code -ne 0) {
+            throw "a pwsh nonzero exit/throw must prove failure:`n$($pwshFailure.Output)"
+        }
+        if (-not $case[1] -and $pwshFailure.Code -eq 0) {
+            throw "a pwsh success or unreachable failure must not prove failure:`n$($pwshFailure.Output)"
         }
     }
 

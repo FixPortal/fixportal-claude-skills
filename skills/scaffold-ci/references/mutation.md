@@ -15,6 +15,9 @@ ad hoc runs, plus one staggered weekly UTC schedule. Do not add `push` or `pull_
 triggers: mutation is deliberately outside per-commit CI because Stryker's runtime would
 consume disproportionate Blacksmith and GitHub Actions quota.
 
+Set `timeout-minutes: 30` on every mutation job. Keep each mutation workflow run bounded
+to 30 minutes; reduce or repartition workload rather than raising that ceiling.
+
 Choose a repository-specific weekday and time so mutation jobs are spread across the estate;
 do not copy one cron value everywhere. Keep the weekly schedule after scope, runner, or tool
 changes. Validate a new or repaired lane manually, but do not leave it manual-only.
@@ -39,6 +42,7 @@ permissions:
 jobs:
   stryker:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:

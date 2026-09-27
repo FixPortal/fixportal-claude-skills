@@ -66,7 +66,7 @@ and others):
 |---|---|---|
 | `backend` / `frontend` build+test | `blacksmith-4vcpu-ubuntu-2404` | compute-bound; the win is real |
 | Extended tests | Existing compatible runner | weekly/manual only; bounded at 45 minutes |
-| Stryker mutation (`mutation.yml`) | `blacksmith-4vcpu-ubuntu-2404` | longest job in the estate |
+| Stryker mutation (`mutation.yml`) | `blacksmith-4vcpu-ubuntu-2404` | weekly/manual only; each job capped at 30 minutes |
 | Docker image publish | `blacksmith-4vcpu-ubuntu-2404` | sticky-disk layer cache is the whole point |
 | `deploy` | `ubuntu-latest` | network-bound; a faster CPU buys nothing |
 | npm `release` publish (provenance) | `ubuntu-latest` | attestation is cheap, and provenance is better left on GitHub-hosted runners |
