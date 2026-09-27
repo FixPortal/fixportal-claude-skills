@@ -14,7 +14,7 @@ $text = Get-Content (Join-Path $root 'references' 'dependencies-and-security.md'
 $sweepPath = Join-Path $root 'assets' 'secret-sweep.yml'
 if (-not (Test-Path $sweepPath)) { throw 'missing shipped asset: assets/secret-sweep.yml' }
 $sweep = Get-Content $sweepPath -Raw
-$detectorAllowlist = 'AWS,AWSSessionKey,Azure,AzureStorage,AzureSQL,AzureSasToken,AzureActiveDirectoryApplicationSecret,AzureContainerRegistry,AzureOpenAI,Github,GitHubApp,GitHubOauth2,OpenAI,Anthropic,NpmToken,Postgres,Dockerhub'
+$detectorAllowlist = 'AWS,AWSSessionKey,Azure,AzureStorage,SQLServer,AzureSasToken,AzureActiveDirectoryApplicationSecret,AzureContainerRegistry,AzureOpenAI,Github,GitHubApp,GitHubOauth2,OpenAI,Anthropic,XAI,NpmToken,Postgres,Dockerhub'
 
 # Each guard matches the USAGE form, never a bare mention. The reference deliberately
 # names `gitleaks/gitleaks-action` and `GITLEAKS_LICENSE` in order to forbid them, so an

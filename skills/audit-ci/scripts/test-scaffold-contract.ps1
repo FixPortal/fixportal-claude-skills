@@ -312,12 +312,12 @@ $gateCoverageCommands = @(Get-RunSteps $jobs['gate-coverage'] | ForEach-Object {
 # to the prose checklist. Where the reference grants an adaptation, the checker must take
 # that adaptation as INPUT rather than re-deriving it from the canonical asset.
 $gateExemptions = @{}
-foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT', 'PRIVILEGED_TRIGGER_NO_CHECKOUT') {
+foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
     $match = [regex]::Match($gateCoverage, "(?m)^\s+$name\s*:\s*(?<value>.*?)\s*$")
     if ($match.Success) { $gateExemptions[$name] = $match.Groups['value'].Value.Trim("'", '"') }
 }
 $previousExemptions = @{}
-foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT', 'PRIVILEGED_TRIGGER_NO_CHECKOUT') {
+foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
     $previousExemptions[$name] = [Environment]::GetEnvironmentVariable($name)
     [Environment]::SetEnvironmentVariable($name, $gateExemptions[$name])
 }
@@ -329,7 +329,7 @@ try {
     }
 }
 finally {
-    foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT', 'PRIVILEGED_TRIGGER_NO_CHECKOUT') {
+    foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
         [Environment]::SetEnvironmentVariable($name, $previousExemptions[$name])
     }
 }
@@ -340,14 +340,37 @@ if ($gateCoverageCommands -notcontains "python3 .github/scripts/assert_gate_cove
 $gate = @($jobs['ci-gate']) -join "`n"
 if ($gate -notmatch '(?m)^    permissions:\s*\{\}\s*$') { throw 'CI Gate must have zero permissions.' }
 
+$guardText = Get-Content -LiteralPath (Join-Path $repository '.github/workflows/review-policy-guard.yml') -Raw
+
+# The hygiene checker reads its opt-ins from the PROCESS ENVIRONMENT, and the guard
+# supplies them as step `env:` on the step that runs it -- the canonical asset ships
+# `PRIVILEGED_TRIGGER_NO_CHECKOUT: review-tier.yml` there. This used to run with
+# whatever the gate-coverage block had set, restored by then, so every repo carrying
+# review-tier.yml read as "Workflow hygiene failed" -- and the caller's own environment
+# leaked in. Read the inputs from the step that runs the checker, same as gate coverage.
+$hygieneStep = @(foreach ($guardJob in (Get-JobBlocks $guardText).Values) {
+        # The COMMAND, not a mention: the policy step's required-file loop names the
+        # script too, and matching that step read no env at all.
+        Get-Steps $guardJob | Where-Object { @(Get-StepCommands $_ | Where-Object { $_ -match '^python3?\s+\.github/scripts/assert_workflow_hygiene\.py\b' }).Count }
+    })
+if ($hygieneStep.Count -ne 1) { throw "The review-policy guard must run assert_workflow_hygiene.py in exactly one step, found $($hygieneStep.Count)." }
+$hygieneStep = $hygieneStep[0]
+$hygieneNames = 'PRIVILEGED_TRIGGER_NO_CHECKOUT', 'TRUSTED_THIRD_PARTY_ACTIONS'
+$previousHygiene = @{}
+foreach ($name in $hygieneNames) {
+    $previousHygiene[$name] = [Environment]::GetEnvironmentVariable($name)
+    $match = [regex]::Match($hygieneStep, "(?m)^\s+$name\s*:\s*(?<value>.*?)\s*$")
+    [Environment]::SetEnvironmentVariable($name, $(if ($match.Success) { $match.Groups['value'].Value.Trim("'", '"') } else { $null }))
+}
 Push-Location $repository
 try {
-    & $python '.github/scripts/assert_workflow_hygiene.py' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Workflow hygiene failed.' }
+    $hygieneOutput = @(& $python '.github/scripts/assert_workflow_hygiene.py' 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Workflow hygiene failed: $(($hygieneOutput | Where-Object { "$_" -match '::error' }) -join ' | ')" }
 }
-finally { Pop-Location }
-
-$guardText = Get-Content -LiteralPath (Join-Path $repository '.github/workflows/review-policy-guard.yml') -Raw
+finally {
+    Pop-Location
+    foreach ($name in $hygieneNames) { [Environment]::SetEnvironmentVariable($name, $previousHygiene[$name]) }
+}
 $requiredLoop = [regex]::Match($guardText, '(?s)for required in (?<paths>.*?)\s*; do')
 $requiredHigh = @([regex]::Matches($requiredLoop.Groups['paths'].Value, '\.github/[^\s\\]+|\.claude/[^\s\\]+|\.coderabbit\.yaml') |
     ForEach-Object Value | Select-Object -Unique)

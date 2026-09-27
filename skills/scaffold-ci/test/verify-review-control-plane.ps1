@@ -191,8 +191,8 @@ foreach ($needle in '.github/canonical-assets.json', '[ ! -f "$required" ]', '[ 
         throw "review-policy-guard.yml is missing a control-plane presence/high check: $needle"
     }
 }
-if ($guard -notmatch '(?s)for required in \.claude/ci-budget-approval\.json \.github/canonical-assets\.json \\\s+nuget\.config NuGet\.config global\.json \.config/dotnet-tools\.json \.npmrc Directory\.Build\.props; do') {
-    throw 'the guard must check optional HIGH paths, including the manifest, with both NuGet casings'
+if ($guard -notmatch '(?s)for required in \.claude/ci-budget-approval\.json \.github/canonical-assets\.json \\\s+\.github/scripts/assert_canonical_assets\.py \\\s+nuget\.config NuGet\.config global\.json \.config/dotnet-tools\.json \.npmrc Directory\.Build\.props; do') {
+    throw 'the guard must check optional HIGH paths, including the manifest and its checker, with both NuGet casings'
 }
 
 $widePush = "branches: ['**']"

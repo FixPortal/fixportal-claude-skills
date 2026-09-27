@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $main = Get-Content (Join-Path $root 'SKILL.md') -Raw
 $ci = Get-Content (Join-Path $root 'references' 'ci-workflow.md') -Raw
+$mutation = Get-Content (Join-Path $root 'references' 'mutation.md') -Raw
 $all = @(
     $main
     Get-ChildItem (Join-Path $root 'references') -Filter '*.md' | ForEach-Object { Get-Content $_.FullName -Raw }
@@ -23,6 +24,7 @@ foreach ($needle in 'substantive build, test, publish', 'gate-control jobs', 'we
 foreach ($needle in 'timeout-minutes: 10', '--blame-hang-timeout 30s', '--blame-hang-dump-type none', '15 aggregate runner-minutes', 'timeout-minutes: 45') {
     if ($ci -notmatch [regex]::Escape($needle)) { throw "missing CI cost contract: $needle" }
 }
+if ($mutation -notmatch 'timeout-minutes: 30') { throw 'mutation jobs are not capped at 30 minutes' }
 if ($ci -notmatch '(?is)end-to-end.*stress.*load.*soak') { throw 'extended test kinds are not routed out of PR CI' }
 if ($ci -notmatch '(?is)workflow_dispatch.*schedule:') { throw 'extended tests are not both manually runnable and weekly' }
 if ($ci -notmatch '(?i)never (?:a )?required PR gate') { throw 'extended tests can still become a hidden PR gate' }
