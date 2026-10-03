@@ -281,6 +281,53 @@ jobs:
         throw "a named GATE_CONDITIONAL_EXEMPT job must pass:`n$($conditionalExempted.Output)"
     }
 
+    # X3 (adversarial review 20260929T030431Z): a block-scalar job-level `if:` is still
+    # a condition. `if: >` carrying `always()` on its continuation lines used to mark
+    # the job CONDITIONAL on the bare header -- a false RED on an unconditional feeder.
+    $blockScalarIf = Invoke-Gate @'
+jobs:
+  build:
+    if: >
+      always()
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($blockScalarIf.Code -ne 0) {
+        throw "a block-scalar ``if: >`` folding to always() must not mark the feeder conditional:`n$($blockScalarIf.Output)"
+    }
+
+    # ...and the same unfold decides whether a feeder over a conditional/exempt
+    # dependency RUNS REGARDLESS: the folded always() stops the skip propagating.
+    $env:GATE_CONDITIONAL_EXEMPT = 'secrets'
+    $blockScalarRunsRegardless = Invoke-Gate @'
+jobs:
+  secrets:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+  build:
+    needs: [secrets]
+    if: >
+      always()
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    $env:GATE_CONDITIONAL_EXEMPT = ''
+    if ($blockScalarRunsRegardless.Code -ne 0) {
+        throw "a feeder whose block-scalar ``if: >`` folds to always() runs regardless of an exempt dependency:`n$($blockScalarRunsRegardless.Output)"
+    }
+
     # --- The gate's OWN semantics. Both of these keep the job, its name and its needs:
     #     list intact, so neither is visible as a coverage change in a diff -- and both
     #     leave the required context reporting green while deciding nothing.
@@ -336,7 +383,7 @@ jobs:
     # so the step runs unconditionally and never fails -- still passed, because the echo
     # matched. That is exactly the "guts only the aggregation step" neuter the checker
     # exists to catch, so it was blind to its own subject. Found by Gitar on
-    # <repo>#225.
+    # <repo>canonical regression.
     $echoOnly = Invoke-Gate @'
 jobs:
   build:
@@ -409,13 +456,11 @@ jobs:
     # --- ordinary failing spellings must be ACCEPTED --------------------------------
     # The allowlist is fail-closed, so a rejection here is a PERMANENTLY RED required
     # check on a correct gate - in every repository this asset is installed into.
-    # (CodeRabbit, PR #135.) The `||`/`&&` guard spellings were briefly here and have
+    # (CodeRabbit, canonical regression.) The `||`/`&&` guard spellings were briefly here and have
     # moved to the rejection list below: they exit ZERO when their test passes, and the
     # gate step's own `if:` has already decided that an upstream job failed.
     $failableBodies = [ordered]@{
         'exit with redirection'    = 'exit 1 >&2'
-        'false with redirection'   = 'false 2>/dev/null'
-        'unconditional pwsh throw' = 'throw "upstream failed"'
         # `echo` cannot fail, so `&&` here always fires -- unlike the guard forms below,
         # where the left side is a real test that decides whether the exit runs at all.
         'message then exit'        = 'echo "::error::bad" >&2 && exit 1'
@@ -473,6 +518,28 @@ jobs:
         'a redirect target hiding a separator'           = 'false >/tmp/gate;true'
         # A conditional pwsh throw does not throw when its condition is false.
         'a conditional pwsh throw'                       = 'if ($false) { throw "failed" }'
+        # THIS ASSERTION WAS REVERSED IN batch62 (adversarial review 20260929T030431Z,
+        # X2), and the reversal is recorded rather than quietly applied. This body sat
+        # in $failableBodies above as 'unconditional pwsh throw': with no `shell:` key
+        # the runner default is bash off Windows, and under bash `throw` is not a
+        # keyword -- it resolves through PATH, which an earlier step in the same job
+        # can write via GITHUB_PATH. A committed executable named `throw` that exits 0
+        # then turns the gate green over a failed dependency. `throw` is accepted only
+        # when the effective shell resolves to pwsh (step `shell:` or
+        # `defaults.run.shell`) -- those cases are pinned below.
+        'an unconditional pwsh throw with no shell key'  = 'throw "upstream failed"'
+        # THE MIRROR REVERSAL, recorded the same way (CodeRabbit Major on canonical regression):
+        # 'false with redirection' sat in $failableBodies above, spelled with no
+        # `shell:` key. `false` is a builtin only under bash; with no shell key the
+        # runner may be pwsh on Windows, where `false` resolves through PATH, which
+        # an earlier step in the same job can write via GITHUB_PATH -- a committed
+        # executable named `false` that exits 0 then turns the gate green over a
+        # failed dependency, exactly the `throw`-under-bash shape above with the
+        # shells swapped. `false` is accepted only when the effective shell resolves
+        # POSIX (step `shell:` or `defaults.run.shell`) -- those cases are pinned
+        # below.
+        'an unconditional false with no shell key'       = 'false'
+        'a false with redirection and no shell key'      = 'false 2>/dev/null'
     }
     foreach ($inert in $inertBodies.GetEnumerator()) {
         $body = $inert.Value
@@ -495,6 +562,73 @@ jobs:
         if ($inertGate.Output -notmatch 'not a recognised failing form') {
             throw "rejection of '$($inert.Key)' must name the supported forms:`n$($inertGate.Output)"
         }
+    }
+
+    # --- `false` IS accepted once the shell is declared POSIX -------------------------
+    # Step-level `shell: bash` first, then the job-level default -- the two spellings
+    # the allowlist resolves. `exit` needs no such fixture because it is a builtin
+    # under both candidate shells and is accepted with no shell key at all.
+    $bashFalse = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any upstream job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: bash
+        run: false 2>/dev/null
+'@
+    if ($bashFalse.Code -ne 0) {
+        throw "a declared-bash ``false`` gate body must pass:`n$($bashFalse.Output)"
+    }
+
+    $defaultBashFalse = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Fail if any upstream job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: false
+'@
+    if ($defaultBashFalse.Code -ne 0) {
+        throw "a defaults.run.shell bash ``false`` gate body must pass:`n$($defaultBashFalse.Output)"
+    }
+
+    # A pwsh DEFAULT refuses `false` through the pwsh arm's own message, without ever
+    # reaching the bash reader.
+    $defaultPwshFalse = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Fail if any upstream job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: false
+'@
+    if ($defaultPwshFalse.Code -eq 0) {
+        throw "a defaults.run.shell pwsh ``false`` gate body must be refused:`n$($defaultPwshFalse.Output)"
+    }
+    if ($defaultPwshFalse.Output -notmatch 'only inert Write-Host') {
+        throw "the pwsh refusal must name the supported pwsh forms:`n$($defaultPwshFalse.Output)"
     }
 
     # A per-job gate: one step neutered, another still failable. Breaking on the first
@@ -670,7 +804,7 @@ jobs:
     # at step-body indentation. A checker that scans every line for the STEP_IF_VALUE
     # shape, blind to whether it sits inside a preceding block scalar, reads that printed
     # text as the real condition and reports the gate as aggregating -- fail-open on a
-    # gate that aggregates nothing. Found by CodeRabbit on <repo>#68.
+    # gate that aggregates nothing. Found by CodeRabbit on <repo>canonical regression.
     $conditionInRunBody = Invoke-Gate @'
 jobs:
   build:
@@ -764,7 +898,7 @@ jobs:
         throw "file mode must fail closed when its named workflow has no jobs:`n$($emptyFile.Output)"
     }
 
-    # ── Gate scripts must be tiered HIGH ────────────────────────────────────────
+    # â”€â”€ Gate scripts must be tiered HIGH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # A script a merge-blocking job runs from the PR's own checkout decides what can
     # merge. The guard's named-path list cannot cover a checker one repository authored
     # later, so this is derived from what the workflow actually invokes.
@@ -780,7 +914,7 @@ jobs:
     # proving nothing -- the exact inert-test shape this check exists to catch, and the
     # same trap already recorded in run-tests/test/verify-contract.ps1. Green on ubuntu is
     # therefore not evidence these fixtures are sound; only the separators are.
-    # (CodeRabbit, PR #142.)
+    # (CodeRabbit, canonical regression.)
     function New-GateRepo([string] $policyJson, [string[]] $scriptPaths, [string] $yaml) {
         $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
@@ -838,7 +972,7 @@ jobs:
     }
 
     # 3. Covered by a GLOB rather than an exact path -> PASS. The hook tiers this
-    # repository HIGH, so a checker that rejected it would be a false RED — the
+    # repository HIGH, so a checker that rejected it would be a false RED â€” the
     # divergence glob_to_regex is mirrored to prevent.
     $globbed = New-GateRepo '{"version":1,"high":["scripts/**","actions/**"],"low":[]}' `
         @('scripts/assert-coverage-floor.ps1') $gatedYaml
@@ -1007,7 +1141,7 @@ jobs:
     # it is worth the twelve lines. `build/` and `tools/` are admitted but unused across
     # the estate today (checked, 2026-09-09, 26 repos); they stay in the pattern because a
     # gate script the check does not SEE is the fail-open direction, and are pinned here so
-    # they cannot rot unnoticed. (Gitar, PR #142.)
+    # they cannot rot unnoticed. (Gitar, canonical regression.)
     foreach ($prefix in @('.github/scripts', 'build', 'tools', 'src/scripts')) {
         $rooted = New-GateRepo '{"version":1,"high":[],"low":[]}' @("$prefix/probe.py") @"
 jobs:
@@ -1033,7 +1167,7 @@ jobs:
     # branch properly: the else arm yielded the bare `|` and advanced one line, skipping
     # the whole payload. The script inside was then invisible and escaped the HIGH-tier
     # requirement -- fail-open on the control this check exists to be. (CodeRabbit,
-    # <repo> PR #140.)
+    # <repo> canonical regression.)
     $commentedScalar = New-GateRepo '{"version":1,"high":[],"low":[]}' @('.github/scripts/probe.py') @'
 jobs:
   build:
@@ -1053,7 +1187,7 @@ jobs:
         throw "a gate script inside a commented block scalar must be detected:`n$($commentedScalar.Output)"
     }
 
-    # ── Windows path spellings reach the same gate script ──────────────
+    # â”€â”€ Windows path spellings reach the same gate script (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Windows resolves a path separator- and case-insensitively, so a gate job on a
     # windows-latest runner executes `.\scripts\probe.ps1` exactly as it executes the
     # POSIX spelling. GATE_SCRIPT admitted only `/` and lowercase extensions, so neither
@@ -1124,7 +1258,7 @@ jobs:
         throw "a Windows-spelled non-script argument must not be claimed as a gate script:`n$($notAScript.Output)"
     }
 
-    # ── A BOM'd workflow is still a workflow ──────────────────────────
+    # â”€â”€ A BOM'd workflow is still a workflow (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # `JOBS_KEY` is anchored at `^`, so a plain utf-8 read left the BOM in front of
     # `jobs:` and the line never matched. In FILE mode -- how the estate wires this --
     # that exited 1 with "no jobs found": a permanently red required check over a valid
@@ -1154,7 +1288,7 @@ jobs:
         throw "a BOM'd workflow must not read as having no jobs:`n$($bom.Output)"
     }
 
-    # ── pwsh `throw` with a trailing comment ──────────────────────────
+    # â”€â”€ pwsh `throw` with a trailing comment (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The pwsh arm fullmatched the joined block-scalar body with no comment handling,
     # while its bash sibling masks then strips them. So `exit 1 # note` was accepted and
     # the identical pwsh `throw "..." # note` was refused -- a false RED on a gate that
@@ -1248,7 +1382,7 @@ jobs:
         throw "a pwsh body that is more than an unconditional throw must stay refused:`n$($pwshNotBare.Output)"
     }
 
-    # ── Dot components in a gate-script path (CodeRabbit, on the review of this change) ──
+    # â”€â”€ Dot components in a gate-script path (CodeRabbit, on the review of this change) â”€â”€
     # `iterdir()` never yields `.` or `..`, so resolve_committed_paths walking them
     # literally matches nothing and drops the candidate -- fail-open. The exact
     # `is_file()` the walk replaced collapsed a single dot for free, via pathlib, so
@@ -1297,6 +1431,133 @@ jobs:
 '@
     if ($escaping.Code -ne 0) {
         throw "a path escaping the repository must not be asserted about:`n$($escaping.Output)"
+    }
+
+    # J1 (adversarial review, batch62): a gate script referenced through a checkout-root
+    # VARIABLE or an absolute runner path was captured WITH its prefix -- GATE_SCRIPT's
+    # prefix classes are greedy and finditer never retries inside a consumed match -- so
+    # the prefixed spelling resolved to nothing and the script went untiered. The suffix
+    # starting at the recognised segment is a candidate now. A prefix that CLIMBS stays
+    # excluded ($escaping above): its suffix is a different file at run time.
+    foreach ($spelling in @('$GITHUB_WORKSPACE/scripts/gate.py', '$PWD/scripts/gate.py', '/home/runner/work/repo/repo/scripts/gate.py')) {
+        $prefixedYaml = @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 $spelling
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        $prefixed = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/gate.py') $prefixedYaml
+        if ($prefixed.Code -eq 0 -or $prefixed.Output -notmatch 'scripts/gate\.py') {
+            throw "a gate script spelled through a root variable/absolute prefix ($spelling) must be detected:`n$($prefixed.Output)"
+        }
+        $prefixedTiered = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/gate.py') $prefixedYaml
+        if ($prefixedTiered.Code -ne 0) {
+            throw "a tiered gate script spelled $spelling must pass:`n$($prefixedTiered.Output)"
+        }
+    }
+
+    # J8 (adversarial review, batch62): `working-directory: sub` plus
+    # `run: python3 ../scripts/gate.py` runs the REPO's scripts/gate.py -- the qualified
+    # candidate reduces lexically to it -- while the bare candidate resolves OUTSIDE the
+    # checkout, to the sibling scripts/ the wrapper holds. The bare candidate's
+    # outside-repository exit is suspended only when a working-directory-qualified
+    # candidate exists; without one the exit still fires. Hand-rolled like the symlink
+    # fixture below: the wrapper holds repo/ AND a sibling scripts/gate.py, and neither
+    # comes from New-GateRepo. The sibling sits beside the repo, NEVER at
+    # $root/scripts -- the $escaping fixture above depends on that not existing.
+    $j8Wrapper = Join-Path $root ('wrapper-' + [guid]::NewGuid().ToString('N'))
+    $j8Repo = Join-Path $j8Wrapper 'repo'
+    New-Item -ItemType Directory -Path (Join-Path $j8Repo '.claude') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $j8Repo '.github' 'workflows') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $j8Repo 'scripts') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $j8Wrapper 'scripts') -Force | Out-Null
+    '# probe' | Set-Content -LiteralPath (Join-Path $j8Repo 'scripts' 'gate.py') -Encoding utf8
+    '# outside' | Set-Content -LiteralPath (Join-Path $j8Wrapper 'scripts' 'gate.py') -Encoding utf8
+    '{"version":1,"high":["scripts/**"],"low":[]}' |
+        Set-Content -LiteralPath (Join-Path $j8Repo '.claude' 'review-policy.json') -Encoding utf8
+
+    # With the working directory: the repo's own (tiered) script is what runs -> PASS.
+    @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: sub
+        run: python3 ../scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ | Set-Content -LiteralPath (Join-Path $j8Repo '.github' 'workflows' 'ci.yml') -Encoding utf8
+    $j8Anchored = Invoke-GateFile -Repo $j8Repo
+    if ($j8Anchored.Code -ne 0) {
+        throw "a working-directory-anchored ../ spelling of a tiered repo script must pass:`n$($j8Anchored.Output)"
+    }
+
+    # Without it: the bare ../ spelling is the only evidence, and it resolves to the
+    # sibling OUTSIDE the checkout -> the outside-repository exit still fires.
+    @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 ../scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@ | Set-Content -LiteralPath (Join-Path $j8Repo '.github' 'workflows' 'ci.yml') -Encoding utf8
+    $j8Bare = Invoke-GateFile -Repo $j8Repo
+    if ($j8Bare.Code -eq 0 -or $j8Bare.Output -notmatch 'outside the repository') {
+        throw "a bare ../ gate script resolving outside the checkout must still fail closed:`n$($j8Bare.Output)"
+    }
+
+    # H1 (adversarial review, batch62): a JavaScript gate script matched nothing in
+    # GATE_SCRIPT, so it stayed editable in a NORMAL-tier pull request. `.mjs`/`.js` are
+    # gate-script extensions now; `.jsx` stays OUT -- the trailing `\b` never matches
+    # `js` followed by a word character.
+    foreach ($case in @(@('scripts/gate.mjs', $true), @('scripts/gate.js', $true), @('scripts/gate.jsx', $false))) {
+        $jsYaml = @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node $($case[0])
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        $jsUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' @($case[0]) $jsYaml
+        if ($case[1]) {
+            if ($jsUntiered.Code -eq 0 -or $jsUntiered.Output -notmatch [regex]::Escape($case[0])) {
+                throw "a $($case[0]) gate script must be detected and required HIGH:`n$($jsUntiered.Output)"
+            }
+            $jsTiered = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @($case[0]) $jsYaml
+            if ($jsTiered.Code -ne 0) {
+                throw "a tiered $($case[0]) gate script must pass:`n$($jsTiered.Output)"
+            }
+        }
+        elseif ($jsUntiered.Code -ne 0) {
+            throw "a .jsx file is not a gate script and must not be asserted about:`n$($jsUntiered.Output)"
+        }
     }
 
     # A `..` AFTER A SYMLINK does not reduce the way the runner resolves it: the OS
@@ -1524,7 +1785,7 @@ jobs:
         }
     }
 
-    # ── The OTHER two BOM read paths, and BOM in DIRECTORY mode ─────────────────────
+    # â”€â”€ The OTHER two BOM read paths, and BOM in DIRECTORY mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Three reads changed to utf-8-sig, and only the workflow one had a fixture. The
     # untested two are the review policy (where json.loads RAISES on a BOM and the
     # surrounding except swallows it as "no policy", silently disabling the HIGH-tier
@@ -1579,13 +1840,14 @@ jobs:
         throw "a BOM'd workflow must not be skipped as 'not a workflow' in directory mode:`n$($bomDirectory.Output)"
     }
 
-    # ── A local action's runs.using is resolved INSIDE the runs: mapping ────────────
+    # â”€â”€ A local action's runs.using is resolved INSIDE the runs: mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The whole-file search this pins against matched the first `using:`-shaped line
     # ANYWHERE in the action file, which is wrong in both directions: a block scalar
     # holding an indented `'using': javascript` line matched BEFORE the real runs:
-    # mapping and reddened a valid COMPOSITE action (CodeRabbit, on a consuming repository review),
+    # mapping and reddened a valid COMPOSITE action (CodeRabbit composite-action review),
     # and a flow-style `runs: {using: node20, ...}` never matched the line-anchored
-    # pattern at all, so the non-composite guard was silently skipped -- fail-open.
+    # pattern at all, so the non-composite guard was silently skipped -- fail-open
+    # (canonical regression).
     #
     # A composite action needs REAL metadata, so the '# probe' placeholder New-GateRepo
     # writes cannot stand in for it; this variant writes the action content it is given.
@@ -1638,7 +1900,7 @@ jobs:
     # 1. The block-scalar false match. The description's payload holds an indented
     #    'using': javascript line BEFORE the real runs: mapping; the whole-file search
     #    matched it first and raised on a valid composite action -- a false RED on a
-    #    healthy action. (CodeRabbit, on a consuming repository review.) The composite body invokes
+    #    healthy action. (CodeRabbit composite-action review.) The composite body invokes
     #    a HIGH-tiered script, so passing ALSO proves the body was followed rather than
     #    the action being silently skipped.
     $blockScalarUsing = New-GateActionRepo @'
@@ -1657,7 +1919,7 @@ runs:
     }
 
     # 2. A flow-style runs: mapping. The line-anchored search could never see `using`
-    #    inside `runs: {using: ...}`, so the composite spelling must be
+    #    inside `runs: {using: ...}` (canonical regression), so the composite spelling must be
     #    recognised -- not raise, and not silently skip the guard.
     $flowComposite = New-GateActionRepo @'
 name: Probe
@@ -1670,7 +1932,7 @@ runs: {using: composite, steps: []}
     # 2b. The same flow mapping written across SEVERAL LINES, which YAML allows. Reading
     #     only the `runs:` line saw `{` and nothing else, so a valid composite action
     #     raised -- the same false-RED class as fixture 1, one parser branch over.
-    #     (CodeRabbit, on the review of this change.)
+    #     (CodeRabbit, canonical regression.)
     $multilineFlowComposite = New-GateActionRepo @'
 name: Probe
 runs: {
@@ -1685,7 +1947,7 @@ runs: {
     #     entry. Searching the joined text matched `{using: composite}` inside the string
     #     and vouched composite for a DOCKER action -- fail-open, the dangerous direction.
     #     Extraction counts a key only OUTSIDE quotes and at depth ONE. (CodeRabbit,
-    #     on the review of this change.)
+    #     canonical regression.)
     $quotedFalseUsing = New-GateActionRepo @'
 name: Probe
 runs: {note: "{using: composite}", using: docker, main: index.js}
@@ -1711,7 +1973,7 @@ runs: {note: "{using: composite}", using: docker, main: index.js}
     # 2e. A QUOTED key is still a key: {'using': composite} must parse exactly as the
     #     bare spelling does -- key_pattern admits quoted keys in block style, and the
     #     flow parser must agree. Pinned because a quote-aware rewrite of the flow scan
-    #    (the two fixtures above) is precisely where a quoted key could drop out.
+    #    (canonical regression, the two fixtures above) is precisely where a quoted key could drop out.
     $quotedKeyFlow = New-GateActionRepo @'
 name: Probe
 runs: {'using': composite, steps: []}
@@ -1739,7 +2001,7 @@ runs: {'using': composite, steps: []}
     }
 
     # --- Tolerance folding and run-payload traversal (back-ported from the mirror's
-    #     PR #110 fixes; the two level-consistency findings are from
+    #     mirror checker review fixes; the two level-consistency findings are from
     #     the 2026-09-21 unit review) ---
 
     # 4. A STATICALLY FALSE continue-on-error tolerates nothing, at EITHER level, but
@@ -1842,7 +2104,7 @@ jobs:
     #    LOCAL_USES scan ran over physical lines, so the heredoc below matched -- and
     #    with the target on disk and non-composite, the traversal raised its ValueError:
     #    a false RED on a workflow that never delegates. Payload lines are now excluded
-    #    from both LOCAL_USES scans (mirror PR #110).
+    #    from both LOCAL_USES scans (mirror mirror checker review).
     $nonCompositeAction = @'
 name: Probe
 runs:
@@ -1915,9 +2177,9 @@ runs:
         throw "a directory change earlier in a composite run body must fail closed:`n$($compositeCdResult.Output)"
     }
 
-    # --- Follow-up batch: gate-checker coverage gaps and false failures ----------------
+    # --- canonical checker review ----------------------------------------------------
 
-    # Follow-up item 7: a composite action that runs its OWN script through the action path. The
+    # canonical regression-7: a composite action that runs its OWN script through the action path. The
     # script sits beside action.yml, not at the repository root, and runs from the PR
     # checkout, so it must be tiered HIGH like any other gate script.
     foreach ($spelling in '"${{ github.action_path }}/scripts/gate.sh"', '"$GITHUB_ACTION_PATH/scripts/gate.sh"') {
@@ -1937,7 +2199,7 @@ runs:
         }
     }
 
-    # Follow-up item 6: a flush `- working-directory:` as the step's FIRST key still sets the
+    # canonical regression-6: a flush `- working-directory:` as the step's FIRST key still sets the
     # directory the gate script runs from.
     $flushWorkdir = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('sub/scripts/gate.py') @'
 jobs:
@@ -1958,7 +2220,7 @@ jobs:
         throw "a dash-form working-directory must locate the gate script it scopes:`n$($flushWorkdir.Output)"
     }
 
-    # Follow-up item 3: a SIBLING step's working-directory does not apply to this step, so it must
+    # canonical regression-3: a SIBLING step's working-directory does not apply to this step, so it must
     # not add a candidate path (here: other/scripts/gate.py, which exists but never runs).
     $siblingWorkdir = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py', 'other/scripts/gate.py') @'
 jobs:
@@ -2104,7 +2366,176 @@ jobs:
         throw "an absolute working-directory must be refused before it can escape the repository root:`n$($absoluteWorkdir.Output)"
     }
 
-    # Follow-up item 2: `; cd` inside a QUOTED message is not a directory change...
+    # X4 (adversarial review, batch62): the workspace expression is honoured only at the
+    # START of the value. A mid-string occurrence is left for the generic expression
+    # refusal, and a rooted value whose `..` climbs above the workspace root gets its own
+    # -- gate_script_paths joins directories to script candidates lexically, and above
+    # the root nothing can be tiered HIGH.
+    $climbingWorkdir = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/../other
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($climbingWorkdir.Code -eq 0 -or $climbingWorkdir.Output -notmatch 'climbing above the workspace root') {
+        throw "a workspace-rooted working-directory climbing above the root must fail closed:`n$($climbingWorkdir.Output)"
+    }
+
+    # An INTERIOR `..` never climbs past the root: sub/../other is just other/.
+    $interiorWorkdir = New-GateRepo '{"version":1,"high":["other/scripts/**"],"low":[]}' @('other/scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/sub/../other
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($interiorWorkdir.Code -ne 0) {
+        throw "an interior .. under the workspace root must stay allowed:`n$($interiorWorkdir.Output)"
+    }
+
+    # CodeRabbit Minor on control-plane review (batch63): the climb check ran
+    # only for workspace-rooted values. A PLAIN relative `..` resolves against the
+    # workspace and escapes the checkout the same way -- resolve_committed_paths
+    # finds no file outside the checkout, and the bare-candidate suspension lets the
+    # script that runs go unchecked. The depth walk now covers every relative value.
+    $plainClimb = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ..
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($plainClimb.Code -eq 0 -or $plainClimb.Output -notmatch 'climbing above the workspace root') {
+        throw "a plain relative working-directory climbing above the root must fail closed:`n$($plainClimb.Output)"
+    }
+
+    # ...and a plain INTERIOR `..` stays allowed, like the workspace-rooted spelling.
+    $plainInterior = New-GateRepo '{"version":1,"high":["other/scripts/**"],"low":[]}' @('other/scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sub/../other
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($plainInterior.Code -ne 0) {
+        throw "a plain interior .. working-directory must stay allowed:`n$($plainInterior.Output)"
+    }
+
+    # The widened workflow-level slice feeds working directories too: a workflow-level
+    # defaults.run.working-directory AFTER `jobs:` qualifies every no-key step.
+    $trailingWorkdir = New-GateRepo '{"version":1,"high":["sub/scripts/**"],"low":[]}' @('sub/scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+defaults:
+  run:
+    working-directory: sub
+'@
+    if ($trailingWorkdir.Code -ne 0) {
+        throw "a trailing workflow-level working-directory default must qualify gate scripts:`n$($trailingWorkdir.Output)"
+    }
+
+    $midStringWorkspace = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sub/${{ github.workspace }}
+    steps:
+      - run: python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($midStringWorkspace.Code -eq 0 -or $midStringWorkspace.Output -notmatch 'unsupported working-directory expression') {
+        throw "a mid-string github.workspace must fall to the generic expression refusal:`n$($midStringWorkspace.Output)"
+    }
+
+    # J7 (adversarial review, batch62): a `working-directory:` line inside a run:
+    # block-scalar payload is SHELL TEXT (here a heredoc writing a workflow), not a YAML
+    # key. It was read as one, and the expression there produced the hard-exit
+    # `!unsupported` sentinel -- a false RED on a correct workflow. Payload lines are now
+    # skipped via run_payload_indexes, the same distinction the LOCAL_USES scans draw.
+    $payloadWorkdir = New-GateRepo '{"version":1,"high":["scripts/**"],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat > generated.yml <<'EOF'
+          defaults:
+            run:
+              working-directory: ${{ inputs.dir }}
+          EOF
+          python3 scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($payloadWorkdir.Code -ne 0) {
+        throw "a working-directory line inside a run: payload must not be read as a real key:`n$($payloadWorkdir.Output)"
+    }
+
+    # canonical regression-2: `; cd` inside a QUOTED message is not a directory change...
     $quotedCd = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @'
 jobs:
   build:
@@ -2182,6 +2613,11 @@ jobs:
                           'builtin cd sub; python3 scripts/gate.py',
                           'X=1 cd sub; python3 scripts/gate.py',
                           'X="1 2" cd sub; python3 scripts/gate.py',
+                          # J6 (batch62): a quoted assignment BEFORE a bare one. mask_quoted
+                          # blanks the value to spaces, and the masked line must still
+                          # parse the prefix chain (`A=      B=1 cd sub`).
+                          'A="x y" B=1 cd sub; python3 scripts/gate.py',
+                          'B=1 A="x y" cd sub; python3 scripts/gate.py',
                           'Push-Location sub; python3 scripts/gate.py',
                           "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $quotedSpelling = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py', 'sub/scripts/gate.py') @"
@@ -2238,7 +2674,32 @@ jobs:
         }
     }
 
-    # Follow-up item 1: a `BASH_ENV:` line inside a run body is shell text, not an env key...
+    # J3 (adversarial review, batch62): pwsh does NOT treat `\"` as an escape, so
+    # `Write-Host "cache: scratch\"` is a CLOSED string and the `Set-Location` after it is a
+    # real directory change. Bash masking never closes that string and hid the change;
+    # the body is now read under both quoting disciplines and either verdict counts.
+    $pwshQuotedCd = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: |
+          Write-Host "cache: scratch\" ; Set-Location sub
+          python scripts/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($pwshQuotedCd.Code -eq 0 -or $pwshQuotedCd.Output -notmatch 'directory change') {
+        throw "a pwsh backslash-quote-terminated string must not hide the directory change after it:`n$($pwshQuotedCd.Output)"
+    }
+
+    # canonical regression-1: a `BASH_ENV:` line inside a run body is shell text, not an env key...
     $bashEnvPayload = Invoke-Gate @'
 jobs:
   build:
@@ -2318,7 +2779,224 @@ jobs:
     if ($bashEnvFlow.Code -eq 0 -or $bashEnvFlow.Output -notmatch 'BASH_ENV') {
         throw "an inline flow-mapping BASH_ENV must fail like its block-mapping form:`n$($bashEnvFlow.Output)"
     }
+
+    # X2 (adversarial review, batch62): `- env:` as a step's FIRST key -- the dash form --
+    # never matched the env scan, so this inline mapping was not read at all.
+    $bashEnvDash = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - env: { BASH_ENV: /tmp/override }
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvDash.Code -eq 0 -or $bashEnvDash.Output -notmatch 'BASH_ENV') {
+        throw "a dash-form `- env: {BASH_ENV: ...}` must fail like the plain key:`n$($bashEnvDash.Output)"
+    }
+
+    # ...and the dash form in BLOCK mapping shape is the same env block.
+    $bashEnvDashBlock = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          BASH_ENV: /tmp/override
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvDashBlock.Code -eq 0 -or $bashEnvDashBlock.Output -notmatch 'BASH_ENV') {
+        throw "a dash-form block `- env:` with a BASH_ENV child must fail:`n$($bashEnvDashBlock.Output)"
+    }
+
+    # F7b (adversarial review 20260929T030431Z): the env-key guard matches a BASH_ENV:
+    # line only INSIDE an env: block. A `with:` input of the same name is an action
+    # input -- the file-wide match this replaced reddened a workflow that sets no
+    # environment variable at all.
+    $bashEnvWithInput = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          BASH_ENV: /tmp/documented-input-only
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvWithInput.Code -ne 0) {
+        throw "a ``with:`` input named BASH_ENV is not an env key and must not trip the guard:`n$($bashEnvWithInput.Output)"
+    }
+
+    # ...and a BASH_ENV:-shaped line inside a block-scalar env VALUE is string content,
+    # not a key.
+    $bashEnvScalarValue = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SCRIPT: |
+        BASH_ENV: not-a-key
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvScalarValue.Code -ne 0) {
+        throw "a BASH_ENV:-shaped line inside a block-scalar env value must not trip the guard:`n$($bashEnvScalarValue.Output)"
+    }
+
+    # X3 (batch62): the flow mapping is read off the RAW line and PARSED, so a quoted `#`
+    # is data. The comment strip this replaced cut the value below at the `#`, left an
+    # unterminated fragment, and exited over valid YAML carrying no BASH_ENV at all -- a
+    # false RED. (A refusal carrying 'cannot parse' also mentions BASH_ENV, so only a
+    # PASS distinguishes the fix.)
+    $noBashEnvQuotedHash = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: { NOTE: "x # y" }
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($noBashEnvQuotedHash.Code -ne 0) {
+        throw "a quoted # in an unrelated flow env value must parse cleanly:`n$($noBashEnvQuotedHash.Output)"
+    }
+
+    # A flow mapping may SPAN LINES; the parser is handed the rest of the file, exactly as
+    # resolve_runs_using already does for `runs:`.
+    $bashEnvMultilineFlow = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env: { PATH: /tmp/bin,
+           BASH_ENV: /tmp/override }
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvMultilineFlow.Code -eq 0 -or $bashEnvMultilineFlow.Output -notmatch 'BASH_ENV') {
+        throw "a flow env mapping spanning lines must still be read:`n$($bashEnvMultilineFlow.Output)"
+    }
+    # J2 (adversarial review, batch62): the run-body scan is scoped to the GATE JOB and
+    # refuses the bare token. GITHUB_ENV is per-JOB, so a feeder job's BASH_ENV write
+    # never reaches the gate job's shell -- refusing it reddened harmless text, and the
+    # old assignment-plus-redirection-plus-$GITHUB_ENV conjunction missed real spellings
+    # (the two below). Both fixtures used to write from `build` and pin the file-wide
+    # scan; they now write from the gate job itself.
     $bashEnvWrite = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "BASH_ENV=/tmp/override" >> "$GITHUB_ENV"
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvWrite.Code -eq 0 -or $bashEnvWrite.Output -notmatch 'BASH_ENV') {
+        throw "writing BASH_ENV into GITHUB_ENV from the gate job must fail:`n$($bashEnvWrite.Output)"
+    }
+
+    # No `BASH_ENV=` anywhere in the workflow: the heredoc syntax is written THROUGH the
+    # env file and GitHub applies it there. The conjunction missed this spelling.
+    $bashEnvHeredocThroughEnv = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "BASH_ENV<<EOF" >> "$GITHUB_ENV"
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvHeredocThroughEnv.Code -eq 0 -or $bashEnvHeredocThroughEnv.Output -notmatch 'BASH_ENV') {
+        throw "a BASH_ENV heredoc opened through GITHUB_ENV must fail:`n$($bashEnvHeredocThroughEnv.Output)"
+    }
+
+    # pwsh: neither a shell redirection nor a `$GITHUB_ENV` spelling -- `$env:GITHUB_ENV`
+    # matched neither conjunct.
+    $bashEnvPwsh = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: '"BASH_ENV=/tmp/override" | Out-File -FilePath $env:GITHUB_ENV -Append'
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: pwsh
+        run: throw "upstream failed"
+'@
+    if ($bashEnvPwsh.Code -eq 0 -or $bashEnvPwsh.Output -notmatch 'BASH_ENV') {
+        throw "a BASH_ENV write via pwsh Out-File must fail:`n$($bashEnvPwsh.Output)"
+    }
+
+    $bashEnvHeredoc = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat >> "$GITHUB_ENV" <<'EOF'
+          BASH_ENV=/tmp/override
+          EOF
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+'@
+    if ($bashEnvHeredoc.Code -eq 0 -or $bashEnvHeredoc.Output -notmatch 'BASH_ENV') {
+        throw "a BASH_ENV heredoc written into GITHUB_ENV must fail closed:`n$($bashEnvHeredoc.Output)"
+    }
+
+    # ...while the SAME write from a FEEDER job is out of scope: GITHUB_ENV is per-job,
+    # so the override never reaches the gate job's shell. Refusing it was a false RED on
+    # a harmless spelling. (J2, adversarial review batch62.)
+    $bashEnvFeeder = Invoke-Gate @'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -2332,32 +3010,11 @@ jobs:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
 '@
-    if ($bashEnvWrite.Code -eq 0 -or $bashEnvWrite.Output -notmatch 'BASH_ENV') {
-        throw "writing BASH_ENV into GITHUB_ENV from a gated job must fail:`n$($bashEnvWrite.Output)"
+    if ($bashEnvFeeder.Code -ne 0) {
+        throw "a BASH_ENV write in a FEEDER job is out of scope (GITHUB_ENV is per-job):`n$($bashEnvFeeder.Output)"
     }
 
-    $bashEnvHeredoc = Invoke-Gate @'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          cat >> "$GITHUB_ENV" <<'EOF'
-          BASH_ENV=/tmp/override
-          EOF
-  ci-gate:
-    if: always()
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-'@
-    if ($bashEnvHeredoc.Code -eq 0 -or $bashEnvHeredoc.Output -notmatch 'BASH_ENV') {
-        throw "a BASH_ENV heredoc written into GITHUB_ENV must fail closed:`n$($bashEnvHeredoc.Output)"
-    }
-
-    # Follow-up item 4: in DIRECTORY mode, a file-exempt workflow with no gate job is not subject to
+    # canonical regression-4: in DIRECTORY mode, a file-exempt workflow with no gate job is not subject to
     # the gate's BASH_ENV rule -- its jobs never feed the gate.
     $dirMode = Join-Path $root ('dir-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $dirMode | Out-Null
@@ -2394,7 +3051,7 @@ jobs:
         throw "directory mode must not fail a file-exempt, non-gated workflow on BASH_ENV:`n$dirOut"
     }
 
-    # Follow-up item 5: an intermediate dependency that runs `if: always()` stops the skip from
+    # canonical regression-5: an intermediate dependency that runs `if: always()` stops the skip from
     # propagating, so the feeder behind it is not "reachable" from the exempt job.
     $env:GATE_EXEMPT = 'optional'
     try {
@@ -2472,7 +3129,7 @@ jobs:
     # coverage atom gates. Leaving it UNKNOWN kept it as a residual conjunct and reported a
     # correct gate as referencing no needs.<job>.result at all -- a false RED on the very
     # shape the gate's own job-level condition uses.
-    # (CodeRabbit, <repo>#106.)
+    # (CodeRabbit, <repo>canonical regression.)
     foreach ($shape in @(
         "always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))",
         "always() && contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
@@ -2517,7 +3174,7 @@ jobs:
     # quoted inline scalar whose command OPENS with a redirection decodes to a string
     # starting with `>`, and testing the decoded text read it as a folded body: the step
     # supplied no coverage and the gate went red over a command that does fail.
-    # (CodeRabbit, <repo>#106.)
+    # (CodeRabbit, <repo>canonical regression.)
     $leadingRedirect = Invoke-Gate @'
 jobs:
   build:
@@ -2632,6 +3289,20 @@ jobs:
             throw "$($case.Name) must not count as coverage:`n$($refused.Output)"
         }
     }
+    # THIS ASSERTION WAS REVERSED ON 2026-09-29, and the reversal is recorded rather than
+    # quietly applied (the `${{ ... }}` reversal below is the precedent). It used to read:
+    # "a positive PowerShell exit code above 255 must remain valid on a literal Windows
+    # runner". The premise was that the checker can know the runner: a literal
+    # `runs-on: windows-latest` line decided which exit range pwsh was held to.
+    #
+    # It is reversed because the runner read was untrustworthy in both directions --
+    # `runs-on: ${{ matrix.os }}` is invisible to a literal scan, and a `runs-on:` line
+    # inside a `run:` payload is shell text, not a YAML key -- and because the range
+    # matters: under pwsh on Linux `exit 256` exits ZERO (the status truncates to 8
+    # bits), and pwsh on ubuntu-latest is an ordinary, supported spelling. A body
+    # vouched for on a Windows assumption can succeed on the runner that executes it.
+    # The accepted range is now 1-255 on EVERY job -- nonzero under pwsh on every OS.
+    # (J4/J5, adversarial review batch62.)
     $windowsPwshExit = Invoke-Gate @'
 jobs:
   build:
@@ -2645,14 +3316,14 @@ jobs:
         shell: pwsh
         run: exit 256
 '@
-    if ($windowsPwshExit.Code -ne 0) {
-        throw "a positive PowerShell exit code above 255 must remain valid on a literal Windows runner:`n$($windowsPwshExit.Output)"
+    if ($windowsPwshExit.Code -eq 0 -or $windowsPwshExit.Output -notmatch 'pwsh') {
+        throw "exit 256 exits ZERO under pwsh on Linux, so it must be refused on every runner:`n$($windowsPwshExit.Output)"
     }
 
     # A `#` inside a QUOTED YAML scalar is data, not a comment. Truncating there hid the
     # script that follows it, so the script escaped the HIGH-tier requirement -- fail-open
     # on this control. Both quote styles, because the escape rules differ.
-    # (CodeRabbit, <repo> PR #140.)
+    # (CodeRabbit, <repo> canonical regression.)
     $quotedHash = @{
         'double-quoted' = '      - run: "printf ''tag # audit''; python .github/scripts/probe.py"'
         'single-quoted' = "      - run: 'printf \`"tag # audit\`"; python .github/scripts/probe.py'"
@@ -2680,7 +3351,7 @@ $($quotedHash[$style])
     # The same bug seen from the other side: a quoted body carrying a literal `#`, with a
     # genuine YAML comment after the closing quote. Truncating at the inner hash left an
     # unterminated fragment, so a gate that DOES fail read as one that cannot -- a false
-    # RED. (CodeRabbit, <repo> PR #163.)
+    # RED. (CodeRabbit, <repo> canonical regression.)
     $quotedBody = Invoke-Gate @'
 jobs:
   build:
@@ -2878,7 +3549,7 @@ jobs:
     # EVERY preceding line is tested, not just the first, and _MESSAGE admits the whole
     # message vocabulary: `printf` as well as `echo`, and a leading redirection as well as
     # a trailing one. A regression narrowing the prefix loop to its first line, or the
-    # pattern to bare `echo`, passes the single-message case above. (Gitar, PR #176.)
+    # pattern to bare `echo`, passes the single-message case above. (Gitar, canonical regression.)
     $messagePrefixes = Invoke-Gate @'
 jobs:
   build:
@@ -2924,7 +3595,7 @@ jobs:
     # `set -euo pipefail` is the house prefix on run: blocks here, and it cannot decide
     # the exit status -- the final line still has to be an accepted failing form. The
     # message-prefix rule refused it, which is a false RED on a gate that does fail.
-    # (CodeRabbit, PR #176.)
+    # (CodeRabbit, canonical regression.)
     $shellOptionPrefix = Invoke-Gate @'
 jobs:
   build:
@@ -2948,7 +3619,7 @@ jobs:
     # shell before the final command, so the `exit 1` the checker can see never runs and
     # the step exits ZERO. Both arms are pinned: the unsafe options refused, the safe
     # ones accepted -- an allowlist narrowed by accident would pass the first half of
-    # this alone. (CodeRabbit, PR #176.)
+    # this alone. (CodeRabbit, canonical regression.)
     foreach ($case in @(
         @('set -n', $false),
         @('set -o noexec', $false),
@@ -2987,7 +3658,7 @@ jobs:
     # mask_quoted blanks it to a bare `echo` that reads as an ordinary message. Refused
     # quoted and unquoted -- what it does cannot be read from the file. This one is
     # older than the whole-body rule: the any-line rule vouched for the same body on its
-    # `throw` alone. (CodeRabbit, PR #176.)
+    # `throw` alone. (CodeRabbit, canonical regression.)
     foreach ($subexpression in @('echo "$(exit 0)"', 'echo $(exit 0)')) {
         $subexpressionGate = Invoke-Gate @"
 jobs:
@@ -3038,6 +3709,229 @@ jobs:
         }
     }
 
+    # X5 (adversarial review, batch62): with NO `shell:` key and no resolvable
+    # `defaults.run.shell` the runner default is bash off Windows and pwsh on Windows,
+    # and `runs-on:` cannot be read reliably -- so the body is vouched under EITHER
+    # shell's rules. These pin the acceptance and its floor. Measured before accepting
+    # (Git Bash, `bash --noprofile --norc -eo pipefail`, the runner's bash wrapper):
+    # every pwsh form accepted below fails under bash too -- Write-Host/Write-Output/
+    # Write-Information are `command not found` (127) and `-e` ends the step there, and
+    # a bare `exit N` exits N. An accept here is never a body bash would pass.
+    #
+    # ONE ASSERTION HERE WAS REVERSED LATER IN batch62 (adversarial review
+    # 20260929T030431Z, X2): `throw "upstream failed"` was accepted with the others, on
+    # the same measurement -- `throw` is `command not found` (127) under a PRISTINE
+    # bash. But PATH is not pristine: an earlier step in the same job can write it via
+    # GITHUB_PATH, and a committed executable named `throw` that exits 0 turns the gate
+    # green over a failed dependency. `throw` is a keyword only under pwsh, so it is
+    # accepted only when the effective shell resolves there -- the `shell: pwsh` cases
+    # above and the defaults.run.shell cases below.
+    foreach ($case in @(
+        @('Write-Host "upstream failed"' + "`n" + 'exit 1', 'windows-latest', $true),
+        @('throw "upstream failed"', 'windows-latest', $false),
+        @('throw "upstream failed"', 'ubuntu-latest', $false),
+        @('Write-Output "x"' + "`n" + 'exit 255', 'windows-latest', $true),
+        @('Write-Host "upstream failed"' + "`n" + 'exit 1', 'ubuntu-latest', $true),
+        @('Write-Host "all is well"', 'windows-latest', $false)
+    )) {
+        $noShell = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: $($case[1])
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          $($case[0] -replace "`n", "`n          ")
+"@
+        if ($case[2] -and $noShell.Code -ne 0) {
+            throw "a no-shell-key body in a recognised pwsh failing form must be accepted ($($case[0])):`n$($noShell.Output)"
+        }
+        if (-not $case[2] -and $noShell.Code -eq 0) {
+            throw "a no-shell-key body with no failing form must stay refused ($($case[0])):`n$($noShell.Output)"
+        }
+    }
+
+    # X2 (adversarial review 20260929T030431Z): an EXPLICIT `shell: bash` gives `throw`
+    # the same PATH-lookup reading as the no-key case -- refused for the same reason.
+    $bashThrow = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        shell: bash
+        run: throw "upstream failed"
+'@
+    if ($bashThrow.Code -eq 0) {
+        throw "a throw under explicit ``shell: bash`` must be refused (PATH lookup):`n$($bashThrow.Output)"
+    }
+
+    # X1 (adversarial review 20260929T030431Z): `defaults.run.shell` IS the effective
+    # shell of a step that carries no `shell:` of its own, and is held to the same
+    # allowlist a step-level spelling is. Job-level first, then workflow-level; a
+    # default this checker does not recognise is refused, not assumed away.
+    foreach ($case in @(
+        # (defaults children, run body, expected pass, note)
+        @("      run:`n        shell: pwsh", 'throw "upstream failed"', $true, 'job defaults pwsh accepts a pwsh throw'),
+        @("      run:`n        shell: bash", 'exit 1', $true, 'job defaults bash accepts exit 1'),
+        @("      run:`n        shell: bash", 'throw "upstream failed"', $false, 'job defaults bash still refuses throw'),
+        @("      run:`n        shell: bash -n {0}", 'exit 1', $false, 'a noexec default is refused, not assumed away')
+    )) {
+        $jobDefaults = Invoke-Gate @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    defaults:
+$($case[0])
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: $($case[1])
+"@
+        if (($jobDefaults.Code -eq 0) -ne $case[2]) {
+            throw "defaults.run.shell case failed -- $($case[3]):`n$($jobDefaults.Output)"
+        }
+        if ($case[3] -match 'noexec' -and $jobDefaults.Output -notmatch 'unsupported shell.*defaults\.run\.shell') {
+            throw "a refused defaults.run.shell must name where the shell came from:`n$($jobDefaults.Output)"
+        }
+    }
+
+    # Workflow-level defaults apply when the job has none; the job's own win over the
+    # workflow's; the flow spelling resolves too. An environment variable NAMED shell
+    # is not a defaults.run.shell and must not be read as one.
+    $workflowDefaults = Invoke-Gate @'
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: throw "upstream failed"
+'@
+    if ($workflowDefaults.Code -ne 0) {
+        throw "a workflow-level defaults.run.shell pwsh must apply to a no-key step:`n$($workflowDefaults.Output)"
+    }
+
+    $jobOverridesWorkflow = Invoke-Gate @'
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: throw "upstream failed"
+'@
+    if ($jobOverridesWorkflow.Code -ne 0) {
+        throw "a job-level defaults.run.shell must override the workflow's:`n$($jobOverridesWorkflow.Output)"
+    }
+
+    $flowDefaults = Invoke-Gate @'
+defaults: {run: {shell: pwsh}}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: throw "upstream failed"
+'@
+    if ($flowDefaults.Code -ne 0) {
+        throw "the flow spelling ``defaults: {run: {shell: pwsh}}`` must resolve:`n$($flowDefaults.Output)"
+    }
+
+    $envNamedShell = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      shell: pwsh
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: throw "upstream failed"
+'@
+    if ($envNamedShell.Code -eq 0) {
+        throw "an env variable named ``shell`` is not defaults.run.shell and must not vouch for pwsh forms:`n$($envNamedShell.Output)"
+    }
+
+    # CodeRabbit review of the control plane (batch63): YAML does not fix the
+    # order of top-level keys, and GitHub accepts a `defaults:` block AFTER `jobs:`.
+    # Slicing workflow-level lines at the first job dropped that block, so the X1
+    # noexec shell moved one key lower and passed -- default_shell stayed None, both
+    # shell arms accepted `exit 1`, and the runner's `bash -n` exited 0 over it. The
+    # workflow-level slice is now every top-level line outside the jobs mapping.
+    $trailingNoexec = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+defaults:
+  run:
+    shell: bash -n {0}
+'@
+    if ($trailingNoexec.Code -eq 0 -or $trailingNoexec.Output -notmatch 'unsupported shell.*defaults\.run\.shell') {
+        throw "a trailing workflow-level noexec default must be refused like the leading spelling:`n$($trailingNoexec.Output)"
+    }
+
+    # The same trailing slice must also VOUCH: a real bash default after `jobs:` makes
+    # the no-key step's `exit 1` the accepted builtin spelling, not an unknown shell.
+    $trailingBash = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+defaults:
+  run:
+    shell: bash
+'@
+    if ($trailingBash.Code -ne 0) {
+        throw "a trailing workflow-level bash default must vouch for the gate step:`n$($trailingBash.Output)"
+    }
+
     # THIS ASSERTION WAS REVERSED ON 2026-09-20, and the reversal is recorded rather than
     # quietly applied. It used to read: "`${{ ... }}` is not `$(`, and refusing it would
     # red every house gate" -- and it was right about the consequence. Measured when the
@@ -3051,7 +3945,7 @@ jobs:
     # checker can tell a safe expansion from one that splices in a separator or an early
     # exit. Answering that means evaluating GitHub expressions here, and widening this
     # file's accepted forms on that kind of reasoning has already shipped a fail-open rule
-    # once (CodeRabbit, PR #176, refuted in a later round).
+    # once (CodeRabbit, canonical regression, refuted in a later round).
     #
     # The house gate moved to `env:` instead, across the estate, which costs nothing and
     # needs no judgement call at all. The old spelling is asserted as REFUSED above.
