@@ -81,7 +81,8 @@ else {
         @{ Expected = 2;    Retrieved = 2;    High = 'false'; Why = 'a small, complete list' },
         @{ Expected = 5;    Retrieved = 4;    High = 'true';  Why = 'a short enumeration' },
         @{ Expected = 3000; Retrieved = 3000; High = 'true';  Why = 'an enumeration at the 3000-file ceiling with matching counts' },
-        @{ Expected = 3500; Retrieved = 3000; High = 'true';  Why = 'an enumeration capped below changed_files' }
+        @{ Expected = 3500; Retrieved = 3000; High = 'true';  Why = 'an enumeration capped below changed_files' },
+        @{ Expected = 'null'; Retrieved = 1; High = 'true'; Why = 'a non-numeric changed_files (null)' }
     )) {
         $script = @"
 set -euo pipefail
@@ -127,8 +128,11 @@ echo "HIGH=`$high"
         throw "review-tier.yml must enumerate the changed files once; found $filesCalls /files call(s)"
     }
 
-    # The pattern match, EXECUTED: a mid-pattern `**/` must match zero directories as well
-    # as many (follow-up batch, item 5), without narrowing what the bash `case` glob matched before.
+    # The pattern match, EXECUTED: the block translates each glob with the hook's
+    # glob_to_regex (copied verbatim), so a mid-pattern `**/` matches zero directories
+    # as well as many (canonical review) and a lone `*`/`?` matches WITHIN one path segment.
+    # A lone `*` must stop at `/`; the `infra/*` case below checks that boundary
+    # so the server, hook and checker agree.
     $match = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if ! \$high; then.*?^\k<i>fi\r?$')
     if (-not $match.Success) { throw 'review-tier.yml: could not locate the pattern-match block' }
     $mIndent = $match.Groups['i'].Value.Length
@@ -137,7 +141,8 @@ echo "HIGH=`$high"
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/certs/a.pem';         High = 'true';  Why = 'mid-pattern ** at zero depth' },
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/prod/eu/certs/a.pem'; High = 'true';  Why = 'mid-pattern ** at depth' },
         @{ Pattern = '**/secrets.json';    File = 'secrets.json';               High = 'true';  Why = 'leading ** at the root' },
-        @{ Pattern = 'infra/*';            File = 'infra/a/b.bicep';            High = 'true';  Why = 'a single * still crossing /, as bash case always did' },
+        @{ Pattern = 'infra/*';            File = 'infra/a/b.bicep';            High = 'false'; Why = 'a lone * must stay within one path segment' },
+        @{ Pattern = 'tools/*.ps1';        File = 'tools/sub/x.ps1';            High = 'false'; Why = 'a single * must stop at the next /' },
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/foocerts/a.pem';      High = 'false'; Why = 'a sibling directory whose name merely ends in certs' },
         @{ Pattern = 'a/**/b/**/c';        File = 'a/b/x/c';                    High = 'true';  Why = 'two embedded ** segments, one at zero depth' },
         @{ Pattern = '**/scripts/**/*.py'; File = 'scripts/foo.py';             High = 'true';  Why = 'leading AND mid ** both at zero depth' },
