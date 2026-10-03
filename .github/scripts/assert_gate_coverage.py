@@ -2838,7 +2838,20 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
                 sys.exit(f"{root}: {unsupported[1:]}")
             if changes_directory(body):
                 sys.exit(f"{root}: cannot verify gate script paths after a directory change in job '{job_id}'; use working-directory:")
-            relatives = {relative} | set(_recognised_suffixes(relative))
+            full_references = {relative} | {
+                directory + "/" + relative
+                for directory in directories
+                if directory and not directory.startswith("!unsupported ")
+            }
+            direct = any(
+                resolve_committed_paths(root, candidate, allow_outside_repository=True)
+                for candidate in full_references
+            )
+            # Recover prefixed spellings only if the complete reference is absent.
+            # Otherwise a nested script also captures an unrelated root suffix.
+            relatives = {relative}
+            if not direct:
+                relatives.update(_recognised_suffixes(relative))
             # Every plausible spelling is kept -- the repository root, and each directory
             # that applies to this run body (workflow and job defaults, the body's own
             # step, a composite action's own directory). More scripts required HIGH,

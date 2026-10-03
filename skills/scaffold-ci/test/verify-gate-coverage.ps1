@@ -898,7 +898,7 @@ jobs:
         throw "file mode must fail closed when its named workflow has no jobs:`n$($emptyFile.Output)"
     }
 
-    # â”€â”€ Gate scripts must be tiered HIGH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Gate scripts must be tiered HIGH ────────────────────────────────────────
     # A script a merge-blocking job runs from the PR's own checkout decides what can
     # merge. The guard's named-path list cannot cover a checker one repository authored
     # later, so this is derived from what the workflow actually invokes.
@@ -972,7 +972,7 @@ jobs:
     }
 
     # 3. Covered by a GLOB rather than an exact path -> PASS. The hook tiers this
-    # repository HIGH, so a checker that rejected it would be a false RED â€” the
+    # repository HIGH, so a checker that rejected it would be a false RED — the
     # divergence glob_to_regex is mirrored to prevent.
     $globbed = New-GateRepo '{"version":1,"high":["scripts/**","actions/**"],"low":[]}' `
         @('scripts/assert-coverage-floor.ps1') $gatedYaml
@@ -1162,6 +1162,27 @@ jobs:
         }
     }
 
+    # A resolved full path must not also require an unrelated root suffix HIGH.
+    foreach ($prefix in @('src/scripts', '.github/scripts')) {
+        $fullPath = New-GateRepo "{`"version`":1,`"high`":[`"$prefix/gate.py`"],`"low`":[]}" @("$prefix/gate.py", 'scripts/gate.py') @"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python $prefix/gate.py
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+"@
+        if ($fullPath.Code -ne 0) {
+            throw "a resolved $prefix/gate.py must not require the unrelated scripts/gate.py HIGH:`n$($fullPath.Output)"
+        }
+    }
+
     # A COMMENTED block-scalar opener is a real spelling, and the scan tested the RAW
     # value against an anchored BLOCK_SCALAR, so `run: | # build log` matched neither
     # branch properly: the else arm yielded the bare `|` and advanced one line, skipping
@@ -1187,7 +1208,7 @@ jobs:
         throw "a gate script inside a commented block scalar must be detected:`n$($commentedScalar.Output)"
     }
 
-    # â”€â”€ Windows path spellings reach the same gate script (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Windows path spellings reach the same gate script (canonical regression) ──────────────
     # Windows resolves a path separator- and case-insensitively, so a gate job on a
     # windows-latest runner executes `.\scripts\probe.ps1` exactly as it executes the
     # POSIX spelling. GATE_SCRIPT admitted only `/` and lowercase extensions, so neither
@@ -1258,7 +1279,7 @@ jobs:
         throw "a Windows-spelled non-script argument must not be claimed as a gate script:`n$($notAScript.Output)"
     }
 
-    # â”€â”€ A BOM'd workflow is still a workflow (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── A BOM'd workflow is still a workflow (canonical regression) ──────────────────────────
     # `JOBS_KEY` is anchored at `^`, so a plain utf-8 read left the BOM in front of
     # `jobs:` and the line never matched. In FILE mode -- how the estate wires this --
     # that exited 1 with "no jobs found": a permanently red required check over a valid
@@ -1288,7 +1309,7 @@ jobs:
         throw "a BOM'd workflow must not read as having no jobs:`n$($bom.Output)"
     }
 
-    # â”€â”€ pwsh `throw` with a trailing comment (canonical regression) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── pwsh `throw` with a trailing comment (canonical regression) ──────────────────────────
     # The pwsh arm fullmatched the joined block-scalar body with no comment handling,
     # while its bash sibling masks then strips them. So `exit 1 # note` was accepted and
     # the identical pwsh `throw "..." # note` was refused -- a false RED on a gate that
@@ -1382,7 +1403,7 @@ jobs:
         throw "a pwsh body that is more than an unconditional throw must stay refused:`n$($pwshNotBare.Output)"
     }
 
-    # â”€â”€ Dot components in a gate-script path (CodeRabbit, on the review of this change) â”€â”€
+    # ── Dot components in a gate-script path (CodeRabbit, on the review of this change) ──
     # `iterdir()` never yields `.` or `..`, so resolve_committed_paths walking them
     # literally matches nothing and drops the candidate -- fail-open. The exact
     # `is_file()` the walk replaced collapsed a single dot for free, via pathlib, so
@@ -1785,7 +1806,7 @@ jobs:
         }
     }
 
-    # â”€â”€ The OTHER two BOM read paths, and BOM in DIRECTORY mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── The OTHER two BOM read paths, and BOM in DIRECTORY mode ─────────────────────
     # Three reads changed to utf-8-sig, and only the workflow one had a fixture. The
     # untested two are the review policy (where json.loads RAISES on a BOM and the
     # surrounding except swallows it as "no policy", silently disabling the HIGH-tier
@@ -1840,7 +1861,7 @@ jobs:
         throw "a BOM'd workflow must not be skipped as 'not a workflow' in directory mode:`n$($bomDirectory.Output)"
     }
 
-    # â”€â”€ A local action's runs.using is resolved INSIDE the runs: mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── A local action's runs.using is resolved INSIDE the runs: mapping ────────────
     # The whole-file search this pins against matched the first `using:`-shaped line
     # ANYWHERE in the action file, which is wrong in both directions: a block scalar
     # holding an indented `'using': javascript` line matched BEFORE the real runs:
