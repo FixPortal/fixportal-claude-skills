@@ -77,11 +77,14 @@ else {
     $indent = $block.Groups['i'].Value.Length
     $body = ($block.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $indent) { $_.Substring($indent) } else { $_.TrimStart() } }) -join "`n"
     foreach ($case in @(
-        @{ Expected = 0;    Retrieved = 0;    High = 'false'; Why = 'a PR with no changed files (follow-up batch, item 2)' },
+        @{ Expected = 0;    Retrieved = 0;    High = 'false'; Why = 'a PR with no changed files' },
         @{ Expected = 2;    Retrieved = 2;    High = 'false'; Why = 'a small, complete list' },
         @{ Expected = 5;    Retrieved = 4;    High = 'true';  Why = 'a short enumeration' },
         @{ Expected = 3000; Retrieved = 3000; High = 'true';  Why = 'an enumeration at the 3000-file ceiling with matching counts' },
         @{ Expected = 3500; Retrieved = 3000; High = 'true';  Why = 'an enumeration capped below changed_files' },
+        # `[ 1 -ne null ]` returns 2,
+        # which inside `if` counts as FALSE -- the completeness check silently did
+        # nothing. The case guard tiers HIGH on any non-numeric count instead.
         @{ Expected = 'null'; Retrieved = 1; High = 'true'; Why = 'a non-numeric changed_files (null)' }
     )) {
         $script = @"
@@ -122,7 +125,7 @@ echo "HIGH=`$high"
     }
 
     # The changed-file list is enumerated ONCE: a second paginated call doubled the API
-    # cost and let the count and the list disagree mid-run (follow-up batch, item 1).
+    # cost and let the count and the list disagree mid-run.
     $filesCalls = [regex]::Matches($block.Value, 'pulls/\$PR_NUMBER/files').Count
     if ($filesCalls -ne 1) {
         throw "review-tier.yml must enumerate the changed files once; found $filesCalls /files call(s)"
@@ -130,7 +133,7 @@ echo "HIGH=`$high"
 
     # The pattern match, EXECUTED: the block translates each glob with the hook's
     # glob_to_regex (copied verbatim), so a mid-pattern `**/` matches zero directories
-    # as well as many (canonical review) and a lone `*`/`?` matches WITHIN one path segment.
+    # as well as many and a lone `*`/`?` matches WITHIN one path segment.
     # A lone `*` must stop at `/`; the `infra/*` case below checks that boundary
     # so the server, hook and checker agree.
     $match = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if ! \$high; then.*?^\k<i>fi\r?$')
@@ -141,7 +144,7 @@ echo "HIGH=`$high"
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/certs/a.pem';         High = 'true';  Why = 'mid-pattern ** at zero depth' },
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/prod/eu/certs/a.pem'; High = 'true';  Why = 'mid-pattern ** at depth' },
         @{ Pattern = '**/secrets.json';    File = 'secrets.json';               High = 'true';  Why = 'leading ** at the root' },
-        @{ Pattern = 'infra/*';            File = 'infra/a/b.bicep';            High = 'false'; Why = 'a lone * must stay within one path segment' },
+        @{ Pattern = 'infra/*';            File = 'infra/a/b.bicep';            High = 'false'; Why = 'a lone * no longer crosses /' },
         @{ Pattern = 'tools/*.ps1';        File = 'tools/sub/x.ps1';            High = 'false'; Why = 'a single * must stop at the next /' },
         @{ Pattern = 'deploy/**/certs/**'; File = 'deploy/foocerts/a.pem';      High = 'false'; Why = 'a sibling directory whose name merely ends in certs' },
         @{ Pattern = 'a/**/b/**/c';        File = 'a/b/x/c';                    High = 'true';  Why = 'two embedded ** segments, one at zero depth' },
@@ -167,7 +170,7 @@ echo "HIGH=`$high"
     }
 
     # A label-read failure on a NORMAL PR keeps HIGH coverage AND fails the job, like
-    # every other failure path (follow-up batch, item 3).
+    # every other failure path.
     $label = [regex]::Match($tierWorkflow, '(?ms)^(?<i>[ ]+)if \$high; then.*?^\k<i>fi\r?$')
     if (-not $label.Success) { throw 'review-tier.yml: could not locate the label block' }
     $lIndent = $label.Groups['i'].Value.Length
@@ -399,7 +402,7 @@ foreach ($needle in 'scripts/canonical-assets.json', 'templates/summarize-stryke
 # The criterion must describe the comparison it cites. It said BYTE-IDENTICAL while the
 # required proof is compare-canonical-file.ps1 -IgnoreLineEndings, which accepts files
 # differing only in line endings -- so a PR could pass the proof without meeting the
-# stated condition. (CodeRabbit, public mirror PR #124.)
+# stated condition.
 if ($mechanicalSync -notmatch '-IgnoreLineEndings') {
     throw 'the mechanical-sync exception must name compare-canonical-file.ps1 -IgnoreLineEndings as the proof'
 }

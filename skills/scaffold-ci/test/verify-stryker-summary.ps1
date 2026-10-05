@@ -147,7 +147,7 @@ try {
         throw "the hotspot table must carry the no-coverage column it is now ranked by:`n$($gap.Markdown)"
     }
 
-    # --- Optional assurance preserves a client service repo's useful operational gate
+    # --- Optional assurance preserves a consumer's useful operational gate
     #     while every repository still receives the same canonical metric and script.
     $conclusive = Invoke-AssuredSummary (New-Report @{ 'Assured.cs' = @('Killed', 'Survived', 'Timeout', 'CompileError', 'Ignored') }) 'assured'
     Assert-Value $conclusive.ExitCode 0 'conclusive assurance exit code'

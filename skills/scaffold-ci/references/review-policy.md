@@ -1,5 +1,17 @@
 # Review policy contract
 
+## Contents
+
+- [`.gitignore` — keep the review policy addable](#gitignore--keep-the-review-policy-addable)
+- [`review-policy-guard.yml` — the control plane must not delete itself](#review-policy-guardyml--the-control-plane-must-not-delete-itself)
+- [Workflow hygiene, asserted rather than reviewed](#workflow-hygiene-asserted-rather-than-reviewed)
+- [PR review policy — `.claude/review-policy.json` + `.coderabbit.yaml`](#pr-review-policy--claudereview-policyjson--coderabbityaml)
+- [`.claude/review-policy.json`](#claudereview-policyjson)
+- [The cost envelope binds everywhere; the executable check does not](#the-cost-envelope-binds-everywhere-the-executable-check-does-not)
+- [Rolling this contract out across the estate](#rolling-this-contract-out-across-the-estate)
+- [`.coderabbit.yaml`](#coderabbityaml)
+
+
 Read this reference for `.gitignore`, review-policy guard, risk tiering, or CodeRabbit spend controls.
 
 ## `.gitignore` — keep the review policy addable
@@ -203,7 +215,7 @@ unrecognised path is unknown risk, and unknown risk is not low risk.
   unrelated pull request is what gets a control reverted rather than fixed. Add the script
   paths (or a covering glob) to `.claude/review-policy.json` in the SAME commit that syncs
   the asset. Measured 2026-09-09 across 26 repos with both a workflow and a policy, six
-  needed that paired edit.
+  needed that paired edit. Check each consumer rather than relying on that dated sample.
 
   The glob matcher mirrors `glob_to_regex` in the `pr-review-policy` hook exactly
   (`**/` → `(.*/)?`, `**` → `.*`, `*` → `[^/]*`, `?` → `[^/]`), so a repository covering

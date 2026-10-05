@@ -8,7 +8,7 @@ description: Use when the user asks why Azure spend is high, wants repo-aware co
 Reconcile live Azure spend with the code and IaC that require it. Produce a
 ranked, risk-annotated report; make no changes.
 
-Read `~/.agents/notes/deploy-and-ci-traps.md`, then read
+Read `~/.agents/notes/deploy-and-ci-traps.md` (if that note is not present, proceed and record the assumption), then read
 [references/runbook.md](references/runbook.md) before gathering evidence.
 
 ## Quick Reference
@@ -59,3 +59,5 @@ sizing recommendation that depends on the affected series, mark the omitted peri
 retention-truncated series used to satisfy both this skill-wide stop and the runbook's
 "mark it UNVERIFIED and default conservatively" instruction at the same time, so the same
 reachable scenario executed differently per operator and per runtime.
+
+Supporting files: Run `test/verify-contract.ps1` for local contract checks.

@@ -1,0 +1,64 @@
+{
+  "_comment": "Per-phase model routing. Follows the skill's own five-step audit flow. Note that capture-state and classify-and-publish are the same comparison at both ends of the run - the second is not cheaper for being a repeat, because it is what decides Incomplete. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "capture-state",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Captures root, HEAD, branch, the exact status body and a content fingerprint including the staged half, then runs the inventory script. Every element is a named command whose output is recorded verbatim; the skill specifies the exact scope precisely so no judgement is required here.",
+      "adjust": []
+    },
+    {
+      "id": "select-workload",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Chooses a representative workload, preferring an existing benchmark after checking its design. Representativeness is the judgement the whole audit rests on - measuring the wrong workload precisely produces confident numbers about nothing. In artifact mode this also decides whether the supplied artifacts can be interpreted safely at all.",
+      "adjust": [
+        {
+          "when": "existingBenchmarks == 0",
+          "step": 1,
+          "why": "With no existing benchmark to inherit, the workload has to be reasoned from the application's actual behaviour rather than adopted and checked."
+        }
+      ]
+    },
+    {
+      "id": "measure-and-attribute",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Establishes correctness and a baseline, then measures and attributes. Attribution is the load-bearing step: the skill requires a static best-practice observation to stay an explicitly unmeasured hypothesis until it is linked to a measurement, and the failure mode is promoting a plausible one to a finding.",
+      "adjust": [
+        {
+          "when": "benchmarkUnstable > 0",
+          "step": 1,
+          "why": "An unstable benchmark is a stop condition, and telling genuine instability from an artefact of the harness is exactly the judgement that decides whether any number here can be published."
+        }
+      ]
+    },
+    {
+      "id": "cost-candidates",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Reports performance delta, measurement cost, engineering and operational cost, and commercial impact for each measurable candidate. Bounded by the costing reference, but currency must stay unknown unless every required input was supplied, so the discipline is refusing to complete a figure rather than computing one.",
+      "adjust": []
+    },
+    {
+      "id": "classify-and-publish",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Builds the evidence contract including negative, neutral and missing evidence, recaptures the step-1 fingerprint at the same scope, runs the boundary probe, and publishes. The decision that matters is Incomplete: a tracked change, or an untracked change under the audit's own directories, must stop the run and still publish a Blocked-depth manifest, because publishing nothing reads to the estate sweep as never audited.",
+      "adjust": [
+        {
+          "when": "preservationMismatch > 0",
+          "step": 1,
+          "why": "A fingerprint mismatch means deciding whether the tree genuinely changed or the comparison scope drifted, and the wrong call either discards a valid audit or publishes one taken over a mutated tree."
+        }
+      ]
+    }
+  ]
+}

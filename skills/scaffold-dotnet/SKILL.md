@@ -5,6 +5,16 @@ description: Use when creating a new .NET project or solution, or when applying 
 
 # Scaffold .NET
 
+## Checklist
+
+Use Preferences below as the complete scaffold contract; this checklist records completion, rather than repeating its settings.
+
+- [ ] Confirm existing layout/target preservation and authorized migrations.
+- [ ] Apply Solution Structure, Project Defaults, Date and Time, Code Style and Analysis, and Resource Files.
+- [ ] Invoke `scaffold-tests` for tests and `scaffold-ci` for visibility-appropriate workflows/security/review-policy rules.
+- [ ] Resolve package versions, restore, build, and test against the documented exceptions.
+- [ ] Run repository-local formatting and its check; isolate initial formatting from semantic changes.
+
 ## Overview
 
 Apply standard .NET project and solution preferences when creating new projects or normalizing existing ones. Existing-project normalization preserves its target frameworks and layout unless a migration is explicitly authorized.
@@ -24,6 +34,41 @@ Apply standard .NET project and solution preferences when creating new projects 
   or Scalar to an existing project.
 - **Estate-wide read-only conformance audit** — use `audit-dotnet-estate`, not
   this modifying skill.
+
+## Example — minimal CLI skeleton
+
+This demonstrates solution layout and repository-local formatting only. It
+intentionally omits the complete scaffold's `Directory.Build.props`,
+`Directory.Packages.props`, `.gitignore`, `nuget.config`, CodeStyle and NodaTime
+references, tests, Dependabot, CI, and Solution Items; apply the checklist and
+the named sibling skills for those surfaces.
+
+```powershell
+# 1. Create solution and layout
+#    `dotnet new sln` writes the solution file into the current directory and does
+#    not create a folder for it, so make the folder first.
+mkdir YourOrg.Example
+cd YourOrg.Example
+dotnet new sln -n YourOrg.Example
+mkdir src, tests
+
+# 2. Add repository-local formatter files
+cp ~/.claude/resources/dotnet-thin.editorconfig .editorconfig
+#    - Tool manifest. `-o .config` is required: since the .NET 10 SDK, a bare
+#      `dotnet new tool-manifest` writes ./dotnet-tools.json, not .config/dotnet-tools.json.
+dotnet new tool-manifest -o .config
+dotnet tool install csharpier --version 1.3.0
+
+# 3. Add projects and wire them in the solution
+dotnet new classlib -n YourOrg.Example.Core -o src/YourOrg.Example.Core
+dotnet sln add src/YourOrg.Example.Core/YourOrg.Example.Core.csproj
+
+# 4. Format and verify
+#    Build the .slnx the SDK created in step 1 — `dotnet new sln` emits .slnx by default.
+dotnet tool restore
+dotnet csharpier format .
+dotnet build YourOrg.Example.slnx --configuration Release
+```
 
 ## Preferences
 
@@ -74,7 +119,7 @@ New projects default to NodaTime for date/time handling (see the date/time secti
 ### Code Style and Analysis
 
 Code style and analyzers are delivered by the shared **`<YourOrg.CodeStyle>`** NuGet
-package (repo: `<your-org>/<your-codestyle-repo>`), **not** by copying an `.editorconfig`.
+package (from the house code-style repository), **not** by copying an `.editorconfig`.
 The package ships a global AnalyzerConfig (every rule + severity), sets
 `EnforceCodeStyleInBuild=true`, and bundles `SonarAnalyzer.CSharp` (pinned). One
 reference makes the whole house style build-enforced, and a rule change ships as a
@@ -98,7 +143,12 @@ version is in use.
   }
   ```
 
-- Add `.gitattributes` with `*.cs text eol=crlf`.
+- **APPEND** `*.cs text eol=crlf` to `.gitattributes`; never create or replace that file
+  here. If the repository's seed commit already wrote it, its `* text=auto eol=lf` line is
+  deliberately first: git applies the LAST matching pattern, so this line only takes effect
+  by coming after it. Rewriting the file would drop the `.bat`/`.cmd`/`.sh`/`.png` rules
+  already established; prepending would make this line dead. On a repository without that
+  file, create it with `* text=auto eol=lf` first and this line after it.
 - Add `.csharpierignore` containing `*.csproj`, `*.props`, `*.targets`, `*.xml`,
   `*.config`, `*.slnx`, `*.xaml`, and `*.axaml`. Do not add a separate
   `.csharpierrc.json`; the shared `.editorconfig` is the single printer config.
@@ -174,7 +224,7 @@ version is in use.
 - **`max_line_length` is CSharpier's print width, not documentation.** The template states
   `120`; CSharpier's own default is `100`. On a NEW scaffold either is fine because nothing is
   formatted yet. On an **existing** repo, copying the template blind re-wraps every C# file
-  that was formatted at a different width — 819 files in `your-repo`, a diff
+  that was formatted at a different width — 819 files in one estate repo, a diff
   that buries whatever change you were actually making. Measure before you copy:
 
   Treat only an active assignment in an applicable C# section as configured; comments and
@@ -210,9 +260,9 @@ version is in use.
   string literals, which is precisely where a real change would hide. Never report a reformat
   as semantics-free on the strength of the diff alone.
 
-  `your-repo` took route 2 first — pinned 100 in review batch 80, with the
+  One estate repo took route 2 first — pinned 100, with the
   deviation documented in its own `.editorconfig` — then switched to route 1 once the cost of
-  carrying a per-repo width was understood, reformatting 516 files in **#279**.
+  carrying a per-repo width was understood, reformatting 516 files in its own follow-up PR.
 
   Refuted if `dotnet csharpier check .` ever passes at both widths on the same tree.
 
@@ -229,11 +279,11 @@ an env var — never a committed literal:
   <packageSources>
     <clear />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-    <add key="YourOrg" value="https://nuget.pkg.github.com/YourOrg/index.json" />
+    <add key="YourOrg" value="https://nuget.pkg.github.com/YOUR_ORG/index.json" />
   </packageSources>
   <packageSourceCredentials>
     <YourOrg>
-      <add key="Username" value="YourOrg" />
+      <add key="Username" value="YOUR_ORG" />
       <add key="ClearTextPassword" value="%GITHUB_PACKAGES_TOKEN%" />
     </YourOrg>
   </packageSourceCredentials>
@@ -243,6 +293,8 @@ an env var — never a committed literal:
   </packageSourceMapping>
 </configuration>
 ```
+
+`YOUR_ORG` is the GitHub org hosting the private feed; supply it explicitly.
 
 Use `YourOrg.*` in the source mapping, not an exact package name like `<YourOrg.CodeStyle>`.
 Exact matches break as soon as a second first-party package is added (e.g. `<YourOrg.CodeStyle>.ArchRules`
@@ -297,7 +349,16 @@ formatter-only `.editorconfig`.
 ### Resource Files
 
 The following files are copied into the new solution. The `.gitignore` and
-`dependabot.yml` are source-controlled in the `.claude` repo under `~/.claude/resources/`.
+`dependabot.yml` source files are owned by the Claude-config repository under
+`~/.claude/resources/`; `scaffold-ci` owns their placement and Dependabot path selection.
+
+**`~/.claude/resources/` is the Claude runtime home, not a shared location.** Codex,
+Kimi Code and both Antigravity runtimes mount this skill but have no such directory,
+so on those runtimes the copy commands below have no source. From a runtime other
+than Claude Code, take these assets from a checkout of that repo, or supply
+equivalents — and say which you did, rather than scaffolding a solution that is
+silently missing its formatter stub or its Dependabot config.
+
 There are **two** `.editorconfig`-shaped files in `~/.claude/resources/` and they do
 different jobs — do not confuse them:
 
@@ -320,61 +381,3 @@ different jobs — do not confuse them:
 > `<YourOrg.CodeStyle>.globalconfig` and release a new package version. Mirror a rule preference
 > into the thin file only when a regression test proves its fixer requires a hierarchical
 > `.editorconfig`, and document it as a compatibility entry.
-
-## Example — minimal CLI skeleton
-
-This demonstrates solution layout and repository-local formatting only. It
-intentionally omits the complete scaffold's `Directory.Build.props`,
-`Directory.Packages.props`, `.gitignore`, `nuget.config`, CodeStyle and NodaTime
-references, tests, Dependabot, CI, and Solution Items; apply the checklist and
-the named sibling skills for those surfaces.
-
-```powershell
-# 1. Create solution and layout
-#    `dotnet new sln` writes the solution file into the current directory and does
-#    not create a folder for it, so make the folder first.
-mkdir YourOrg.Example
-cd YourOrg.Example
-dotnet new sln -n YourOrg.Example
-mkdir src, tests
-
-# 2. Add repository-local formatter files
-cp ~/.claude/resources/dotnet-thin.editorconfig .editorconfig
-#    - Tool manifest. `-o .config` is required: since the .NET 10 SDK, a bare
-#      `dotnet new tool-manifest` writes ./dotnet-tools.json, not .config/dotnet-tools.json.
-dotnet new tool-manifest -o .config
-dotnet tool install csharpier --version 1.3.0
-
-# 3. Add projects and wire them in the solution
-dotnet new classlib -n YourOrg.Example.Core -o src/YourOrg.Example.Core
-dotnet sln add src/YourOrg.Example.Core/YourOrg.Example.Core.csproj
-
-# 4. Format and verify
-#    Build the .slnx the SDK created in step 1 — `dotnet new sln` emits .slnx by default.
-dotnet tool restore
-dotnet csharpier format .
-dotnet build YourOrg.Example.slnx --configuration Release
-```
-
-## Checklist
-
-When scaffolding or normalizing a .NET project, verify:
-
-- [ ] New solutions use `src/` and `tests/`; existing project layout is preserved unless relocation is explicitly authorized
-- [ ] Solution Items folder added with `Directory.Build.props`, `Directory.Packages.props`, `.editorconfig`, `.gitignore`, `nuget.config`
-- [ ] `.github/workflows/` folder created and added to Solution Items — wire CI and visibility-appropriate GitHub security settings via the `scaffold-ci` skill
-- [ ] `.github/dependabot.yml` copied into place
-- [ ] New projects target `net10.0`; existing target frameworks are preserved unless migration is explicitly authorized
-- [ ] `Nullable` and `ImplicitUsings` enabled (via `Directory.Build.props`)
-- [ ] Central package management enabled via `Directory.Packages.props`
-- [ ] `<YourOrg.CodeStyle>` added as a `PackageReference` (`PrivateAssets="all"`) in `Directory.Build.props` — brings the global config, `EnforceCodeStyleInBuild`, and bundled `SonarAnalyzer.CSharp`; do **not** add Sonar separately
-- [ ] Argument validation uses BCL throw-helpers (`ArgumentNullException.ThrowIfNull` etc.); no `Ardalis.GuardClauses` reference
-- [ ] `nuget.config` maps the <your-org> GitHub Packages feed; `read:packages` token wired via env var (not committed)
-- [ ] NodaTime packages added to `Directory.Packages.props`; `IClock`/`TimeProvider` registered in DI; NodaTime JSON serialization wired (`ConfigureForNodaTime`)
-- [ ] Test project(s) created/normalized — see the `scaffold-tests` skill
-- [ ] Package versions checked against `~/.agents/notes/dotnet-runtime-traps.md` (if that note is not present, proceed and record the assumption) and verified by restore, build, and test; documented pins such as `Microsoft.OpenApi` 2.x preserved
-- [ ] Thin `.editorconfig` in place (copied from `~/.claude/resources/dotnet-thin.editorconfig`, not the full `~/.claude/resources/.editorconfig`); only documented formatter-compatibility preferences repeat package-owned values
-- [ ] CSharpier `1.3.0` merged into `.config/dotnet-tools.json`; `.gitattributes` and `.csharpierignore` added
-- [ ] `dotnet tool restore` and `dotnet csharpier format .` completed; initial formatting isolated from semantic changes
-- [ ] `.gitignore` copied from resources
-- [ ] No projects renamed

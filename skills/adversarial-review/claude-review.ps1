@@ -146,18 +146,30 @@ if ($contextPaths) {
     }
 }
 
-$stdin = $sb.ToString()
-
-# Validate -RepoPath BEFORE creating the scratch dir, so the exit-2 path cannot
-# leak it (the finally that removes $scratch only covers what follows).
-$repoResolved = $null
+# The reviewer runs in a throwaway scratch cwd (see below), so a repo-relative path -- in
+# this instruction, or in a finding handed to a Phase-4 verifier -- resolves to nothing
+# unless the root is stated. Without it a repo-aware seat lists an empty directory and
+# reports the cited code as ABSENT. Measured 2026-09-07 (run 20260907T132023Z): two
+# Phase-4 verifications returned INDETERMINATE "no such file" against a clean tree that
+# contained every cited path; the same wrapper and model CONFIRMED both once the root was
+# named. Resolved HERE rather than beside --add-dir so the prompt and the granted
+# directory can never disagree.
 if ($RepoPath) {
     $repoResolved = (Resolve-Path -LiteralPath $RepoPath -ErrorAction SilentlyContinue)?.Path
     if (-not $repoResolved) {
         Write-Error "RepoPath not found: $RepoPath"
         exit 2
     }
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("--- REPOSITORY ROOT: $repoResolved ---")
+    [void]$sb.AppendLine('Your working directory is a scratch directory, NOT the repository.')
+    [void]$sb.AppendLine('The repository above is readable. Every repo-relative path in this')
+    [void]$sb.AppendLine('prompt is relative to that root -- read files there, not from the')
+    [void]$sb.AppendLine('working directory. An empty working directory is expected and is NOT')
+    [void]$sb.AppendLine('evidence that a file is missing.')
 }
+
+$stdin = $sb.ToString()
 
 # Run from a throwaway working directory so the repo's own CLAUDE.md / project
 # context cannot bias the review. --permission-mode plan = read-only (no edit,
@@ -182,7 +194,16 @@ $claudeArgs = @(
     '--permission-mode', 'plan'
 )
 
-if ($repoResolved) {
+# Forward the reasoning effort the caller asked for. This was declared and
+# documented from the start and never appended, so every value run-review.ps1
+# passed was accepted and discarded - and because the driver only passes -Effort
+# to wrappers that DECLARE it, the declaration is what convinced it the
+# capability was real. The Claude seat ran at "high" and the Opus adjudicator at
+# "max" on paper, at the CLI default in fact, on every panel run.
+if ($Effort) { $claudeArgs += @('--effort', $Effort) }
+
+if ($RepoPath) {
+    # $repoResolved was resolved and validated above, where the prompt disclosure is built.
     # Read-only repo access: the reviewer may read surrounding context but the
     # plan permission mode still forbids any mutation.
     $claudeArgs += @('--add-dir', $repoResolved, '--tools', 'Read,Grep,Glob')

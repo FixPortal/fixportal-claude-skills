@@ -1,0 +1,41 @@
+{
+  "_comment": "Per-phase model routing. review-sweep orchestrates adversarial-review; it never reviews code itself. Note the execute phase: the panel's own models come from reviewers.json, not from here, so this tier advises only the orchestrator that dispatches them. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "discover-and-preflight",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Enumerates top-level git repositories, proves each is clean and on the approved merged mainline, and runs each wrapper's documented PREFLIGHT_COMMAND against its PREFLIGHT_SUCCESS. Every check is a specified command compared against a specified result.",
+      "adjust": [
+        {
+          "when": "repoCount > 20",
+          "step": 1,
+          "why": "A wide sweep multiplies the chance of a per-repository anomaly - a detached HEAD, a non-default mainline, a worktree - that has to be judged rather than matched against the expected string."
+        }
+      ]
+    },
+    {
+      "id": "triage-scope",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "why": "Decides skip, drift or audit per repository from review-digest's rows, and holds the pass to one named subsystem. It must evaluate scopeValidation before hasTrackedSource and treat ambiguous evidence as UNKNOWN and stop, which is exactly the distinction between absent evidence and evidence of absence - the failure a cheaper tier makes silently.",
+      "adjust": [
+        {
+          "when": "unknownRows > 0",
+          "step": 1,
+          "why": "An UNKNOWN row is the stop condition. Judging whether the evidence is genuinely ambiguous or merely unread is the decision that keeps a whole repository from being skipped unreviewed."
+        }
+      ]
+    },
+    {
+      "id": "approve-execute-and-summarise",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Presents one approval message covering targets, chunks, degradation and metered cost, runs the approved adversarial-review invocations to completion without per-repository check-ins, and emits one cross-repository summary at the end. The reviewing intelligence is the panel's, chosen by reviewers.json; this phase sequences it and must not substitute same-host workers.",
+      "adjust": []
+    }
+  ]
+}

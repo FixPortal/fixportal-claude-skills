@@ -16,6 +16,9 @@ foreach ($needle in '[Authorize]', '[AllowAnonymous]', 'ApiBehaviorOptions', 'bi
                     'EndpointDataSource', 'exact multiset match', 'stop and keep the controller') {
     if ($all -notmatch [regex]::Escape($needle)) { throw "missing conversion invariant: $needle" }
 }
+foreach ($needle in 'preserve its existing gating', 'existing surfaces keep their gating', 'JsonOptions', 'Accept: application/json') {
+    if ($all -notmatch [regex]::Escape($needle)) { throw "missing back-ported guidance: $needle" }
+}
 foreach ($stale in 'IFusionCache', 'FakeDatabase', 'GetOrSet', 'CompanyController') {
     if ($reference -match [regex]::Escape($stale)) { throw "example still depends on undefined collaborator: $stale" }
 }

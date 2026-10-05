@@ -43,7 +43,7 @@ $required = @(
     'staggered weekly UTC schedule'
     # The range scan resolves base.sha, which a default shallow checkout does not
     # contain. Without this the gate passes by scanning nothing, which is worse than
-    # having no gate at all. Raised by Gitar on PR #45.
+    # having no gate at all.
     #
     # Anchored to the indented YAML line, not any mention: the surrounding prose also
     # says `fetch-depth: 0`, and an unanchored form was satisfied by that prose even

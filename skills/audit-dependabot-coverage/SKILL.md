@@ -9,16 +9,18 @@ Answer one question per repository: does each selected Dependabot alert have an 
 Dependabot PR for the same package and target, or is it an unmatched alert requiring
 human review?
 
+<!-- routing: reconcile -->
 ```powershell
 pwsh -File ~/.agents/skills/audit-dependabot-coverage/reconcile.ps1
 ```
 
 This is an outcome check. `audit-ci` checks configuration; enabled and unpaused
 security updates can still leave an alert unactioned. Investigation history lives
-in trap 16 of `~/.agents/notes/npm-publishing-traps.md`.
+in trap 16 of `~/.agents/notes/npm-publishing-traps.md` (if that note is not present, proceed and record the assumption).
 
 ## Decision contract
 
+<!-- routing: interpret-output -->
 - Read-only: never dismiss alerts, open PRs, or close anything.
 - Enumerate the live estate and all open Dependabot PRs without silent caps.
 - Never report unread evidence as clean. API failures appear under NOT CHECKED with
@@ -69,3 +71,5 @@ failure mode and investigation sequence.
 Run after each repository's configured Dependabot schedules have had enough time to
 produce PRs. Do not assume one universal estate schedule. This is not a SessionStart
 hook because the live-estate API sweep adds avoidable startup latency.
+
+Supporting files: Run `test/verify-matcher.ps1` for local contract checks.

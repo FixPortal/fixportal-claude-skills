@@ -8,14 +8,14 @@ function Assert-That {
 }
 
 $skillPath = Join-Path $PSScriptRoot '..'
-$auditPath = Join-Path $skillPath '..\audit-dotnet-performance'
-$manifestValidator = Join-Path $auditPath 'scripts\test-performance-manifest.ps1'
- $manifestPath = Join-Path $PSScriptRoot 'fixtures\current.manifest.json'
+$auditPath = Join-Path $skillPath '..' 'audit-dotnet-performance'
+$manifestValidator = Join-Path $auditPath 'scripts' 'test-performance-manifest.ps1'
+ $manifestPath = Join-Path $PSScriptRoot 'fixtures' 'current.manifest.json'
 
 foreach ($resource in @(
     (Join-Path $skillPath 'SKILL.md'),
-    (Join-Path $skillPath 'references\experiment-runbook.md'),
-    (Join-Path $skillPath 'references\change-record.md'),
+    (Join-Path $skillPath 'references' 'experiment-runbook.md'),
+    (Join-Path $skillPath 'references' 'change-record.md'),
     $manifestValidator,
     $manifestPath
 )) {

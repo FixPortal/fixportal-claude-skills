@@ -1,778 +1,498 @@
+#requires -Version 7
+<#
+.SYNOPSIS
+Collects adversarial-review coverage per repository: usable reviews, the files each still covers,
+commits since each, and a DRIFT score. Read-only over repositories and the vault.
+Score counts commits since a usable review, weighted by its age (changed files, after a history
+reset). Source no usable run covers is reported but not scored while the repository has some
+usable review: reviews here are targeted at new work. A repository with source and NO usable
+review is queued first unless it is on the exemption list (vendored forks and the like).
+.DESCRIPTION
+A vault run (<VaultRoot>\<folder>\<run>\_index.md) attaches to a scanned repository when the folder
+name equals the repository folder name or the index carries `repo-path:` naming it. A run is USABLE
+when its frontmatter has `date: yyyy-MM-dd`, `target: <base>..<tip>` (a `..HEAD` right side is
+allowed only with `head: <sha>`), a tip on the repository's HEAD ancestry, `scope-kind` of
+repository or subsystem (missing means repository unless paths are declared), and for subsystem a
+`reviewed-paths:` (or legacy `subsystem:`) list matching files at the tip. A run covers the files
+its target range changed within its paths; an empty-tree base covers every file at the tip.
+Each tracked file belongs to the newest usable run covering it. Everything else is `unusable`
+with a reason or `uncovered`; neither is evidence of no review. A run carrying a
+`coverage-waiver: <reason>` is `coverage-waived` - its author read it, found its coverage
+unreconstructable, and said so in the record; it is reported apart from the unreadable ones.
+#>
 [CmdletBinding()]
 param(
-  [string]$Path = '<workdir>',
-  [string]$OutFile = (Join-Path $env:TEMP 'review-digest-data.json'),
-  [string]$VaultRoot = '<vault>\Claude\Adversarial Review',
-  # Roots searched to resolve a vault folder whose code lives outside $Path. Only used as a
-  # fallback when the report carries no file:/// links to resolve from.
-  [string[]]$RepoRoots = @()
+    # No hardcoded default: the estate root is machine-local and must be supplied explicitly.
+    [string[]]$Path,
+    [string]$OutFile = (Join-Path $env:TEMP 'review-digest-data.json'),
+    # No hardcoded default: the vault path is machine-local and must be supplied explicitly.
+    [string]$VaultRoot,
+    # Repositories (canonical origin name or folder name) deliberately never reviewed: vendored
+    # forks, generated databases, second checkouts. They are scanned and reported but never
+    # ranked as missing a review.
+    [string[]]$Exempt = @(),
+    # JSON { paths, vaultRoot, exempt: [{ repo, reason }] } holding the estate's scope once, so
+    # the scan roots and exemptions are not retyped per run. Explicit parameters win.
+    [string]$EstateFile
 )
+$exemptReason = @{}
+if ($PSBoundParameters.ContainsKey('Exempt')) { foreach ($e in $Exempt) { $exemptReason[$e] = '' } }
+if ($EstateFile) {
+    $estate = Get-Content -LiteralPath $EstateFile -Raw | ConvertFrom-Json
+    if (-not $Path) { $Path = @($estate.paths | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_) }) }
+    if (-not $VaultRoot) { $VaultRoot = $estate.vaultRoot }
+    if (-not $PSBoundParameters.ContainsKey('Exempt')) { foreach ($e in @($estate.exempt)) { if ($e.repo) { $exemptReason[$e.repo] = "$($e.reason)" } } }
+}
+if (-not $Path) { throw "Path is required: pass the repository or estate-root folder(s) to scan." }
+if (-not $VaultRoot) { throw "VaultRoot is required: pass the vault's 'Claude\Adversarial Review' folder." }
 $ErrorActionPreference = 'Stop'
+$emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+# state-of-play reads this variable by name to classify source paths. Keep the name.
+# Generated designer and EF model-snapshot files are not review workload.
+$sourceExtRegex = '^(?!.*(?:\.Designer\.cs|ModelSnapshot\.cs)$).*(?:\.(cs|ts|tsx|js|jsx|mjs|cjs|py|go|java|rb|rs|cpp|cc|c|h|hpp|kt|swift|php|scala|sql|ps1|psm1|sh|bicep|vue|svelte|fs|fsx|razor|cshtml|xaml|tf|proto|css|scss|sass|less)$|(?:^|/)Dockerfile(?:\..+)?$|(?:^|/)\.github/workflows/[^/]+\.ya?ml$)'
 
-if (-not (Test-Path $Path -PathType Container)) {
-  Write-Error "Path not a folder: $Path"; exit 2
+# Emits git's non-empty output lines. Success with no output and failure both emit nothing;
+# a caller that must tell them apart reads $LASTEXITCODE immediately after the call.
+function Invoke-Git([string]$Repo, [string[]]$Arguments) {
+    & git -C $Repo -c core.quotepath=false @Arguments 2>$null | Where-Object { $_ }
+}
+function Normalize([string]$P) { if (-not $P) { return '' } ([IO.Path]::GetFullPath($P)).TrimEnd('\', '/').ToLowerInvariant() }
+function Canonical-Label([string]$Repo, [string]$Fallback) {
+    $origin = @(Invoke-Git $Repo @('remote', 'get-url', 'origin'))[0]
+    $name = if ($origin) { (($origin -replace '^.*[\\/]', '') -replace '\.git$', '') } else { $Fallback }
+    $n = Normalize $Repo
+    if ($n -eq (Normalize (Join-Path $HOME '.claude')) -or $n -eq (Normalize (Join-Path $HOME '.agents/skills'))) {
+        return "$name (live home)"
+    }
+    if ($n -eq (Normalize (Join-Path $HOME '.agents/docs'))) { return "$name (live home; notes backing checkout)" }
+    return $name
 }
 
-# Markers that identify a review/remediation commit from its subject (case-insensitive).
-# Broad words in a commit body are not review evidence.
-$strictReviewEvidenceRegex = '\b(?:review(?:er[- ]findings)?|adversarial[- ]audit)[- ](?:batch|run)\s*#?\d+\b'
-$strictReviewTrailerRegex = '^(?:review(?:er[- ]findings)?|adversarial[- ]audit)[- ](?:batch|run):\s*#?\d+\s*$'
-$markerRegex = "^(?:fix\(review\):|.*$strictReviewEvidenceRegex)"
-
-# Web-quality sweeps (react-doctor / optimise-web / a11y) are committed with the same
-# reviewer-findings marker but are NOT adversarial reviews. They must never anchor the
-# review boundary, or a repo with real unreviewed feature work reports a false sinceReview=0.
-$webQualityRegex = 'react-doctor|optimi[sz]e-web|web-quality|a11y|accessibilit|lighthouse|perf micro'
-
-# Enumerate top-level git repos under $Path. If $Path is itself a repo, digest
-# just that one - SKILL.md documents "a single repo name/path -> digest just that
-# one repo", and without this the scan only ever looks one level down, so passing
-# a repo's own directory exits 3 on the repo you just named.
-if (Test-Path (Join-Path $Path '.git')) {
-  $repos = @(Get-Item -LiteralPath $Path)
-}
-else {
-  $repos = @(Get-ChildItem $Path -Directory | Where-Object {
-    Test-Path (Join-Path $_.FullName '.git')
-  })
-}
-if (-not $repos) { Write-Error "No git repos under $Path"; exit 3 }
-
-function Test-IsDocumentReviewText {
-  param([string]$Text)
-  if ($Text -match '(?im)^scope-kind:\s*document\s*$') { return $true }
-  $rt = [regex]::Match($Text, '(?im)^review-type:\s*(.+)$')
-  if ($rt.Success -and $rt.Groups[1].Value -match '(?i)\b(plan|document)[- ]audit\b|\bdocument[- ]review\b') { return $true }
-  $gm = [regex]::Match($Text, '(?im)^-?\s*target:\s*(.+)$')
-  if (-not $gm.Success) { return $false }
-  $target = $gm.Groups[1].Value.Trim()
-  if ($target -match '^([''"])(.*)\1$') { $target = $Matches[2] }
-  return $target -match '\.(html?|pdf|docx?|md|txt|rtf|odt)\s*$' -or
-    $target -match '(?i)^\s*(design|proposal|specification|document)\b\s*[-—:]'
-}
-
-function Test-IsSubsystemRunText {
-  param([string]$Text)
-  $kind = [regex]::Match($Text, '(?im)^scope-kind:\s*(repository|subsystem|document)\s*$')
-  if ($kind.Success) { return $kind.Groups[1].Value -eq 'subsystem' }
-  return [regex]::IsMatch($Text, '(?im)^subsystem:') -or
-    [regex]::IsMatch($Text, '(?im)^target:\s*audit\s+--\s+\S')
-}
-
-function Get-VaultData {
-  param([string]$RepoName, [string]$VaultRoot)
-  $empty = [pscustomobject]@{ exists = $false; indexPath = $null; runName = $null; reviewers = @(); judge = $null; date = $null; reviewType = $null; scopeKind = $null; disposition = $null; remediationTip = $null; tally = $null; reportFiles = @(); reviewTarget = $null; reviewScope = $null; isDocumentReview = $false; subsystemPath = $null; subsystemPaths = @(); excludedPaths = @() }
-  $repoDir = Join-Path $VaultRoot $RepoName
-  if (-not (Test-Path $repoDir)) { return $empty }
-  # Each run is a timestamped subfolder holding _index.md. Pick the run with the newest frontmatter date (fallback: folder mtime).
-  $runs = Get-ChildItem $repoDir -Directory | Where-Object { Test-Path (Join-Path $_.FullName '_index.md') }
-  if (-not $runs) { return $empty }
-  $codeRuns = @($runs | Where-Object {
-    -not (Test-IsDocumentReviewText -Text (Get-Content (Join-Path $_.FullName '_index.md') -Raw))
-  })
-  $wholeRepoRuns = @($codeRuns | Where-Object {
-    -not (Test-IsSubsystemRunText -Text (Get-Content (Join-Path $_.FullName '_index.md') -Raw))
-  })
-  $selectable = if ($wholeRepoRuns.Count) { $wholeRepoRuns } elseif ($codeRuns.Count) { $codeRuns } else { $runs }
-  $best = $null; $bestDate = [datetime]::MinValue; $bestName = ''
-  foreach ($run in $selectable) {
-    $idx = Join-Path $run.FullName '_index.md'
-    [datetime]$fmDate = [datetime]::MinValue
-    $head = Get-Content $idx -TotalCount 12
-    $dm = ($head | Select-String -Pattern '^date:\s*(\d{4}-\d{2}-\d{2})').Matches
-    # ISO day from frontmatter: parse exactly, culture-invariantly. A bare TryParse is
-    # culture-dependent and a non-Gregorian or day-first culture can refuse or misread it.
-    if ($dm.Count) { [datetime]::TryParseExact($dm[0].Groups[1].Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$fmDate) | Out-Null }
-    $effective = if ($fmDate -gt [datetime]::MinValue) { $fmDate } else { $run.LastWriteTime }
-    # Frontmatter dates are day-granular, so two same-day runs of one repo tie. Break the tie
-    # toward the later run FOLDER NAME (a sortable UTC timestamp, 20260528T221207Z) so the newest
-    # run wins — not whichever Get-ChildItem happened to return first. Missing this picked an
-    # earlier run whose report lacked the later run's scope sha, defeating sha resolution.
-    if ($effective -gt $bestDate -or ($effective -eq $bestDate -and $run.Name -gt $bestName)) {
-      $bestDate = $effective; $best = $run; $bestName = $run.Name
-    }
-  }
-  if (-not $best) { return $empty }
-  $idx = Join-Path $best.FullName '_index.md'
-  $text = Get-Content $idx -Raw
-  $reviewers = @(); $judge = $null; $date = $null; $reviewType = $null
-  $rm = [regex]::Match($text, '(?im)^reviewers:\s*\[([^\]]*)\]')
-  if ($rm.Success) { $reviewers = @($rm.Groups[1].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-  $jm = [regex]::Match($text, '(?im)^judge:\s*(.+)$');        if ($jm.Success) { $judge = $jm.Groups[1].Value.Trim() }
-  $dm2 = [regex]::Match($text, '(?im)^date:\s*(\d{4}-\d{2}-\d{2})'); if ($dm2.Success) { $date = $dm2.Groups[1].Value }
-  $tm = [regex]::Match($text, '(?im)^review-type:\s*(.+)$');  if ($tm.Success) { $reviewType = $tm.Groups[1].Value.Trim() }
-  $scopeKind = $null; $disposition = $null; $remediationTip = $null
-  $km = [regex]::Match($text, '(?im)^scope-kind:\s*(repository|subsystem|document)\s*$'); if ($km.Success) { $scopeKind = $km.Groups[1].Value }
-  $disp = [regex]::Match($text, '(?im)^disposition:\s*(open|reviewed|remediated)\s*$'); if ($disp.Success) { $disposition = $disp.Groups[1].Value }
-  $rem = [regex]::Match($text, '(?im)^remediation-tip:\s*([0-9a-f]{40})\s*$'); if ($rem.Success) { $remediationTip = $rem.Groups[1].Value }
-  # A review's TARGET distinguishes a code review from a DOCUMENT review. resumes-cv carries
-  # `target: your-cv.html` — a CV, not code. Without recording this, the resolver
-  # credits a document review as code coverage and the ledger keeps ranking a reviewed CV as an
-  # unreviewed code repo. A target ending in a document extension is not code coverage.
-  $reviewTarget = $null; $reviewScope = $null; $isDocumentReview = $false
-  $gm = [regex]::Match($text, '(?im)^target:\s*(.+)$'); if ($gm.Success) { $reviewTarget = $gm.Groups[1].Value.Trim() }
-  $scopeMatch = [regex]::Match($text, '(?im)^scope:\s*(.+)$'); if ($scopeMatch.Success) { $reviewScope = $scopeMatch.Groups[1].Value.Trim() }
-  # Strip a surrounding matched YAML quote so `target: "report.pdf"` still hits the extension test.
-  if ($reviewTarget -match '^([''"])(.*)\1$') { $reviewTarget = $Matches[2] }
-  if ($reviewScope -match '^([''"])(.*)\1$') { $reviewScope = $Matches[2] }
-  $isDocumentReview = Test-IsDocumentReviewText -Text $text
-  # Tally: prefer a "## Tally" section; support inline "Label: N" and table "| Label | N |" forms.
-  $tallyScope = if ($text -match '(?s)##\s*Tally[^\n]*\n(.*?)(?=\n##|\z)') { $Matches[1] } else { $text }
-  $tally = $null
-  $sev = @{}
-  foreach ($label in 'Critical','High','Medium','Low') {
-    $sm = [regex]::Match($tallyScope, "(?im)^\s*\|\s*$label\s*\|\s*(\d+)\s*\|")   # table row
-    # Inline: the (?<![\w-]) lookbehind blocks substring hits inside longer words —
-    # with no ## Tally section the scope is the whole document, and a bare
-    # case-insensitive match read "Workflow: 5" as Low and "Non-critical: 4" as Critical.
-    if (-not $sm.Success) { $sm = [regex]::Match($tallyScope, "(?im)(?<![\w-])$label\s*:\s*(\d+)") }  # inline
-    if ($sm.Success) { $sev[$label] = [int]$sm.Groups[1].Value }
-  }
-  if ($sev.Count) { $tally = [pscustomobject]$sev }
-  # A SUBSYSTEM-scoped review must not establish a REPO-WIDE boundary. review-sweep
-  # mandates one-subsystem passes, so without this the boundary sha is computed over the
-  # whole tree: neverReviewed flips false and sinceReviewCount reads 0 for everything the
-  # panel never looked at, and the triage table then classes a never-reviewed subsystem
-  # `skip` - permanently, because the next sweep sees the same repo-wide boundary.
-  # Preferred source is an explicit `subsystem:` key; failing that, an `audit -- <pathspec>`
-  # target names its own scope.
-  $subsystemPaths = @()
-  $excludedPaths = @()
-  if ($scopeKind -eq 'subsystem') {
-    $rpm = [regex]::Match($text, '(?im)^reviewed-paths:[ \t]*\r?\n((?:[ \t]+-[ \t]*.+\r?\n?)+)')
-    if ($rpm.Success) {
-      $subsystemPaths = @($rpm.Groups[1].Value -split '\r?\n' |
-        ForEach-Object { ($_ -replace '^[ \t]+-[ \t]*', '').Trim().Trim('"', "'", '`') } |
-        Where-Object { $_ })
-    }
-  }
-  $epm = [regex]::Match($text, '(?im)^excluded-paths:[ \t]*\r?\n((?:[ \t]+-[ \t]*.+\r?\n?)+)')
-  if ($epm.Success) {
-    $excludedPaths = @($epm.Groups[1].Value -split '\r?\n' |
-      ForEach-Object { ($_ -replace '^[ \t]+-[ \t]*', '').Trim().Trim('"', "'", '`') } |
-      Where-Object { $_ })
-  }
-  $sm2 = [regex]::Match($text, '(?im)^subsystem:[ \t]*(.*)$')
-  if (-not $scopeKind -and $sm2.Success) {
-    $inline = $sm2.Groups[1].Value.Trim()
-    if ($inline -match '^\[(.*)\]$') {
-      $subsystemPaths = @($Matches[1] -split ',' | ForEach-Object { $_.Trim().Trim('"', "'", '`') } | Where-Object { $_ })
-    } elseif ($inline) {
-      $subsystemPaths = @($inline.Trim('"', "'", '`'))
-    } else {
-      $tail = $text.Substring($sm2.Index + $sm2.Length)
-      foreach ($line in @($tail -split '\r?\n')) {
-        if (-not $line.Trim()) { continue }
-        if ($line -notmatch '^\s+-\s+(.+?)\s*$') { break }
-        $subsystemPaths += $Matches[1].Trim().Trim('"', "'", '`')
-      }
-    }
-  }
-  if (-not $scopeKind -and -not $subsystemPaths.Count -and $reviewTarget -match '(?i)^\s*audit\s+--\s+(.+?)\s*$') {
-    $subsystemPaths = @($Matches[1].Trim().Trim('"', "'", '`'))
-  }
-  $subsystemPath = if ($subsystemPaths.Count -eq 1) { $subsystemPaths[0] } else { $null }
-  $reports = @(Get-ChildItem $best.FullName -Filter 'report*.md' | Select-Object -ExpandProperty Name)
-  [pscustomobject]@{ exists = $true; indexPath = $idx; runName = $best.Name; reviewers = $reviewers; judge = $judge; date = $date; reviewType = $reviewType; scopeKind = $scopeKind; disposition = $disposition; remediationTip = $remediationTip; tally = $tally; reportFiles = $reports; reviewTarget = $reviewTarget; reviewScope = $reviewScope; isDocumentReview = $isDocumentReview; subsystemPath = $subsystemPath; subsystemPaths = @($subsystemPaths); excludedPaths = @($excludedPaths) }
-}
-
-# Resolve a vault folder to the code it actually reviewed, via the file:/// links its
-# report carries. A vault folder is NOT proof of a repo: it may name a SUBSYSTEM of one
-# (e.g. 'widgetservice' = host-app/Framework/Services/WidgetService). Without this, such a row
-# gets an empty git side, remediation becomes undetectable, and it freezes at its original
-# tally forever — which is exactly how three digests reported widgetservice's long-fixed Highs
-# as outstanding. Returns the enclosing git repo + the subsystem sub-path within it.
-function Resolve-VaultTarget {
-  param([string]$IndexPath, [string]$FolderName, [string[]]$RepoRoots, [string]$ScanPath)
-  $miss = [pscustomobject]@{ resolved = $false; repoPath = $null; repoName = $null; subsystemPath = $null }
-  if (-not $IndexPath) { return $miss }
-  $dir = Split-Path $IndexPath -Parent
-  $files = @($IndexPath) + @(Get-ChildItem $dir -Filter 'report*.md' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
-  $texts = foreach ($f in $files) { $x = Get-Content $f -Raw -ErrorAction SilentlyContinue; if ($x) { $x } }
-
-  $paths = foreach ($t in $texts) {
-    # Percent-decode: a standard file:/// link encodes a space as %20, which would otherwise
-    # survive into the path, fail Test-Path, and mark a valid folder unresolved. The capture
-    # stops at ')', whitespace and '#' so a markdown link and its #L40-L56 fragment resolve to
-    # the file itself, and a URI mentioned in prose does not swallow the sentence after it.
-    # Accept BOTH shapes: file:///C:/x (drive-lettered) and file:///abs/posix/path. The
-    # drive-letter-only pattern silently matched nothing on a POSIX host, so every link
-    # resolved to nothing and every vault folder read as unresolved there.
-    foreach ($m in [regex]::Matches($t, 'file:///([^)\s#]+)')) {
-      $raw = [Uri]::UnescapeDataString($m.Groups[1].Value)
-      # file:///C:/x -> 'C:/x'; file:///tmp/x -> 'tmp/x', whose real path is '/tmp/x'.
-      if ($raw -notmatch '^[A-Za-z]:/') { $raw = '/' + $raw.TrimStart('/') }
-      ($raw -replace '/', [IO.Path]::DirectorySeparatorChar)
-    }
-  }
-  $paths = @($paths | Where-Object { $_ } | Select-Object -Unique)
-
-  # (1) file:/// links → walk each up to its nearest enclosing git repo; the most-linked repo wins.
-  # Strongest signal: the link points at a file the review actually touched. A stale link whose
-  # path no longer exists on disk simply finds no .git and drops through to the sha/name fallback.
-  if ($paths) {
-    $hits = foreach ($p in $paths) {
-      $cur = $p
-      while ($cur -and -not (Test-Path (Join-Path $cur '.git'))) {
-        $parent = Split-Path $cur -Parent
-        if (-not $parent -or $parent -eq $cur) { $cur = $null; break }
-        $cur = $parent
-      }
-      if ($cur) { $cur }
-    }
-    $hits = @($hits)
-    if ($hits) { return (Get-SubsystemTarget -Paths $paths -Hits $hits) }
-  }
-
-  # (2) scope-sha resolution — falsifiable, so preferred over a name guess. The report's
-  # `scope: <sha>..HEAD` names the boundary the panel reviewed; that commit resolves in the repo
-  # whose history contains it, or in NONE. This is what survives a prefix rename (budget-tracker
-  # -> personal-budget-tracker) that both the file:/// walk-up and the name search miss: the sha
-  # does not care what the folder or the repo is called. The all-zero empty-tree sha of a
-  # first-commit `0000000..x` diff is ignored — it resolves in every repo and proves nothing.
-  # Seed each candidate root ITSELF when it holds a .git: in single-repo mode $ScanPath is the
-  # repository, and enumerating only its children leaves a vault folder with no sha/name target.
-  # Deduplicate on the canonical full path: if -RepoRoots contains $ScanPath, or one root sits
-  # inside another, the same repo is enumerated TWICE as two DirectoryInfo objects - and the
-  # uniqueness checks below then read one repository as two matches, leaving a uniquely
-  # resolvable folder unresolved.
-  $candidates = @(
-    @(
-      foreach ($root in @(@($ScanPath) + @($RepoRoots) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
-        if (Test-Path (Join-Path $root '.git')) { Get-Item -LiteralPath $root }
-        Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName '.git') }
-      }
-    ) | Group-Object { $_.FullName } | ForEach-Object { $_.Group[0] }
-  )
-  $scopeSha = $null
-  foreach ($tx in $texts) {
-    # Tolerate a surrounding quote as well as a backtick: `scope: "<sha>..HEAD"` is valid YAML,
-    # and Get-VaultData strips it — an intolerant re-parse here fails stage 2 silently and
-    # degrades to the stage-3 name guess.
-    $sm = [regex]::Match($tx, '(?im)scope:\**\s*[''"`]?([0-9a-f]{7,40})\.\.')
-    if ($sm.Success -and ($sm.Groups[1].Value -notmatch '^0+$')) { $scopeSha = $sm.Groups[1].Value; break }
-  }
-  if ($scopeSha) {
-    # Collect ALL matches, not the first: a fork, mirror or worktree also contains the sha, and
-    # taking the first enumeration would silently credit the review to whichever sorted earliest.
-    $shaMatches = @($candidates | Where-Object {
-      & git -C $_.FullName cat-file -e "$scopeSha^{commit}" 2>$null
-      $LASTEXITCODE -eq 0
-    })
-    if ($shaMatches.Count -eq 1) {
-      return [pscustomobject]@{ resolved = $true; repoPath = $shaMatches[0].FullName; repoName = $shaMatches[0].Name; subsystemPath = $null }
-    }
-    if ($shaMatches.Count -gt 1) {
-      Write-Warning ("${FolderName}: scope sha $scopeSha resolves in $($shaMatches.Count) repos (" +
-        (($shaMatches | ForEach-Object { $_.Name }) -join ', ') + ") — ambiguous, leaving unresolved.")
-      return $miss
-    }
-  }
-
-  # (3) name search — weakest, a plausible guess not a proof. Normalised so 'quickfixn' finds
-  # 'quickfix-n'; and now suffix/substring so a PREFIX rename resolves too ('budget-tracker' ->
-  # 'personal-budget-tracker'). Staged exact -> suffix -> contains, closest first. The length
-  # guard keeps a short folder name from spuriously containing itself in an unrelated repo.
-  $want = ($FolderName -replace '[^a-z0-9]', '').ToLowerInvariant()
-  if ($want.Length -ge 4) {
-    foreach ($mode in 'eq', 'suffix', 'contains') {
-      # As with the sha stage above: collect every match and resolve only on a UNIQUE candidate.
-      # 'service-app' vs 'ServiceApp' differ only by enumeration order, and silently taking the
-      # first is how a review gets credited to the wrong repo.
-      $byName = @($candidates | Where-Object {
-        $n = ($_.Name -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
-        switch ($mode) {
-          'eq'       { $n -eq $want }
-          'suffix'   { $want.Length -ge 5 -and $n.EndsWith($want) }
-          'contains' { $want.Length -ge 5 -and $n.Contains($want) }
+# A record's metadata is normally a leading `---` block. A minority of runs instead open with
+# a markdown heading and carry the same keys in the first fenced ```yaml block; the writer is
+# hand-driven per session, so that shape recurs. Read it as a FALLBACK, never as a preference:
+# when a leading block is present it wins outright, so a yaml example quoted later in a report
+# can never displace the record's own metadata. Measured 2026-09-16 over 269 vault records:
+# 260 leading, 2 fenced, 7 neither. Both fenced ones were one repository's 2026-09-15 runs - the
+# newest and largest review that repo has had, dropped as `no-date` and therefore invisible to
+# every coverage report while sitting complete on disk.
+function Read-Frontmatter([string]$File) {
+    $text = Get-Content -LiteralPath $File -Raw
+    $m = [regex]::Match($text, '(?s)\A\s*---\r?\n(.*?)\r?\n---')
+    if (-not $m.Success) { $m = [regex]::Match($text, '(?s)(?:\A|\r?\n)```yaml[ \t]*\r?\n(.*?)\r?\n```') }
+    $fm = @{}
+    if (-not $m.Success) { return $fm }
+    $key = $null
+    foreach ($line in $m.Groups[1].Value -split '\r?\n') {
+        $line = $line -replace '\s+#.*$', ''
+        if ($line -match '^([A-Za-z][\w-]*):\s*(.*)$') {
+            $key = $Matches[1]; $value = $Matches[2].Trim()
+            if ($value -match '^\[(.*)\]$') { $fm[$key] = @($Matches[1] -split ',' | ForEach-Object { $_.Trim().Trim('"', "'", '`') } | Where-Object { $_ }) }
+            elseif ($value) { $fm[$key] = $value.Trim('"', "'", '`') }
+            else { $fm[$key] = @() }
+        } elseif ($key -and $line -match '^\s*-\s*(.*)$') {
+            $fm[$key] = @($fm[$key]) + @($Matches[1].Trim().Trim('"', "'", '`'))
         }
-      })
-      if ($byName.Count -eq 1) {
-        return [pscustomobject]@{ resolved = $true; repoPath = $byName[0].FullName; repoName = $byName[0].Name; subsystemPath = $null }
-      }
-      if ($byName.Count -gt 1) {
-        Write-Warning ("${FolderName}: name search ($mode) matched $($byName.Count) repos (" +
-          (($byName | ForEach-Object { $_.Name }) -join ', ') + ") — ambiguous, leaving unresolved.")
-        return $miss
-      }
     }
-  }
-  return $miss
+    $fm
 }
 
-# Derive the enclosing repo + subsystem sub-path from file:/// walk-up hits. Split out of
-# Resolve-VaultTarget so the file-link branch can return early while the sha/name fallbacks stay
-# flat below it.
-function Get-SubsystemTarget {
-  param([string[]]$Paths, [string[]]$Hits)
-  $repoPath = ($hits | Group-Object | Sort-Object Count -Descending | Select-Object -First 1).Name
-  # Deepest common directory of the linked files, relative to the repo root = the subsystem.
-  # The separator boundary is load-bearing: a bare StartsWith($repoPath) also swallows SIBLING
-  # repos whose name merely extends this one — e.g. `svc` and `svc-acme`, a pair that links
-  # to each other. Without the boundary a sibling's path yields a relative segment like
-  # '-acme\src\x.cs', which corrupts the common-prefix walk and the derived subsystem.
-  # Separator-agnostic: these paths carry the HOST separator, so a hardcoded '\' made
-  # $repoPrefix unmatchable on a POSIX host - every path fell out of $rels and every
-  # subsystem collapsed to null, silently turning a subsystem review into a whole-repo one.
-  $sep = [IO.Path]::DirectorySeparatorChar
-  $repoPrefix = $repoPath.TrimEnd('\', '/') + $sep
-  $rels = @($paths | Where-Object {
-      $_.Equals($repoPath, [StringComparison]::OrdinalIgnoreCase) -or
-      $_.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)
-    } |
-    ForEach-Object { $_.Substring($repoPath.Length).TrimStart('\', '/') } | Where-Object { $_ })
-  $sub = $null
-  if ($rels) {
-    $segs = @($rels | ForEach-Object { , @($_ -split '[\\/]') })
-    $common = @()
-    for ($i = 0; $i -lt ($segs | ForEach-Object { $_.Count } | Measure-Object -Minimum).Minimum; $i++) {
-      $seg = $segs[0][$i]
-      if (@($segs | Where-Object { $_[$i] -ne $seg }).Count) { break }
-      $common += $seg
-    }
-    # Drop a trailing file name (a leaf with an extension is not a directory). The leaf must
-    # not START with a dot: an unanchored '\.\w+$' also matches a dot-initial DIRECTORY segment
-    # ('.github'), and when that is the sole common segment the drop nulls subsystemPath and
-    # silently turns a subsystem review into a repo-wide one (links diverging directly beneath
-    # '.github/' reach this shape). The Count -gt 1
-    # guard is load-bearing: for a single segment, $common[0..($common.Count - 2)] is
-    # $common[0..-1], and PowerShell expands 0..-1 to the range 0,-1 — indexing element 0 AND
-    # the last element, which DUPLICATES the sole segment instead of dropping it. That yielded
-    # subsystemPath='Program.cs\Program.cs' and isSubsystem=$true — a false subsystem, the exact
-    # misclassification this function exists to prevent. Reachable whenever a report's only
-    # file:/// links point at a repo-root file.
-    if ($common.Count -and $common[-1] -notmatch '^\.' -and $common[-1] -match '\.\w+$') {
-      $common = if ($common.Count -gt 1) { $common[0..($common.Count - 2)] } else { @() }
-    }
-    if ($common.Count) { $sub = ($common -join [IO.Path]::DirectorySeparatorChar) }
-  }
-  [pscustomobject]@{
-    resolved = $true; repoPath = $repoPath
-    repoName = (Split-Path $repoPath -Leaf); subsystemPath = $sub
-  }
+# The commit a recorded sha names on HEAD's history. Rebase-merge rewrites a reviewed branch
+# tip, so a sha off HEAD resolves to the one commit on HEAD with the identical tree; anything
+# less exact is 'off-head'. Nothing is returned when the repository has no such object.
+function Resolve-OnHead([string]$Repo, [string]$Head, [string]$Sha) {
+    $commit = @(Invoke-Git $Repo @('rev-parse', '--verify', "$Sha^{commit}"))[0]
+    if (-not $commit) { return }
+    $null = Invoke-Git $Repo @('merge-base', '--is-ancestor', $commit, $Head)
+    if ($LASTEXITCODE -eq 0) { return $commit }
+    $tree = @(Invoke-Git $Repo @('rev-parse', "$commit^{tree}"))[0]
+    $same = @(Invoke-Git $Repo @('log', '--format=%H %T', $Head) | Where-Object { $_.EndsWith(" $tree") })
+    if (-not $same.Count) { return 'off-head' }
+    ($same[0] -split ' ')[0]
 }
 
-function Get-ValidatedSubsystemScope {
-  param([string]$RepoPath, [string[]]$Paths)
-  $paths = @($Paths | Where-Object { $_ })
-  if (-not $paths.Count) { return [pscustomobject]@{ paths = @(); validation = 'none' } }
-  foreach ($pathspec in $paths) {
-    $tracked = @(& git -C $RepoPath ls-files -- $pathspec 2>$null)
-    if ($LASTEXITCODE -ne 0 -or -not $tracked.Count) {
-      return [pscustomobject]@{ paths = $paths; validation = 'invalid' }
+function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
+    $run = [ordered]@{
+        indexPath = $Index; date = $null; scopeKind = $null; boundarySha = $null; baseSha = $null
+        paths = @(); excludedPaths = @(); remediationCommits = @(); disposition = "$($Fm['disposition'])"; usable = $false; reason = $null; detail = $null; waiver = $null; files = @(); historyReset = $null
     }
-  }
-  return [pscustomobject]@{ paths = $paths; validation = 'valid' }
+    $fail = { param($Reason, $Detail) $run.reason = $Reason; $run.detail = $Detail; [pscustomobject]$run }
+    $kind = "$($Fm['scope-kind'])"
+    if ($kind -eq 'document') { return & $fail 'document-review' }
+    # A run the author has retracted in favour of a later one. Checked BEFORE `date`, because a
+    # superseded run need not be well-formed enough to date. An incomplete run is usually a re-run
+    # of the same scope, so it carries the same `target` and `reviewed-paths` as its replacement:
+    # left usable it competes with the good run and, on a same-date tie, can displace it. Excluding
+    # it on the record's own declaration beats relying on it being too malformed to parse.
+    if ("$($Fm['superseded-by'])") { return & $fail 'superseded' }
+    # A run whose author has read it, decided its coverage cannot be reconstructed, and said so in
+    # the record. Checked BEFORE `date` for the same reason as `superseded`: the records this
+    # exists for predate the frontmatter contract and need not be well-formed enough to date.
+    #
+    # It exists because the alternative is worse. Measured across the estate 2026-09-19: 269 vault
+    # records, 167 of them unreadable here, 110 dated 2026-06 alone - and only FOUR were newer than
+    # a usable run their repository already had, so repairing the rest would have moved no date and
+    # no score. Left unmarked they are a permanent 167-record headline that a reader learns to skip,
+    # which is how a genuinely broken NEW record hides among them.
+    #
+    # The waiver is deliberately PER RECORD and carries its reason. A date cutoff in this script
+    # would have silenced the same records without any of them saying so, and would have silenced
+    # a real defect written inside the same window along with them.
+    $waiver = "$($Fm['coverage-waiver'])"
+    $waiverTarget = "$($Fm['target'])"; if (-not $waiverTarget) { $waiverTarget = "$($Fm['range'])" }
+    $waiverHasTarget = [regex]::IsMatch($waiverTarget, '^[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b') -or $waiverTarget -match '^audit\b'
+    if ($waiver -and -not $waiverHasTarget) { $run.waiver = $waiver; return & $fail 'coverage-waived' }
+    $date = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact("$($Fm['date'])", 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) { return & $fail 'no-date' }
+    if ($date.Date -gt (Get-Date).Date) { return & $fail 'future-date' }
+    $run.date = $date.ToString('yyyy-MM-dd')
+    $target = "$($Fm['target'])"; if (-not $target) { $target = "$($Fm['range'])" }
+    # Legacy audit shapes are snapshots based on the empty tree: an `audit ...` target whose tip
+    # is `head:` or the sha it names, or `X..X` declared by a `scope-note: Full-state audit`.
+    $identical = [regex]::Match($target, '^([0-9a-f]{7,40})\.\.\1\b')
+    $auditTip = $null
+    if ($target -match '^audit\b') {
+        $shas = @([regex]::Matches($target, '(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])') | ForEach-Object { $_.Value })
+        $auditRange = [regex]::Match($target, '(?<![0-9a-f])[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})(?![0-9a-f])')
+        if ("$($Fm['head'])" -match '^[0-9a-f]{7,40}$') { $auditTip = $Fm['head'] }
+        elseif ($auditRange.Success) { $auditTip = $auditRange.Groups[1].Value }
+        elseif ($shas.Count -gt 1) { return & $fail 'audit-tip-ambiguous' }
+        elseif ($shas.Count -eq 1) { $auditTip = $shas[0] }
+    } elseif ($identical.Success -and "$($Fm['scope-note'])" -match '^Full-state audit') { $auditTip = $identical.Groups[1].Value }
+    if ($auditTip) {
+        # An audit without declared paths is repository-wide only when it says so.
+        $wholeRepo = "$($Fm['scope-kind'])" -eq 'repository' -or $target -match '(?i)\b(full|whole)[- ](repo|repository|tree)\b'
+        if (-not $wholeRepo -and -not @($Fm['reviewed-paths'] | Where-Object { $_ }).Count -and -not @($Fm['subsystem'] | Where-Object { $_ }).Count) { return & $fail 'audit-scope-undeclared' }
+        $target = "$emptyTree..$auditTip"
+    }
+    $m = [regex]::Match($target, '^([0-9a-f]{7,40})\.\.([0-9a-f]{7,40}|HEAD)\b')
+    if (-not $m.Success) { if ($waiver) { $run.waiver = $waiver; return & $fail 'coverage-waived' }; return & $fail 'no-exact-target' }
+    $tip = if ($m.Groups[2].Value -eq 'HEAD') { "$($Fm['head'])" } else { $m.Groups[2].Value }
+    if ($tip -notmatch '^[0-9a-f]{7,40}$') { return & $fail 'symbolic-head-without-head-key' }
+    $tipSha = Resolve-OnHead $Repo $Head $tip
+    if (-not $tipSha) { if ($waiver) { $run.waiver = $waiver; return & $fail 'coverage-waived' }; return & $fail 'tip-not-in-repo' }
+    if ($waiver) { return & $fail 'coverage-waiver-conflicts-with-target' }
+    $reviewTipSha = $tipSha
+    if ($tipSha -eq 'off-head') {
+        $originalCommit = @(Invoke-Git $Repo @('rev-parse', '--verify', "$tip^{commit}"))[0]
+        if ($originalCommit) { $reviewTipSha = $originalCommit }
+    }
+    $boundarySha = $tipSha
+    if ($tipSha -eq 'off-head') {
+        if ("$($Fm['disposition'])" -eq 'remediated' -and "$($Fm['remediation-tip'])" -match '^[0-9a-f]{7,40}$') {
+            $fixed = Resolve-OnHead $Repo $Head $Fm['remediation-tip']
+            if ($fixed -and $fixed -ne 'off-head') { $boundarySha = $fixed }
+        }
+    }
+    if ($boundarySha -eq 'off-head') {
+        foreach ($rootSha in @(Invoke-Git $Repo @('rev-list', '--max-parents=0', $Head))) {
+            $root = @(Invoke-Git $Repo @('show', '-s', '--format=%H%x09%ad%x09%s', '--date=short', $rootSha))[0]
+            if ($root -match '^([0-9a-f]{40})\t(\d{4}-\d{2}-\d{2})\tInitial OSS release$' -and $Matches[2] -ge $run.date) {
+                $run.historyReset = "$($Matches[1]) ($($Matches[2]))"
+                break
+            }
+        }
+        if (-not $run.historyReset) { return & $fail 'tip-not-on-head' }
+        # History replaced after the review (a squashed OSS release). The review is NOT carried to
+        # the new root - an empty-tree credit would certify files the panel never saw. Instead the
+        # boundary stays at the reviewed state in the replaced history (its remediation tip when
+        # one descends from it), which is still in the object store, and drift is the TREE diff
+        # from there to HEAD. Dropping these runs as unusable hid four real fixatdl-wpf reviews
+        # and the 46 files that changed between their remediated state and the public release.
+        $boundarySha = $reviewTipSha
+        if ("$($Fm['remediation-tip'])" -match '^[0-9a-f]{7,40}$') {
+            $fixed = @(Invoke-Git $Repo @('rev-parse', '--verify', "$($Fm['remediation-tip'])^{commit}"))[0]
+            if ($fixed) {
+                $null = Invoke-Git $Repo @('merge-base', '--is-ancestor', $reviewTipSha, $fixed)
+                if ($LASTEXITCODE -eq 0) { $boundarySha = $fixed }
+            }
+        }
+    }
+    # remediation-tip records provenance only; only the explicit commit set is excluded from drift.
+    $base = $m.Groups[1].Value
+    $baseSha = if ($emptyTree.StartsWith($base)) { $emptyTree } else { @(Invoke-Git $Repo @('rev-parse', '--verify', "$base^{commit}"))[0] }
+    if (-not $baseSha) { return & $fail 'base-not-in-repo' }
+    $declared = @($Fm['reviewed-paths'] | Where-Object { $_ })
+    # Legacy `subsystem: a;b;c` inline form, written by the 2026-08 driver.
+    if (-not $declared.Count) { $declared = @($Fm['subsystem'] | Where-Object { $_ } | ForEach-Object { $_ -split '[;,]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    if (-not $kind) { $kind = if ($declared.Count) { 'subsystem' } else { 'repository' } }
+    if ($kind -notin @('repository', 'subsystem')) { return & $fail "scope-kind-$kind" }
+    $paths = @()
+    if ($kind -eq 'subsystem') { $paths = @($declared) }
+    if ($kind -eq 'subsystem' -and -not $paths.Count) { return & $fail 'subsystem-without-paths' }
+    $run.scopeKind = $kind; $run.paths = @($paths)
+    $excluded = @($Fm['excluded-paths'] | Where-Object { $_ })
+    $pathspec = @()
+    if ($paths.Count -or $excluded.Count) { $pathspec = @('--') + $(if ($paths.Count) { $paths } else { @('.') }) + @($excluded | ForEach-Object { ":(exclude)$_" }) }
+    $scopeTipSha = $reviewTipSha
+    $files = @(Invoke-Git $Repo (@('diff', '--name-only', $baseSha, $scopeTipSha) + $pathspec))
+    if ($LASTEXITCODE -ne 0) { return & $fail 'diff-failed' }
+    $unmatchedPaths = @($paths | Where-Object { -not @(Invoke-Git $Repo (@('diff', '--name-only', $emptyTree, $scopeTipSha, '--', $_))).Count })
+    if ($unmatchedPaths.Count) { $run.detail = "reviewed-paths entries match no tracked files at reviewed tip: $($unmatchedPaths -join ', ')"; return & $fail 'reviewed-paths-unmatched' }
+    # Pathspecs may be globs, so validate them the same way the diff reads them.
+    if ($paths.Count -and -not $files.Count -and -not @(Invoke-Git $Repo (@('diff', '--name-only', $emptyTree, $scopeTipSha) + $pathspec)).Count) { return & $fail 'paths-unmatched' }
+    $run.scopeKind = $kind; $run.boundarySha = $reviewTipSha; $run.baseSha = $baseSha
+    $run.remediationCommits = @($Fm['remediation-commits'] | Where-Object { $_ })
+    $run.paths = $paths; $run.excludedPaths = $excluded; $run.files = @($files); $run.usable = $true
+    [pscustomobject]$run
 }
 
-# Compute the git side (review commits, boundary, forward scope) for a repo working tree.
-# Used for both in-path repos and resolved vault-only targets, so remediation is detectable
-# in BOTH cases — an outsideScanPath row must never be silently unfalsifiable.
-function Get-VaultBoundary {
-  param([string]$RepoPath, $Vault)
-  foreach ($evidence in @($Vault.reviewTarget, $Vault.reviewScope) | Where-Object { $_ }) {
-    # A single commit names the reviewed tip; a range must have two valid commit endpoints.
-    # Symbolic HEAD is allowed only on the right, but a day-only record cannot make it exact.
-    # Use the immutable validated base as a conservative cutoff. Surrounding prose falls back.
-    $match = [regex]::Match($evidence, '(?i)^\s*(?:`|\*\*)?([0-9a-f]{7,40})(?:\.\.([0-9a-f]{7,40}|HEAD))?(?:`|\*\*)?\s*$')
-    if (-not $match.Success) { continue }
-    $base = $match.Groups[1].Value
-    if ($match.Groups[2].Success) {
-      & git -C $RepoPath cat-file -e "$base^{commit}" 2>$null
-      if ($LASTEXITCODE -ne 0) { continue }
+# Commits and diff stats for literal paths. Batch log attribution; --follow only works for one
+# file, so isolate that slower path for files Git detects as renamed. ponytail: `:(literal)` only;
+# a file that became a directory of the same name would be counted with its children.
+function Measure-Files([string]$Repo, [string]$Boundary, [string[]]$Files, [string[]]$RemediationCommits = @(), [string]$LogBoundary = $Boundary) {
+    $shas = [Collections.Generic.HashSet[string]]::new()
+    $changed = [Collections.Generic.List[string]]::new()
+    $remediated = [Collections.Generic.List[string]]::new()
+    $followFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    if ($LogBoundary) {
+        $fileSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($file in $Files) { [void]$fileSet.Add($file) }
+        foreach ($change in @(Invoke-Git $Repo @('diff', '--find-renames', '--name-status', $LogBoundary, 'HEAD'))) {
+            $parts = $change -split "`t"
+            if ($parts[0] -match '^R\d+$' -and $fileSet.Contains($parts[2])) { [void]$followFiles.Add($parts[2]) }
+        }
     }
-    $tip = if ($match.Groups[2].Success) { $match.Groups[2].Value } else { $base }
-    if ($tip -ieq 'HEAD') {
-      $resolvedBase = & git -C $RepoPath rev-parse "$base^{commit}" 2>$null
-      if ($LASTEXITCODE -eq 0 -and $resolvedBase) {
-        return [pscustomobject]@{ sha = "$resolvedBase".Trim(); source = 'vault-symbolic-base' }
-      }
-      continue
+    $ins = 0; $del = 0
+    for ($i = 0; $i -lt $Files.Count; $i += 200) {
+        $batch = @($Files[$i..([Math]::Min($i + 199, $Files.Count - 1))] | ForEach-Object { ":(literal)$_" })
+        $byFile = @{}
+        if ($LogBoundary) {
+            $regularFiles = @($batch | Where-Object { $file = $_ -replace '^:\(literal\)', ''; -not $followFiles.Contains($file) })
+            if ($regularFiles.Count) {
+                $logArgs = @('log', '--find-renames', '--format=COMMIT:%H', '--name-only')
+                $logArgs += if ($LogBoundary -eq $emptyTree) { @('--root', 'HEAD') } else { @("$LogBoundary..HEAD") }
+                $logArgs += @('--') + $regularFiles
+                $commit = $null
+                foreach ($line in @(Invoke-Git $Repo $logArgs)) {
+                    if ($line -match '^COMMIT:([0-9a-f]{40})$') { $commit = $Matches[1]; continue }
+                    if ($commit -and $line -and $regularFiles -contains ":(literal)$line") {
+                        if (-not $byFile.ContainsKey($line)) { $byFile[$line] = [Collections.Generic.HashSet[string]]::new() }
+                        [void]$byFile[$line].Add($commit)
+                    }
+                }
+            }
+            foreach ($path in $followFiles) {
+                $historyArgs = @('log', '--follow', '--format=COMMIT:%H')
+                $historyArgs += if ($LogBoundary -eq $emptyTree) { @('--root', 'HEAD') } else { @("$LogBoundary..HEAD") }
+                $historyArgs += @('--', ":(literal)$path")
+                $byFile[$path] = [Collections.Generic.HashSet[string]]::new()
+                foreach ($line in @(Invoke-Git $Repo $historyArgs)) { if ($line -match '^COMMIT:([0-9a-f]{40})$') { [void]$byFile[$path].Add($Matches[1]) } }
+            }
+        }
+        foreach ($f in @(Invoke-Git $Repo (@('diff', '--name-only', $Boundary, 'HEAD', '--') + $batch))) {
+            if (-not $f) { continue }
+            $fileCommits = if ($byFile.ContainsKey($f)) { @($byFile[$f]) } else { @() }
+            foreach ($sha in $fileCommits) { if ($sha -notin $RemediationCommits) { [void]$shas.Add($sha) } }
+            if (-not $LogBoundary -or @($fileCommits | Where-Object { $_ -notin $RemediationCommits }).Count) { $changed.Add($f) } elseif ($fileCommits.Count) { $remediated.Add($f) } else { $changed.Add($f) }
+        }
+        $stat = @(Invoke-Git $Repo (@('diff', '--shortstat', $Boundary, 'HEAD', '--') + $batch)) -join ' '
+        if ($stat -match '(\d+) insertion') { $ins += [int]$Matches[1] }
+        if ($stat -match '(\d+) deletion') { $del += [int]$Matches[1] }
     }
-    & git -C $RepoPath cat-file -e "$tip^{commit}" 2>$null
-    if ($LASTEXITCODE -ne 0) { continue }
-    $resolved = & git -C $RepoPath rev-parse "$tip^{commit}" 2>$null
-    if ($LASTEXITCODE -eq 0 -and $resolved) {
-      return [pscustomobject]@{ sha = "$resolved".Trim(); source = 'vault-target' }
+    [pscustomobject]@{ commits = $shas.Count; commitIds = @($shas); changedFiles = @($changed | Sort-Object -Unique); remediationFiles = @($remediated | Sort-Object -Unique); insertions = $ins; deletions = $del }
+}
+function Error-Row([string]$Label, [string]$Repo, [string]$Reason) {
+    [pscustomobject]@{
+        repo = $Label; resolvedPath = $Repo; headSha = $null; outsideScanPath = $false; unresolved = $false
+        vault = [pscustomobject]@{ exists = $false; indexPath = $null; date = $null; scopeKind = $null; disposition = $null; isDocumentReview = $false }
+        git = [pscustomobject]@{ boundarySha = $null; boundarySource = 'none'; neverReviewed = $null; effectiveNeverReviewed = $null; sinceReviewCount = $null; sinceReviewFiles = $null; sinceReviewIns = $null; sinceReviewDel = $null; daysSinceReview = $null }
+        subsystemPaths = @(); isSubsystem = $false; scopeValidation = 'unknown'; hasTrackedSource = $null; hasCoveredSource = $null
+        queue = 'collector-error'; exempt = $false; exemptReason = $null; firstCommitDate = $null
+        reviewCoverage = @(); unusable = @()
+        uncovered = [pscustomobject]@{ files = @(); source = @(); sourceFiles = 0; commits = 0 }
+        score = 0; newSource = @(); remediationFiles = @(); oldestUnreviewedChange = $null; openReviewCount = 0; oldestOpenReviewDate = $null; collectorError = $Reason
     }
-  }
-  return $null
+}
+function Oldest-CommitDate([string]$Repo, [string[]]$Commits) {
+    $dates = @($Commits | ForEach-Object { Invoke-Git $Repo @('show', '-s', '--format=%cs', $_) } | Sort-Object)
+    if ($dates.Count) { return $dates[0] }
+    return $null
 }
 
-function Get-GitSide {
-  param([string]$RepoPath, $Vault, [string]$MarkerRegex, [string]$WebQualityRegex, [string[]]$SubsystemPaths, [string]$ScopeValidation = 'none')
-  if ($ScopeValidation -eq 'invalid') {
-    return [pscustomobject]@{
-      reviewCommits = @(); lastReviewDate = $Vault.date; batchMarkers = @()
-      boundarySha = $null; boundarySource = 'invalid-subsystem-scope'; vaultPredatesHistory = $false
-      neverReviewed = $false; effectiveNeverReviewed = $false; sinceReview = @()
-      sinceReviewCount = $null; sinceReviewFiles = $null; sinceReviewIns = $null; sinceReviewDel = $null
-      daysSinceReview = $null
+$repos = @(foreach ($scan in $Path) {
+    if (-not (Test-Path -LiteralPath $scan -PathType Container)) { throw "Path not a folder: $scan" }
+    if (Test-Path (Join-Path $scan '.git')) { Get-Item -LiteralPath $scan -Force }
+    else { Get-ChildItem -LiteralPath $scan -Directory -Force | Where-Object { Test-Path (Join-Path $_.FullName '.git') } }
+}) | Sort-Object FullName -Unique
+if (-not $repos) { throw "No git repositories under $($Path -join ', ')" }
+
+# Parse every index once; attach per repository below.
+if (-not (Test-Path -LiteralPath $VaultRoot -PathType Container)) { throw "VaultRoot is not a folder: $VaultRoot" }
+$indexes = @(
+    foreach ($folder in Get-ChildItem -LiteralPath $VaultRoot -Directory) {
+        foreach ($run in Get-ChildItem -LiteralPath $folder.FullName -Directory) {
+            $index = Join-Path $run.FullName '_index.md'
+            if (Test-Path -LiteralPath $index) {
+                $fm = Read-Frontmatter $index
+                [pscustomobject]@{ folder = $folder.Name; run = $run.Name; index = $index; fm = $fm; repoPath = Normalize "$($fm['repo-path'])" }
+            }
+        }
     }
-  }
-  # When the review covered a SUBSYSTEM, every evidence query must be scoped to it by pathspec.
-  # Otherwise the host repo's unrelated activity is attributed to the subsystem: widgetservice would
-  # report all 977 of host-app's post-boundary commits as WidgetService work, and any unrelated
-  # reviewer-findings commit elsewhere in the host would read as WidgetService remediation. Detecting
-  # remediation is worthless if the number attached to it is the wrong repo's.
-  $pathspec = @()
-  if ($SubsystemPaths.Count) { $pathspec = @('--') + @($SubsystemPaths) }
-  # One git call: full log with body, ISO date, and author trailers, NUL-delimited records.
-  $fmt = '%H%x1f%cI%x1f%s%x1f%b%x1e'
-  $raw = & git -C $RepoPath log HEAD "--format=$fmt" @pathspec 2>$null
-  if ($LASTEXITCODE -ne 0) { $raw = '' }
-  $records = ($raw -join "`n") -split "`u{1e}" | Where-Object { $_.Trim() }
+)
+if (-not $indexes.Count) { throw "VaultRoot contains no _index.md review records: $VaultRoot" }
 
-  $reviewCommits = foreach ($rec in $records) {
-    $parts = $rec -split "`u{1f}"
-    $sha = $parts[0].Trim(); $date = $parts[1].Trim(); $subject = $parts[2].Trim(); $body = if ($parts.Count -gt 3) { $parts[3] } else { '' }
-    $hasReviewTrailer = $body -match "(?im)$strictReviewTrailerRegex"
-    if ($subject -notmatch $MarkerRegex -and -not $hasReviewTrailer) { continue }
-    $fixer = ''
-    $m = [regex]::Match("$body", '(?im)^Co-Authored-By:\s*([^<]+?)\s*<')
-    if ($m.Success) { $fixer = $m.Groups[1].Value.Trim() }
-    $dateShort = if ($date.Length -ge 10) { $date.Substring(0,10) } else { $date }
-    [pscustomobject]@{ sha = $sha; date = $dateShort; subject = $subject; body = $body.Trim(); fixerModel = $fixer }
-  }
-  $reviewCommits = @($reviewCommits | Group-Object sha | ForEach-Object { $_.Group[0] })
-
-  # Strict numbered review batch/run evidence from subjects or trailers.
-  $batchMarkers = @($reviewCommits | ForEach-Object {
-    $bm = [regex]::Match($_.subject, "(?i)$strictReviewEvidenceRegex")
-    if ($bm.Success) { $bm.Value }
-    else {
-      $tm = [regex]::Match($_.body, "(?im)$strictReviewTrailerRegex")
-      if ($tm.Success) { $tm.Value }
-    }
-  } | Group-Object { ($_ -replace '\s+','').ToLowerInvariant() } | ForEach-Object { $_.Group[0] })
-
-  # Boundary selection — the last point a genuine ADVERSARIAL review saw this tree.
-  # Priority: (1) the vault adversarial-review date; (2) the newest non-web-quality git
-  # review/remediation commit. A web-quality reviewer-findings commit never anchors the boundary.
-  $boundarySha = $null; $lastReviewDate = $null; $boundarySource = 'none'; $vaultPredatesHistory = $false
-  $targetBoundary = $null
-  if ($Vault.exists) {
-    $targetBoundary = Get-VaultBoundary -RepoPath $RepoPath -Vault $Vault
-    if ($targetBoundary) {
-      $boundarySha = $targetBoundary.sha; $lastReviewDate = $Vault.date; $boundarySource = $targetBoundary.source
-    } elseif ($Vault.date) {
-      # Tree the panel reviewed = last commit at/before the review's RUN time, not its day.
-      # A day-granular `--until "<date> 23:59:59"` sweeps in commits that landed AFTER the
-      # review on the same day and reports unreviewed work as reviewed. The run-folder name
-      # is a sortable UTC timestamp (20260528T221207Z); when it does not parse, anchor at the
-      # last commit BEFORE the reported day — conservative in the unreviewed-work direction.
-      $until = "$($Vault.date) 00:00:00"
-      if ($Vault.runName -match '^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$') {
-        $until = "$($Matches[1])-$($Matches[2])-$($Matches[3]) $($Matches[4]):$($Matches[5]):$($Matches[6]) +0000"
-      }
-      $bs = & git -C $RepoPath log --until="$until" -1 --format='%H' @pathspec 2>$null
-      $bsExit = $LASTEXITCODE
-      if ($bsExit -eq 0 -and $bs -and "$bs".Trim()) {
-        $boundarySha = "$bs".Trim(); $lastReviewDate = $Vault.date; $boundarySource = 'vault-date'
-      } elseif ($pathspec.Count -gt 0) {
-      # SCOPED query. An empty result here does NOT mean the review predates history - it
-      # usually means the subsystem was added after the review date, and a non-zero exit
-      # means the pathspec is bad. Falling through to the repo-root anchor would set
-      # neverReviewed=false and report an unreviewed (or malformed) scope as reviewed, which
-      # is the whole failure this subsystem scoping exists to prevent. Leave it unreviewed.
-        $boundarySource = if ($bsExit -ne 0) { 'scoped-query-failed' } else { 'scoped-no-history-before-review' }
-        $lastReviewDate = $Vault.date
-      } else {
-      # Vault review predates the repo's earliest commit (e.g. an OSS re-init history squash):
-      # the whole current tree is adversarially unreviewed. The root commit only MARKS that —
-      # the disjunction below classes vault-predates-history as effectively never reviewed and
-      # clears the boundary, so the scope is full history. Anchoring the boundary at the root
-      # commit instead would omit everything the squash introduced (rootSha..HEAD excludes the
-      # root) while reporting neverReviewed=false. Repo-wide only - see the scoped branch above.
-        $rootSha = & git -C $RepoPath rev-list --max-parents=0 HEAD 2>$null | Select-Object -First 1
-        if ($rootSha) { $boundarySha = "$rootSha".Trim() }
-        $lastReviewDate = $Vault.date; $boundarySource = 'vault-predates-history'; $vaultPredatesHistory = $true
-      }
-    }
-  }
-  if (-not $Vault.exists -or (-not $targetBoundary -and -not $Vault.date)) {
-    # No vault report: fall back to git markers, excluding web-quality sweeps from boundary candidacy.
-    $adversarialCommits = @($reviewCommits | Where-Object { $_.subject -notmatch $WebQualityRegex })
-    $lastReviewCommit = if ($adversarialCommits) { $adversarialCommits | Sort-Object date -Descending | Select-Object -First 1 } else { $null }
-    if ($lastReviewCommit) { $boundarySha = $lastReviewCommit.sha; $lastReviewDate = $lastReviewCommit.date; $boundarySource = 'git-marker' }
-  }
-  $neverReviewed = [bool](-not $boundarySha)
-  # Effectively-never-reviewed has three roads in: no boundary at all; a vault report older than
-  # the repo's own history (the squash above — nothing the panel saw survives in this tree); and
-  # a git marker with no strict numbered batch/run evidence. All three mean the honest scope is
-  # the full history, so the false boundary is cleared and neverReviewed set.
-  $effectiveNeverReviewed = [bool]($neverReviewed -or $vaultPredatesHistory -or ($boundarySource -eq 'git-marker' -and -not $batchMarkers.Count))
-  if ($effectiveNeverReviewed -and ($boundarySource -eq 'git-marker' -or $boundarySource -eq 'vault-predates-history')) { $boundarySha = $null; $neverReviewed = $true }
-
-  # Forward-looking scope: commits since the last review (the next review's candidate scope).
-  $sinceReview = @(); $sinceFiles = 0; $sinceIns = 0; $sinceDel = 0; $sinceCount = 0
-  if ($boundarySha) {
-    $rangeFmt = '%H%x1f%cI%x1f%s%x1e'
-    $rawSince = & git -C $RepoPath log "$boundarySha..HEAD" "--format=$rangeFmt" @pathspec 2>$null
-    if ($LASTEXITCODE -eq 0 -and $rawSince) {
-      $srecs = ($rawSince -join "`n") -split "`u{1e}" | Where-Object { $_.Trim() }
-      $sinceReview = @(foreach ($rec in $srecs) {
-        $p = $rec -split "`u{1f}"
-        $sd = $p[1].Trim(); $sd = if ($sd.Length -ge 10) { $sd.Substring(0,10) } else { $sd }
-        [pscustomobject]@{ sha = $p[0].Trim(); date = $sd; subject = $p[2].Trim() }
-      })
-      # The diff is its own git call with its own exit code. Unchecked, a failure here
-      # left the three counters at their 0 seed, and "0 files changed since review" is a
-      # statement a reader acts on - it reads as a scope that has not moved. Null is the
-      # honest value for a stat that could not be taken.
-      $stat = & git -C $RepoPath diff --shortstat "$boundarySha..HEAD" @pathspec 2>$null
-      if ($LASTEXITCODE -ne 0) {
-        $sinceFiles = $null; $sinceIns = $null; $sinceDel = $null
-      }
-      elseif ($stat) {
-        $statStr = "$stat"
-        $fm2 = [regex]::Match($statStr, '(\d+) files? changed'); if ($fm2.Success) { $sinceFiles = [int]$fm2.Groups[1].Value }
-        $im2 = [regex]::Match($statStr, '(\d+) insertion');      if ($im2.Success) { $sinceIns   = [int]$im2.Groups[1].Value }
-        $dm3 = [regex]::Match($statStr, '(\d+) deletion');       if ($dm3.Success) { $sinceDel   = [int]$dm3.Groups[1].Value }
-      }
-    }
-    $sinceCount = $sinceReview.Count
-  } else {
-    # Never reviewed: don't dump the whole history — record full-scope commit count only.
-    $rc = & git -C $RepoPath rev-list --count HEAD @pathspec 2>$null
-    if ($LASTEXITCODE -eq 0 -and $rc) { $sinceCount = [int]("$rc".Trim()) }
-    # Same reasoning as the stat above: a failed count is not a count of zero. Overdue
-    # ranking is unaffected because neverReviewed already forces this repo overdue on
-    # its own; what changes is that the report stops asserting a number it does not have.
-    elseif ($LASTEXITCODE -ne 0) { $sinceCount = $null }
-  }
-
-  # Staleness in whole days (script clock; report is day-granular). SKILL.md contracts this as
-  # null when never reviewed — a lastReviewDate can survive on a never-reviewed row (a cleared
-  # git-marker, a vault report that predates the history), and a number there would dress up an
-  # unreviewed repo as freshly reviewed. ISO parse is exact and culture-invariant (see above).
-  $daysSinceReview = $null
-  if ($lastReviewDate -and -not $neverReviewed) {
-    [datetime]$lrd = [datetime]::MinValue
-    if ([datetime]::TryParseExact($lastReviewDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$lrd)) {
-      $daysSinceReview = [int]((Get-Date).Date - $lrd.Date).TotalDays
-    }
-  }
-
-  [pscustomobject]@{
-    reviewCommits   = $reviewCommits
-    lastReviewDate  = $lastReviewDate
-    batchMarkers    = $batchMarkers
-    boundarySha     = $boundarySha
-    boundarySource  = $boundarySource
-    vaultPredatesHistory = $vaultPredatesHistory
-    neverReviewed   = $neverReviewed
-    effectiveNeverReviewed = $effectiveNeverReviewed
-    sinceReview     = $sinceReview
-    sinceReviewCount = $sinceCount
-    sinceReviewFiles = $sinceFiles
-    sinceReviewIns  = $sinceIns
-    sinceReviewDel  = $sinceDel
-    daysSinceReview = $daysSinceReview
-  }
-}
-
-# Does the repo (or, for a subsystem row, its reviewed sub-path) track any source file? A repo
-# with ZERO tracked source — a docs/spec repo (engineering-system), a playbook repo (qa), a CV
-# repo (personal-resumes) — is not code-reviewable, so the never-reviewed floor of 100 must not
-# float it above a genuinely unreviewed code repo. Exposed as hasTrackedSource; SKILL.md §4 voids
-# the floor when false. Tri-state: $null means the ls-files probe itself FAILED (not a repo, bad
-# pathspec, timeout) — that is UNKNOWN, never a verified "no source", and consumers must not read
-# it as $false (review-sweep's runbook STOPs on unknown). When a SubsystemPath is given the query
-# is pathspec-scoped to it, so a docs-only subsystem of a code-bearing host is not credited with
-# the host's unrelated source.
-$sourceExtRegex = '(?:\.(cs|ts|tsx|js|jsx|mjs|cjs|py|go|java|rb|rs|cpp|cc|c|h|hpp|kt|swift|php|scala|sql|ps1|psm1|sh|bicep|vue|svelte|fs|fsx|razor|cshtml|xaml|tf|proto|css|scss|sass|less)$|(?:^|/)Dockerfile(?:\..+)?$|(?:^|/)\.github/workflows/[^/]+\.ya?ml$)'
-function Get-HasTrackedSource {
-  param([string]$RepoPath, [string[]]$SubsystemPaths, [string]$ScopeValidation = 'none')
-  if (-not $RepoPath) { return $false }
-  if ($ScopeValidation -eq 'invalid') { return $null }
-  $pathspec = if ($SubsystemPaths.Count) { @('--') + @($SubsystemPaths) } else { @() }
-  # Materialise before filtering: Select-Object -First 1 can short-circuit the
-  # native pipeline and make LASTEXITCODE unreliable on the success path.
-  $out = @(& git -C $RepoPath ls-files @pathspec 2>$null)
-  if ($LASTEXITCODE -ne 0) { return $null }
-  return [bool](@($out | Where-Object { $_ -match $sourceExtRegex }).Count)
-}
-
+$today = (Get-Date).Date
 $results = foreach ($r in $repos) {
-  $repoPath = $r.FullName
-  # Vault first — its adversarial-review date is the preferred boundary (the tree a panel saw).
-  $vault = Get-VaultData -RepoName $r.Name -VaultRoot $VaultRoot
-  $scope = Get-ValidatedSubsystemScope -RepoPath $repoPath -Paths $vault.subsystemPaths
-  # Scope the git side to the reviewed subsystem when the review declared one. Calling
-  # this without -SubsystemPaths was what made a subsystem pass look repo-wide.
-  $git = Get-GitSide -RepoPath $repoPath -Vault $vault -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-
-  [pscustomobject]@{
-    repo = $r.Name
-    git  = $git
-    vault = $vault
-    hasGraphify = [bool](Test-Path (Join-Path $repoPath 'graphify-out'))
-    hasTrackedSource = Get-HasTrackedSource -RepoPath $repoPath -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-    outsideScanPath = $false
-    resolvedPath = $repoPath
-    isSubsystem = [bool]$scope.paths.Count
-    subsystemPath = if ($scope.paths.Count -eq 1) { $scope.paths[0] } else { $null }
-    subsystemPaths = @($scope.paths)
-    scopeValidation = $scope.validation
-    unresolved = $false
-  }
-}
-
-# Vault review folders with no matching repo under $Path. A folder here is NOT proof of a
-# repo — it may name a SUBSYSTEM of one. Resolve each to real code via its report's file:///
-# links and compute a genuine git side against that repo, so remediation is DETECTABLE.
-# Anything that will not resolve is emitted as unresolved=true, never as a silent frozen row.
-$scanned = @($results | ForEach-Object { $_.repo })
-if (Test-Path $VaultRoot) {
-  # Newest REVIEW first, not newest folder mtime: the dedup below keeps the first-emitted row
-  # per repo+subsystem, and LastWriteTime is copy/mtime order, not review order — copying an old
-  # folder into the vault refreshes its mtime and would let a stale duplicate of a renamed repo
-  # win over the folder carrying the newest review. Order by the review's frontmatter date
-  # (then the sortable run-folder timestamp), file time only when a run declares no date.
-  $vaultOnly = @(
-    foreach ($v in (Get-ChildItem $VaultRoot -Directory | Where-Object { $scanned -notcontains $_.Name })) {
-      $vd = Get-VaultData -RepoName $v.Name -VaultRoot $VaultRoot
-      if (-not $vd.exists) { continue }
-      [pscustomobject]@{ Folder = $v; Data = $vd }
-    }
-  )
-  $vaultOnly = @($vaultOnly | Sort-Object -Descending `
-    @{ Expression = { if ($_.Data.date) { $_.Data.date } else { '' } } }, `
-    @{ Expression = { $_.Data.runName } }, `
-    @{ Expression = { $_.Folder.LastWriteTime } })
-  # Track outside targets already emitted THIS pass, keyed on repo + subsystem, so two differently
-  # named vault folders resolving to the same outside repo (a de-hyphen + a suffix match, or an old
-  # and a current folder) do not both emit and double-count it. Distinct subsystems of one host
-  # stay distinct (the key includes the sub-path).
-  $resolvedThisPass = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-  $extra = @(foreach ($entry in $vaultOnly) {
-    $v = $entry.Folder
-    $vd = $entry.Data
-    $target = Resolve-VaultTarget -IndexPath $vd.indexPath -FolderName $v.Name -RepoRoots $RepoRoots -ScanPath $Path
-    if ($target.resolved) {
-      # A WHOLE-REPO resolution (no subsystemPath) onto an already-scanned in-path repo is a stale
-      # pre-rename duplicate (budget-tracker -> personal-budget-tracker): drop it — but if that
-      # in-path row carries no vault of its own, backfill it first, so a repo whose ONLY review lives
-      # under the old folder name is not left falsely never-reviewed. A resolution WITH a
-      # subsystemPath is a DISTINCT subsystem of that host and must still emit its own row.
-      if (-not $target.subsystemPath) {
-        # Match on the resolved absolute path, not the leaf name: two same-named repos at
-        # different depths of $Path are distinct, and a leaf-name key conflates them.
-        $inPath = $results | Where-Object { -not $_.outsideScanPath -and $_.resolvedPath -eq $target.repoPath } | Select-Object -First 1
-        if ($inPath) {
-          if (-not $inPath.vault.exists -and $vd.exists) {
-            # Carry the declared scope through the backfill too. Without it a scope resolved
-            # by SHA or name silently became a repo-wide scan on this path only, so the row
-            # reported a boundary the panel never established.
-            $inPath.vault = $vd
-            $scope = Get-ValidatedSubsystemScope -RepoPath $inPath.resolvedPath -Paths $vd.subsystemPaths
-            $inPath.git = Get-GitSide -RepoPath $inPath.resolvedPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-            $inPath.hasTrackedSource = Get-HasTrackedSource -RepoPath $inPath.resolvedPath -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-            $inPath.isSubsystem = [bool]$scope.paths.Count
-            $inPath.subsystemPath = if ($scope.paths.Count -eq 1) { $scope.paths[0] } else { $null }
-            $inPath.subsystemPaths = @($scope.paths)
-            $inPath.scopeValidation = $scope.validation
-          }
-          continue
+    $repo = $r.FullName
+    $label = Canonical-Label $repo $r.Name
+    $head = @(Invoke-Git $repo @('rev-parse', '--verify', 'HEAD'))[0]
+    if (-not $head) { Error-Row $label $repo 'No HEAD commit'; continue }
+    $tracked = @(Invoke-Git $repo @('ls-tree', '-r', '--name-only', 'HEAD'))
+    if ($LASTEXITCODE -ne 0) { Error-Row $label $repo 'Could not read tracked files at HEAD'; continue }
+    $key = Normalize $repo
+    $runs = @($indexes | Where-Object { if ($_.repoPath) { $_.repoPath -eq $key } else { $_.folder -eq $r.Name } } | ForEach-Object { Get-Run $repo $head $_.index $_.fm })
+    $usable = @($runs | Where-Object usable | Sort-Object @{Expression = 'date'; Descending = $true }, @{Expression = 'indexPath'; Descending = $true })
+    $owner = @{}
+    $allRemediationCommits = @($usable | ForEach-Object { @($_.remediationCommits) } | Sort-Object -Unique)
+    foreach ($run in $usable) {
+        $renameMap = @{}
+        foreach ($change in @(Invoke-Git $repo @('diff', '--find-renames', '--name-status', $run.boundarySha, 'HEAD'))) {
+            $parts = $change -split "`t"
+            if ($parts[0] -match '^R\d+$') { $renameMap[$parts[1]] = $parts[2] }
         }
-      }
-      # Second (and later) vault folder resolving to the same outside repo+subsystem: skip. Key on
-      # the canonical repoPath (not the leaf repoName) so two same-named repos under different
-      # -RepoRoots are not wrongly merged. $vaultOnly was sorted newest-first above, so the row
-      # that survives this dedup is the folder with the newest review.
-      # One effective scope from the two sources: what the report DECLARED (`subsystem:` /
-      # an `audit -- <pathspec>` target) and what its file:/// links RESOLVED to. The
-      # declaration wins - it is the panel's own statement of scope - but a disagreement is
-      # surfaced rather than silently resolved, because one of the two is then wrong about
-      # what was reviewed.
-      # Normalise before comparing: Get-SubsystemTarget joins with the host separator while a
-      # declared `subsystem:` key or an `audit -- <pathspec>` target uses forward slashes
-      # (git pathspecs always do). Comparing raw strings reported 'src/Foo' and 'src\Foo' as a
-      # disagreement and keyed the dedup set on both, emitting two rows for one subsystem.
-      $normScope = { param($s) if ($s) { ($s -replace '[\\/]+', '/').Trim('/') } else { $s } }
-      $effectiveSubsystems = if ($vd.subsystemPaths.Count) { @($vd.subsystemPaths) } elseif ($target.subsystemPath) { @($target.subsystemPath) } else { @() }
-      if ($vd.subsystemPaths.Count -eq 1 -and $target.subsystemPath -and
-          ((& $normScope $vd.subsystemPaths[0]) -ne (& $normScope $target.subsystemPath))) {
-        Write-Warning "$($v.Name): declared subsystem '$($vd.subsystemPaths[0])' disagrees with the scope its report links resolve to ('$($target.subsystemPath)'); using the declared value."
-      }
-      $normalisedScope = @($effectiveSubsystems | ForEach-Object { & $normScope $_ }) -join ','
-      if (-not $resolvedThisPass.Add("$($target.repoPath)|$normalisedScope")) { continue }
-      $scope = Get-ValidatedSubsystemScope -RepoPath $target.repoPath -Paths $effectiveSubsystems
-      $git = Get-GitSide -RepoPath $target.repoPath -Vault $vd -MarkerRegex $markerRegex -WebQualityRegex $webQualityRegex -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-      [pscustomobject]@{
-        repo = $v.Name
-        git  = $git
-        vault = $vd
-        hasGraphify = [bool](Test-Path (Join-Path $target.repoPath 'graphify-out'))
-        hasTrackedSource = Get-HasTrackedSource -RepoPath $target.repoPath -SubsystemPaths $scope.paths -ScopeValidation $scope.validation
-        outsideScanPath = $true
-        resolvedPath = $target.repoPath
-        # A SUBSYSTEM row is one whose reviewed code is a sub-path of the host repo
-        # (widgetservice = host-app/Framework/Services/WidgetService). A mere name variance
-        # (vault 'quickfixn' -> repo 'quickfix-n') is NOT a subsystem — same tree, so
-        # keying this off the sub-path rather than the name keeps the two apart.
-        isSubsystem = [bool]$scope.paths.Count
-        subsystemPath = if ($scope.paths.Count -eq 1) { $scope.paths[0] } else { $null }
-        subsystemPaths = @($scope.paths)
-        scopeValidation = $scope.validation
-        unresolved = $false
-      }
-    } else {
-      [pscustomobject]@{
-        repo = $v.Name
-        git  = [pscustomobject]@{
-          reviewCommits = @(); lastReviewDate = $vd.date; batchMarkers = @()
-          boundarySha = $null; boundarySource = 'unresolved-vault-folder'; vaultPredatesHistory = $false
-          # neverReviewed stays $false DESPITE the null boundarySha, and the exception is
-          # deliberate. Elsewhere a null boundary means "no review ever happened"; here a review
-          # demonstrably DID happen (vault.exists) — we simply cannot place the code it covered.
-          # Flagging it $true would assert a falsehood and, worse, score it 100 + commits, floating
-          # an unknown straight to the top of the risk rank. The state is UNKNOWN, not "never".
-          # SKILL.md qualifies the neverReviewed contract accordingly and excludes unresolved rows
-          # from ranking outright.
-          neverReviewed = $false; effectiveNeverReviewed = $false; sinceReview = @()
-          sinceReviewCount = 0; sinceReviewFiles = 0; sinceReviewIns = 0; sinceReviewDel = 0
-          daysSinceReview = $null
+        $run | Add-Member -NotePropertyName coveredFiles -NotePropertyValue @($run.files | ForEach-Object { $file = $_; while ($renameMap.ContainsKey($file)) { $file = $renameMap[$file] }; $file }) -Force
+        $runLogBoundary = $run.boundarySha
+        if ($run.historyReset) { $runLogBoundary = $null }
+        else {
+            & git -C $repo merge-base --is-ancestor $run.boundarySha HEAD 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                & git -C $repo merge-base --is-ancestor $run.baseSha HEAD 2>$null
+                $runLogBoundary = if ($LASTEXITCODE -eq 0) { $run.baseSha } else { $null }
+            }
         }
-        vault = $vd
-        hasGraphify = $false
-        hasTrackedSource = $false
-        outsideScanPath = $true
-        resolvedPath = $null
-        isSubsystem = $false
-        subsystemPath = $null
-        subsystemPaths = @()
-        scopeValidation = 'unknown'
-        unresolved = $true
-      }
+        $run | Add-Member -NotePropertyName logBoundary -NotePropertyValue $runLogBoundary -Force
+        foreach ($file in $run.coveredFiles) { if (-not $owner.ContainsKey($file)) { $owner[$file] = $run } }
     }
-  })
-  $results = @($results) + @($extra)
+    $coverage = @(foreach ($run in $usable) {
+        $files = @($run.coveredFiles | Where-Object { [object]::ReferenceEquals($owner[$_], $run) })
+        $measure = if ($files.Count) { Measure-Files $repo $run.boundarySha $files $allRemediationCommits $run.logBoundary } else { [pscustomobject]@{ commits = 0; commitIds = @(); changedFiles = @(); remediationFiles = @(); insertions = 0; deletions = 0 } }
+        $reviewAgeDays = [int]($today - [datetime]::ParseExact($run.date, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays
+        $oldestGroupChange = Oldest-CommitDate $repo $measure.commitIds
+        if ($run.historyReset) { $oldestGroupChange = [regex]::Match($run.historyReset, '\((\d{4}-\d{2}-\d{2})\)$').Groups[1].Value }
+        $days = if ($oldestGroupChange) { [Math]::Max(0, [int]($today - [datetime]::ParseExact($oldestGroupChange, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays) } else { 0 }
+        [pscustomobject]@{
+            indexPath = $run.indexPath; date = $run.date; scopeKind = $run.scopeKind; disposition = $run.disposition
+            boundarySha = $run.boundarySha; baseSha = $run.baseSha; paths = $run.paths; excludedPaths = $run.excludedPaths
+            files = $files.Count; commits = $measure.commits; commitIds = $measure.commitIds; changedFiles = $measure.changedFiles; remediationFiles = $measure.remediationFiles
+            insertions = $measure.insertions; deletions = $measure.deletions; days = $days; oldestChangeDate = $oldestGroupChange
+            hasTrackedSource = [bool]@($files | Where-Object { $_ -match $sourceExtRegex }).Count
+            historyReset = $run.historyReset
+            # A squashed history has one commit touching everything, so after a reset the unit of
+            # drift is the changed file, not the commit.
+            score = $measure.changedFiles.Count
+        }
+    })
+    $uncoveredFiles = @($tracked | Where-Object { -not $owner.ContainsKey($_) })
+    $uncoveredSource = @($uncoveredFiles | Where-Object { $_ -match $sourceExtRegex })
+    $uncoveredMeasure = if ($uncoveredSource.Count) { Measure-Files $repo $emptyTree $uncoveredSource } else { [pscustomobject]@{ commits = 0; commitIds = @() } }
+    $uncoveredCommits = $uncoveredMeasure.commits
+    $newest = if ($usable.Count) { $usable[0] } else { $null }
+    $invalidScope = @($runs | Where-Object { $_.reason -eq 'reviewed-paths-unmatched' } | Sort-Object @{Expression = 'date'; Descending = $true } | Select-Object -First 1)
+    # Workload counts changed files and new source. Older uncovered source is context only;
+    # explicit remediation commits are removed before a path enters either workload.
+    #
+    # It used to add `100 + $uncoveredCommits` as an audit floor, which encoded an assumption
+    # this estate does not hold -- that every source file ought eventually to be reviewed.
+    # Reviews here are targeted at new work, and some repositories are vendored third-party
+    # forks whose upstream code is deliberately never reviewed. Measured 2026-09-13 the floor
+    # supplied 769 of one vendored-fork repo's 825 (its uncovered surface is upstream engine
+    # code plus generated codegen output), 914 of another repo's 1171, and ranked four
+    # repositories with ZERO commits since their review. One of them had been reviewed the
+    # previous day, nothing had changed, and it still ranked seventh in the estate.
+    # A queue that ranks unchanged repositories is not a queue.
+    # Headline counts start at the newest usable review. Each reviewCoverage row
+    # still lists that group's own boundary, including changes that predate the
+    # latest review. Folding those rows into the headline counted them as if they
+    # were drift since the last review: on 2026-10-01 a live-home repository
+    # showed 200 commits beside tip c85af4a, and git rev-list of that tip was 34.
+    $newSourceCandidates = if ($newest) { @((Invoke-Git $repo @('diff', '--name-only', $newest.boundarySha, 'HEAD')) | Where-Object { $_ -match $sourceExtRegex -and -not $owner.ContainsKey($_) }) } else { @($uncoveredSource) }
+    $newestLogBoundary = if ($usable.Count) { $usable[0].logBoundary } else { $null }
+    $newSourceMeasure = if ($newest -and $newSourceCandidates.Count) { Measure-Files $repo $newest.boundarySha $newSourceCandidates $allRemediationCommits $newestLogBoundary } else { [pscustomobject]@{ commitIds = @(); changedFiles = $newSourceCandidates; remediationFiles = @(); insertions = 0; deletions = 0 } }
+    $newSource = @($newSourceMeasure.changedFiles)
+    $remediationFiles = @(@($coverage | ForEach-Object { @($_.remediationFiles) }) + @($newSourceMeasure.remediationFiles) | Sort-Object -Unique)
+    $changedFiles = @()
+    $commitIds = @()
+    $sinceIns = [int]$newSourceMeasure.insertions
+    $sinceDel = [int]$newSourceMeasure.deletions
+    if ($newest -and ($newest.historyReset -or -not $newest.logBoundary)) {
+        # No commit range exists. The newest group's tree diff is the headline;
+        # older groups stay in reviewCoverage.
+        $changedFiles = @($coverage[0].changedFiles)
+        $commitIds = @($coverage[0].commitIds)
+        $sinceIns += [int]$coverage[0].insertions
+        $sinceDel += [int]$coverage[0].deletions
+    } elseif ($newest) {
+        $ownedSince = @((Invoke-Git $repo @('diff', '--name-only', $newest.boundarySha, 'HEAD')) | Where-Object { $owner.ContainsKey($_) })
+        if ($ownedSince.Count) {
+            $headline = Measure-Files $repo $newest.boundarySha $ownedSince $allRemediationCommits $newest.logBoundary
+            $changedFiles = @($headline.changedFiles)
+            $commitIds = @($headline.commitIds)
+            $sinceIns += [int]$headline.insertions
+            $sinceDel += [int]$headline.deletions
+        }
+    }
+    $firstCommit = @(Invoke-Git $repo @('log', '--max-parents=0', '--format=%ad', '--date=short', 'HEAD') | Sort-Object)[0]
+    $changeDates = @()
+    if ($commitIds.Count) { $changeDates += Oldest-CommitDate $repo $commitIds }
+    if ($newSourceMeasure.commitIds.Count) { $changeDates += Oldest-CommitDate $repo $newSourceMeasure.commitIds }
+    if ($newest -and $newest.historyReset -and $changedFiles.Count -and -not $commitIds.Count -and $coverage[0].oldestChangeDate) { $changeDates += $coverage[0].oldestChangeDate }
+    $isExempt = $exemptReason.ContainsKey($label) -or $exemptReason.ContainsKey($r.Name)
+    $hasSource = [bool]@($tracked | Where-Object { $_ -match $sourceExtRegex }).Count
+    # A repository with no review dates its unreviewed source. An exempt repository
+    # with no review does not: its first commit is not an unreviewed change.
+    if (-not $newest -and -not $isExempt -and $hasSource -and $uncoveredMeasure.commitIds.Count) { $changeDates += Oldest-CommitDate $repo $uncoveredMeasure.commitIds }
+    $oldestChange = @($changeDates | Where-Object { $_ } | Sort-Object | Select-Object -First 1)[0]
+    $openReviews = @($coverage | Where-Object disposition -EQ 'open')
+    $oldestOpenDate = if ($openReviews.Count) { ($openReviews | Sort-Object date | Select-Object -First 1).date } else { $null }
+    $oldestOpenAge = if ($oldestOpenDate) { [Math]::Max(0, [int]($today - [datetime]::ParseExact($oldestOpenDate, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays) } else { $null }
+    $score = $changedFiles.Count + $newSource.Count
+    # An older group owns a file only when the newest review did not cover it. A change to
+    # that file before the newest boundary is absent from the headline diff, and it is still
+    # unreviewed. The headline counts stay newest-boundary-only. The queue does not.
+    $groupDrift = [bool]@($coverage | Where-Object { @($_.changedFiles).Count }).Count
+    #
+    # Except for a repository with source and NO usable review at all. Scoring it zero sank new
+    # work to the bottom beside the vendored forks: personal-tts, first committed 2026-09-21 with
+    # 48 unreviewed commits, ranked level with a fork nobody will ever review. The two are told
+    # apart by an explicit exemption list, not by the score: an exempt repository is reported
+    # and never queued, and everything else with no usable review is queued FIRST by its
+    # distinct uncovered source-file count.
+    $hasCoveredSource = [bool]@($coverage | Where-Object hasTrackedSource).Count
+    $queue = if ($isExempt) { 'exempt' } elseif (-not $hasSource) { 'none' } elseif (-not $coverage.Count) { 'no-usable-review' } elseif ($newSource.Count) { 'new-source' } elseif ($changedFiles.Count -or $groupDrift) { 'drift' } elseif ($openReviews.Count) { 'open-review' } else { 'none' }
+    if ($queue -eq 'no-usable-review') {
+        $score = $uncoveredSource.Count
+    }
+    if ($isExempt) { $score = 0 }
+    if (@(Invoke-Git $repo @('rev-parse', 'HEAD'))[0] -ne $head) { Error-Row $label $repo 'Repository changed during collection'; continue }
+    $rowPaths = @()
+    if ($invalidScope.Count -and (-not $newest -or $invalidScope[0].date -ge $newest.date)) { $rowPaths = @($invalidScope[0].paths) }
+    elseif ($newest) { $rowPaths = @($newest.paths) }
+    [pscustomobject]@{
+        repo = $label; resolvedPath = $repo; headSha = $head; outsideScanPath = $false; unresolved = $false
+        vault = [pscustomobject]@{
+            exists = [bool]$newest; indexPath = $newest.indexPath; date = $newest.date; scopeKind = $newest.scopeKind
+            disposition = $newest.disposition; isDocumentReview = $false
+        }
+        git = [pscustomobject]@{
+            boundarySha = $newest.boundarySha; boundarySource = $(if ($newest) { 'vault-target' } else { 'none' })
+            neverReviewed = -not $newest; effectiveNeverReviewed = -not $newest
+            sinceReviewCount = $(if ($coverage.Count) { $commitIds.Count } else { $null })
+            sinceReviewFiles = $(if ($coverage.Count) { $changedFiles.Count } else { $null })
+            sinceReviewIns = $sinceIns; sinceReviewDel = $sinceDel; daysSinceReview = $(if ($oldestChange) { [int]($today - [datetime]::ParseExact($oldestChange, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays } else { 0 })
+        }
+        subsystemPaths = $rowPaths; isSubsystem = [bool](($newest -and $newest.paths.Count) -or $invalidScope.Count)
+        scopeValidation = $(if ($invalidScope.Count -and (-not $newest -or $invalidScope[0].date -ge $newest.date)) { 'invalid' } elseif ($newest -and $newest.paths.Count) { 'valid' } else { 'none' })
+        hasTrackedSource = $hasSource; hasCoveredSource = $hasCoveredSource
+        queue = $queue; exempt = $isExempt; exemptReason = $(if ($isExempt) { $exemptReason[$(if ($exemptReason.ContainsKey($label)) { $label } else { $r.Name })] } else { $null })
+        firstCommitDate = $firstCommit
+        reviewCoverage = $coverage
+        unusable = @($runs | Where-Object { -not $_.usable -and $_.reason -ne 'document-review' } | ForEach-Object { [pscustomobject]@{ indexPath = $_.indexPath; reason = $_.reason; detail = $_.detail; waiver = $_.waiver } })
+        uncovered = [pscustomobject]@{ files = $uncoveredFiles; source = $uncoveredSource; sourceFiles = $uncoveredSource.Count; commits = $uncoveredCommits }
+        score = [int]$score; newSource = $newSource; remediationFiles = $remediationFiles
+        oldestUnreviewedChange = $oldestChange; openReviewCount = $openReviews.Count
+        oldestOpenReviewDate = $oldestOpenDate; oldestOpenReviewAgeDays = $oldestOpenAge
+    }
 }
-
-# A DOCUMENT review (resumes-cv: target your-cv.html) that resolves to no code repo
-# is EXPECTED to be unresolved — it reviewed a CV, not a tree — so it is not a collector defect and
-# must not share the unfalsifiable-tally warning. Split the two so a genuine resolution failure
-# (a code review whose repo could not be placed) still stands out.
-$unresolvedRows = @($results | Where-Object { $_.unresolved -and -not $_.vault.isDocumentReview })
-$docReviewRows  = @($results | Where-Object { $_.unresolved -and $_.vault.isDocumentReview })
-$invalidScopeRows = @($results | Where-Object { $_.scopeValidation -eq 'invalid' })
-if ($unresolvedRows) {
-  Write-Warning ("UNRESOLVED vault folders (no repo found via file:/// links, scope sha, or name) — " +
-    "their tallies are UNFALSIFIABLE and must NOT be reported as outstanding: " +
-    (($unresolvedRows | ForEach-Object { $_.repo }) -join ', '))
-}
-if ($docReviewRows) {
-  Write-Warning ("DOCUMENT reviews (reviewed a document, NOT code — confer no code coverage, do not " +
-    "credit as a reviewed repo): " +
-    (($docReviewRows | ForEach-Object { "$($_.repo) [$($_.vault.reviewTarget)]" }) -join ', '))
-}
-if ($invalidScopeRows) {
-  Write-Warning ("INVALID subsystem scope (declared pathspec matched no tracked files) — " +
-    "Git and source evidence is UNKNOWN: " +
-    (($invalidScopeRows | ForEach-Object { "$($_.repo) [$(@($_.subsystemPaths) -join ', ')]" }) -join ', '))
-}
-
-$results | ConvertTo-Json -Depth 8 | Set-Content $OutFile -Encoding utf8
+$results | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutFile -Encoding utf8
 Write-Output "wrote $OutFile ($(@($results).Count) repos)"

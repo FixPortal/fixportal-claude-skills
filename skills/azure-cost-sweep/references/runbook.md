@@ -1,5 +1,14 @@
 # Azure Cost Sweep Runbook
 
+## Contents
+
+- [0. Prior runs and drift](#0-prior-runs-and-drift)
+- [1. Live cost and estate](#1-live-cost-and-estate)
+- [2. Map cost to requirements](#2-map-cost-to-requirements)
+- [3. Metrics and prices](#3-metrics-and-prices)
+- [4. Report and persistence](#4-report-and-persistence)
+
+
 ## 0. Prior runs and drift
 
 Before the bill, gather all four sources and select exactly one vault-log branch:
@@ -37,10 +46,22 @@ resilience finding even when it saves nothing.
 ## 1. Live cost and estate
 
 Discover enabled subscriptions; never use a remembered ID. Include `--all` so
-the filter is explicit, then select only records whose `state` is `Enabled` and
-whose subscription `id` is non-empty. Ignore tenant pseudo-accounts; they have
-no subscription ID and cannot be Cost Management scopes. Query ActualCost
-through the Cost Management Query REST API grouped by ResourceId, over a fresh explicit
+the filter is explicit, then select only records whose `state` is `Enabled`, whose
+subscription `id` is non-empty, **and whose `name` is not the tenant pseudo-account label**
+(`az` renders those as `N/A(tenant level account)`). Both conditions, because either alone
+rests on an assumption:
+
+> `UNVERIFIED:` that a tenant pseudo-account always carries an empty or absent `id`. The
+> filter was the id test alone, and the contract test builds its own fixture with
+> `id = $null` hard-coded — proving the filter works on the ASSUMED shape, which is not
+> evidence the shape is real. Refuted by one run of `az account list --all -o json` under
+> an identity with access to a second tenant: if every pseudo-account entry there shows an
+> empty or absent `id`, the id test alone was sufficient. If any shows an `id` with
+> `state: Enabled`, the id test alone would have queried Cost Management against
+> `/subscriptions/<tenantId>/…`. The name test is correct under both shapes, which is why
+> it stands regardless of how that run answers.
+
+Query ActualCost through the Cost Management Query REST API grouped by ResourceId, over a fresh explicit
 UTC window that **defaults to the last 30 days**: today's UTC date as the exclusive end,
 30 days prior as the start.
 
@@ -55,7 +76,7 @@ can corrupt inline bodies.
 Use independent, copyable commands rather than a dependent shell variable:
 
 ```powershell
-az account list --all --query "[?state=='Enabled' && id!=null && id!=''].id" -o tsv
+az account list --all --query "[?state=='Enabled' && id!=null && id!='' && name!='N/A(tenant level account)'].id" -o tsv
 ```
 
 ```powershell

@@ -30,6 +30,7 @@ For a document serving both a repository and Obsidian, maintain separate files: 
 - When a failure or surprise motivated the document, map symptom to cause.
 - Keep exact, untruncated identifiers and reproducible commands in an appendix.
 - READMEs use quick start and troubleshooting, not an audit ledger. ADRs state context, decision, and consequences.
+- When controlling a documentation page's layout, use the available main-column width. Do not impose narrow `ch`, `max-w-prose`, or nested article caps by default; keep navigation compact and let wide tables and code scroll locally on small screens. See [House conventions](references/conventions.md#documentation-page-width).
 
 ## Procedure
 

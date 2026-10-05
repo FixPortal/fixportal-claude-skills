@@ -1,6 +1,6 @@
 # Experiment records
 
-Write every experiment record outside the target repository beside its audit, at `<vault>/Claude/Performance Audit/<repository>/YYYY-MM-DD-HHmm-PERF-NNN-experiment.md`. Retain raw artefacts at their approved external locations; record paths and hashes rather than copying aggregate diff packages or executable artefacts.
+Write every experiment record outside the target repository beside its audit, at `<vault>\Claude\Performance Audit\<repository>\YYYY-MM-DD-HHmm-PERF-NNN-experiment.md`. Retain raw artefacts at their approved external locations; record paths and hashes rather than copying aggregate diff packages or executable artefacts.
 
 ```markdown
 # PERF-NNN experiment — accepted | rejected | inconclusive | blocked

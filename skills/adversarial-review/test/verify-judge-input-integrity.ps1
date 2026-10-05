@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 # What the judge RECEIVES decides what the run can conclude. Three separate ways a
 # run has silently narrowed that input, all measured on 2026-08-16 during the
-# your-repo spa/src pass:
+# example-repo spa/src pass:
 #
 #   1. run-review.ps1 discarded reviewer output that failed the round's start-pattern
 #      check. That check must decide PARTICIPATION (an off-contract reply is not a
@@ -19,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 #
 # Each assertion below fails against the code as it stood before those fixes.
 
+. (Join-Path $PSScriptRoot 'fixtures' 'preflight-fixture.ps1')
 $skillRoot = Join-Path $PSScriptRoot '..'
 $source = Join-Path $skillRoot 'run-review.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ar-judge-input-' + [guid]::NewGuid().ToString('N'))
@@ -28,14 +29,11 @@ $work = Join-Path $root 'work'
 
 try {
     New-Item -ItemType Directory -Path $fixture, $repo | Out-Null
-    # The spine refuses to start without a preflight.json in the WorkDir or its parent
-    # (the host's pre-flight record); the fixture satisfies the gate at the temp root.
-    [ordered]@{ stub = 'pass' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'preflight.json') -Encoding utf8
     Copy-Item -LiteralPath $source -Destination $fixture
-    # run-review.ps1 dot-sources pool-findings.ps1 (the shared finding splitter)
-    # from its own directory, so the fixture copy needs it beside the spine.
-    Copy-Item -LiteralPath (Join-Path $skillRoot 'pool-findings.ps1') -Destination $fixture
     Copy-Item -LiteralPath (Join-Path $skillRoot 'briefs') -Destination $fixture -Recurse
+    # $work sits under $root, and the driver reads pre-flight evidence from WorkDir
+    # or its parent.
+    Write-PreflightFixture -Dir $root -ReviewerId 'A', 'B', 'C'
 
     # Reviewer C answers with prose only -- no '### ', no line-initial 'F<n>:' -- but
     # says something a judge would want. That is the shape that was being thrown away.
@@ -98,16 +96,16 @@ if ($FindingsPath) {
         throw 'off-contract reviewer text must reach the judge, not be discarded on a format check'
     }
 
-    # ...and must still not buy a vendor vote.
+    # ...and must count as a vendor response without buying a pooled finding.
     $status = Get-Content -LiteralPath (Join-Path $work 'status.json') -Raw | ConvertFrom-Json
-    if (@($status.phase1Reviewers | Where-Object { $_.id -eq 'C' }).Count -ne 0) {
-        throw 'an off-contract reply must NOT count as a participating Phase 1 reviewer'
+    if (@($status.phase1Reviewers | Where-Object { $_.id -eq 'C' }).Count -ne 1) {
+        throw 'a non-empty on-topic prose reply must count as a participating Phase 1 reviewer'
     }
-    if ($status.vendorsP1 -ne 2) {
-        throw "off-contract output must not inflate the vendor count (got $($status.vendorsP1), expected 2)"
+    if ($status.vendorsP1 -ne 3) {
+        throw "a participating prose reply must count toward the vendor count (got $($status.vendorsP1), expected 3)"
     }
     if (@($status.offContract | Where-Object { $_.id -eq 'C' }).Count -eq 0) {
-        throw 'status.json must record which reviewers went off-contract, so the drop is never silent'
+        throw 'status.json must record which participating replies were unpooled, so the format loss is never silent'
     }
     $pooled = Get-Content -LiteralPath (Join-Path $work 'pooled-findings.txt') -Raw
     if ($pooled -match 'UNPOOLED_CANARY_TEXT') {

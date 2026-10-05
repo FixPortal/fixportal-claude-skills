@@ -63,15 +63,16 @@ about the standard into a repository failure.
 
 ## Scope and discovery
 
-Defaults:
+The estate root must be supplied explicitly. The report directory defaults to the path
+below and may be overridden:
 
-| Setting | Default |
+| Setting | Value |
 |---|---|
-| Estate root | `<workdir>` |
+| Estate root | `<estate-root>` — the parent folder holding the repositories; supply it explicitly |
 | Report directory | `<vault>/Claude/Estate Audit/Dotnet` |
 | Candidate | Git repository containing at least one `.slnx` or `.sln` |
 
-Explicit repository paths or estate roots override the defaults.
+Explicit repository paths or estate roots are required inputs.
 
 For each estate root:
 
@@ -111,6 +112,28 @@ the coverage `Not assessed` without falling back. Otherwise select the greatest
 Record the status, manifest path, audited HEAD, completion time, and reason when not
 current; use `—` for fields unavailable under `Not found` or `Not assessed`. This proves
 coverage and manifest validity only, not report quality or independent immutability.
+
+Under the `Performance audit coverage` label, report three separate named values rather
+than an overloaded count:
+
+- `Audit freshness` — the `Current`, `Stale`, `Not found`, or `Not assessed` result above.
+- `Audit depth` — schema v2 `audit.depth`; report immutable schema v1 output as
+  `Legacy-unspecified`, never infer depth from an empty findings array.
+- `Retained harness` — `Retained`, `Promotion candidate`, `None`, or `Not assessed`.
+
+In the estate matrix, render those values in one compact cell as
+`Freshness: <value>; Depth: <value>; Harness: <value>`. Label the test dimension
+`Test conformance`: it covers the structural and execution checks sourced from
+`scaffold-tests`, not the risk-based adequacy review performed by `audit-tests`.
+
+Classify a retained harness from the current tracked repository independently of audit freshness:
+a BenchmarkDotNet project, an explicitly opt-in performance qualification with its documented
+command, or a repository-owned load/qualification executable with correctness checks qualifies.
+Free-form timing snippets do not. A v2 `Promote` workload is `Promotion candidate` until the
+proposed destination exists in the tracked tree. Use `Not assessed` when bounded discovery is
+incomplete. This separation preserves useful harness coverage when a promotion commit makes the
+immutable audit SHA stale.
+
 Performance audit coverage never changes a check result, repository verdict, finding, or
 remediation prompt. Never invoke `audit-dotnet-performance`, build, test, benchmark, or
 profile to fill a coverage gap; hand stale, missing, and unavailable entries off as future
@@ -122,6 +145,22 @@ After discovering the solution format and findings, run
 Use its `SolutionAction` for solution-format grading and its `PullRequests` unchanged when
 shaping remediation. Do not independently infer either policy in prose.
 
+Two of those inputs are judgements, and both are DEFINED HERE. This skill forbids reasoning
+about the policy in prose, so leaving the predicates undefined meant two operators passing
+different values for identical evidence and getting different PR plans:
+
+- **`CSharpierWidthMigration` is true when adopting the house print width would reformat
+  files this audit is not otherwise touching** — `dotnet csharpier check .` fails on files
+  carrying no other finding. That reformatting is what earns a standalone PR: a width
+  migration mixed into a findings PR buries the review. It is false when CSharpier is
+  already clean, or when its only failures are in files the remaining findings change
+  anyway.
+- **`SolutionFormat` names the solution that GOVERNS the repository** — the one CI builds.
+  A repository holding both a `.sln` and a `.slnx`, or one mid-migration, is graded on
+  whichever CI actually invokes, and the evidence record says which. There is no `mixed`
+  value because a build has one entry point, and grading against a file CI never opens
+  grades nothing.
+
 ## Audit workflow
 
 Use a task per candidate so the sweep survives compaction. Complete one repository's
@@ -129,6 +168,7 @@ evidence record before moving to the next.
 
 ### 1. Preserve state
 
+<!-- routing: preserve-state -->
 Capture `git status --short --untracked-files=all` before and after each repository. Do not
 clean, reset, revert, stash, or otherwise alter user state. If an audit command changes a
 tracked or meaningful untracked file, stop checks for that repository, mark it
@@ -136,6 +176,7 @@ tracked or meaningful untracked file, stop checks for that repository, mark it
 
 ### 2. Evaluate every applicable scaffold rule
 
+<!-- routing: evaluate-scaffold-rules -->
 Derive the checklist from the source skills rather than this summary. At minimum, cover:
 
 - solution/project layout, `.slnx`, target frameworks, central package management,
@@ -170,6 +211,7 @@ section; a commented value or one under an unrelated glob does not configure tha
 
 ### 3. Run the smallest decisive checks
 
+<!-- routing: run-decisive-checks -->
 Prefer repository-declared CI commands. Where applicable and available, run read-only
 equivalents for:
 
@@ -186,6 +228,8 @@ or SDK is `Not assessed`, never a pass. Capture the exact command, exit code, an
 decisive output; keep giant logs out of the report.
 
 ### 4. Classify consistently
+
+<!-- routing: classify -->
 
 | Check result | Meaning |
 |---|---|
@@ -205,6 +249,7 @@ within a repository; do not create one finding per symptom.
 
 ## Report contract
 
+<!-- routing: report -->
 Write exactly one Markdown report to the default or overridden report directory. Name it
 `YYYY-MM-DD-HHmm-dotnet-estate-audit.md`; if it exists, append `-02`, `-03`, and so on.
 Never overwrite an existing vault file.
@@ -217,21 +262,34 @@ Follow `scaffold-doc`'s vault conventions and use this order:
 3. A load-bearing verdict distribution diagram.
 4. Scope, exclusions, audit environment, and source-of-truth ledger, including any
    `Baseline defect` or baseline-validation `Not assessed` entries.
-5. Estate conformance matrix: one row per candidate, with each major dimension, the
-   non-graded `Performance audit coverage` status, and the repository verdict.
+5. Estate conformance matrix: one row per candidate, with each major dimension, a
+   `Test conformance` column, the non-graded `Performance audit coverage` column in the
+   compact format above, and the repository verdict.
 6. Cross-estate findings, surprising and repeated issues first.
-7. Per-repository evidence: identity, performance audit coverage and handoff, a check table
-   with `Evidence origin` and `Observed at` columns, exceptions, unavailable checks, and
+7. Per-repository evidence: identity, `Test conformance`, `Performance audit coverage`
+   with its separate freshness/depth/harness evidence and handoff, a check table with
+   `Evidence origin` and `Observed at` columns, exceptions, unavailable checks, and
    numbered findings.
 8. Remediation prompts: one prompt per `Non-conforming` repository; none for compliant or
    merely incomplete repositories.
 9. Audit actions ledger recording read-only checks and confirming that no remediation ran.
 10. Appendix containing exact commands and untruncated repository identifiers.
 
+Use these exact level-2 headings, once each and in that order:
+
+`Executive summary`, `Verdict distribution`, `Scope and source-of-truth`,
+`Estate conformance matrix`, `Cross-estate findings`, `Per-repository evidence`,
+`Remediation prompts`, `Audit actions ledger`, and `Appendix`.
+
+Draft outside the vault, run `scripts/test-estate-report.ps1 -Path <draft>`, and publish
+to the unused final filename only after it passes. A validator failure forbids publication.
+
 Do not create a report bundle, CSVs, evidence folders, or separate prompt files. Link the
 single report in the final response.
 
 ## Remediation prompt contract
+
+<!-- routing: remediation-prompt -->
 
 Every remediation prompt must be copy-ready for a fresh agent and contain:
 

@@ -4,22 +4,22 @@ $root = Join-Path $PSScriptRoot '..'
 $skill = Get-Content -LiteralPath (Join-Path $root 'SKILL.md') -Raw
 $brief = Get-Content -LiteralPath (Join-Path $root 'audit-brief.md') -Raw
 
-# Closed vocabulary: changing a glyph, dropping yellow polish, or adding a fifth value
+# Closed vocabulary: changing a grade, dropping polish, or adding a fifth value
 # must fail the worker contract rather than producing incomparable audit results.
-$grades = '🟩|🟨|🟧|🟥'
+$grades = 'Good|Polish|Reliability|Broken'
 $expectedResultSchema = "`"grades`": { `"reach`": `"$grades`", `"impl`": `"$grades`", `"correctness`": `"$grades`", `"utility`": `"$grades`", `"exposure`": `"$grades`" }"
 
 if ($brief -notmatch [regex]::Escape($expectedResultSchema)) {
-    throw 'Worker result grades must use the closed four-glyph vocabulary on every axis.'
+    throw 'Worker result grades must use the closed four-name vocabulary on every axis.'
 }
 
-if ($skill -notmatch [regex]::Escape('Every worker result uses the closed grade vocabulary: 🟩, 🟨, 🟧, 🟥.')) {
+if ($skill -notmatch [regex]::Escape('Every worker result uses the closed grade vocabulary: Good, Polish, Reliability, Broken.')) {
     throw 'Skill must require the same closed grade vocabulary as the worker result.'
 }
 
 # The controller, not a routed reference, owns every executable output decision.
 foreach ($needle in @(
-    '🟥 Broken, 🟧 Reliability,',
+    'defect scale: Broken, Reliability, Polish, and Good.',
     'Utility uses the lifecycle scale:',
     # Placeholdered 2026-09-19. The controller no longer hardcodes the machine-local
     # vault root, which every third-party runtime mounting this skill was reading

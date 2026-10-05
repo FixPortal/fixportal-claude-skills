@@ -1,0 +1,64 @@
+{
+  "_comment": "Per-phase model routing. Follows the skill's own numbered workflow plus its two output contracts. The checklist is derived from the scaffold source skills at audit time rather than recalled, which keeps evaluation at workhorse; classification is where Not assessed must not become a pass. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "preserve-state",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Captures the exact status bytes before and after each repository and refuses to clean, reset, revert or stash. A change to a tracked or meaningful untracked file stops that repository as Incomplete with the change reported and not deleted - a specified comparison and a specified response.",
+      "adjust": []
+    },
+    {
+      "id": "evaluate-scaffold-rules",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Derives the checklist from the source scaffold skills rather than a summary, and evaluates conditional rules only where repository evidence makes them applicable. Two disciplines carry it: text presence is not configuration evidence, so an active assignment in an applicable section must be verified rather than grepped; and a structural sweep must not expand into a general security, architecture or test-adequacy review.",
+      "adjust": [
+        {
+          "when": "repoCount > 10",
+          "step": -1,
+          "why": "Across a wide sweep each repository is the same fixed checklist applied again, with the applicability judgements already settled by the first few - the shape a cheaper tier sustains without drifting into a general review."
+        }
+      ]
+    },
+    {
+      "id": "run-decisive-checks",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Runs the repository's own declared CI commands and their read-only equivalents, capturing exact command, exit code and minimal decisive output. The commands are prescribed and the prohibitions are explicit - no global installs, no mutating format, no invented replacement check.",
+      "adjust": [
+        {
+          "when": "missingTooling > 0",
+          "step": 1,
+          "why": "A missing executable, credential, service or SDK is Not assessed and never a pass, and telling a genuinely absent tool from a misinvoked one is what keeps an unrun check out of the Pass column."
+        }
+      ]
+    },
+    {
+      "id": "classify",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Applies the five check results and the three repository verdicts, deduplicating repeated root causes rather than emitting one finding per symptom. The distinction that costs most if wrong is Not assessed against Pass: one makes a repository Incomplete and honest, the other reports conformance nobody measured.",
+      "adjust": []
+    },
+    {
+      "id": "report",
+      "tier": "workhorse",
+      "ceiling": "workhorse",
+      "why": "Writes exactly one additively-named Markdown report, never overwriting an existing vault file. The verdicts were decided in classification; this renders them against a fixed contract.",
+      "adjust": []
+    },
+    {
+      "id": "remediation-prompt",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Emits the per-repository remediation prompt from findings that already carry rule source, observed evidence, expected state, smallest remediation and an exact acceptance check. It is executed elsewhere against a repository this audit will not see again, so scope it carries is scope somebody acts on unsupervised.",
+      "adjust": []
+    }
+  ]
+}

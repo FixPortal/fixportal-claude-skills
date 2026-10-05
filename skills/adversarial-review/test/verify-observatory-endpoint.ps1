@@ -15,9 +15,7 @@ function Assert-ObservatoryEndpoint([string] $name, [string] $text) {
         throw "$name names an azurewebsites.net host"
     }
     $gate = [regex]::Match($text, '(?m)^\s*if \(\$env:OBSERVATORY_API_KEY[^\r\n]*\)\s*\{')
-    # Public mirror: the gemini driver gates on $observatoryUrl, a local assigned only from
-    # $env:OBSERVATORY_URL (the assignment check below enforces that), so accept either form.
-    if (-not $gate.Success -or $gate.Value -notmatch '\$env:OBSERVATORY_URL|\$observatoryUrl') {
+    if (-not $gate.Success -or $gate.Value -notmatch '\$env:OBSERVATORY_URL') {
         throw "$name does not gate its telemetry post on OBSERVATORY_URL"
     }
 

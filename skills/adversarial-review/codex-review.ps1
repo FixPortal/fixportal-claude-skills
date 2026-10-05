@@ -62,6 +62,11 @@ param(
     # (Codex may read files the diff omits); when omitted, it is diff-blind.
     [string] $RepoPath,
 
+    # Explicit opt-in for command-running repo-aware dispatches. The default is
+    # inlined material in a throwaway directory because Codex's Windows sandbox
+    # is intermittent on this host.
+    [switch] $AllowRepoCommands,
+
     [string] $Effort,           # accepted for contract symmetry; codex exec has no clean effort flag
 
     [string] $OutPath,
@@ -69,6 +74,16 @@ param(
 )
 
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# -Effort is declared for contract symmetry and cannot be honoured: `codex exec`
+# exposes no clean effort flag. run-review.ps1 introspects declared parameters and
+# forwards -Effort to any wrapper that DECLARES one, so the Codex seat's
+# reviewers.json effort arrives here and would otherwise be discarded without
+# trace - the same shape as claude-review.ps1's dropped --effort, where the
+# declaration convinced the driver the capability was real.
+if ($Effort) {
+    Write-Warning "-Effort '$Effort' ignored: codex exec exposes no per-invocation effort flag, so this seat's declared effort is not applied."
+}
 
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
     Write-Error 'codex CLI not found on PATH. Install Codex and run `codex login` (ChatGPT), or use openai-review.ps1 (API) as the fallback.'
@@ -86,6 +101,9 @@ if ($InstructionPath) { $Instruction = Read-InputFile $InstructionPath 'Instruct
 if ([string]::IsNullOrWhiteSpace($Instruction)) {
     Write-Error 'Provide the review instruction via -Instruction or -InstructionPath.'; exit 2
 }
+if ($RepoPath -and -not $AllowRepoCommands) {
+    Write-Error 'RepoPath requires -AllowRepoCommands; inline the review material by default.'; exit 2
+}
 
 # --- Compose the prompt (symmetric with openai-review.ps1) -------------------
 $sb = [System.Text.StringBuilder]::new()
@@ -93,7 +111,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine()
 if (-not $FindingsPath) {
     # Phase-1 style directive only: in Phase 2 (-FindingsPath) the brief owns the
-    # verdict format, and an appended per-finding directive AFTER it conflicts.
+    # verdict format, and a per-finding directive appended AFTER it contradicts it.
     [void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate.')
     [void]$sb.AppendLine()
 }
@@ -143,9 +161,15 @@ $lastMsg  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRa
 
 # Pass -m only when the model id looks codex-native (codex ids differ from the
 # Chat Completions API ids that reviewers.json carries for the fallback wrapper).
+#
+# The family part was pinned to a VERSION ('gpt-5') and so silently stopped pinning
+# the day GPT-6 shipped: gpt-6-astra matched nothing, -m was never passed, Codex ran
+# its default model, and telemetry recorded the requested id regardless -- a wrong
+# attribution that no failure would ever surface. Match the vendor prefix, not a
+# release number, so the next family does not repeat it.
 $codexArgs = @('exec', '--sandbox', 'read-only', '--skip-git-repo-check',
                '--color', 'never', '-C', $workDir, '-o', $lastMsg, '--json')
-if ($Model -and ($Model -match '^(gpt-5|o3|o4|codex)')) { $codexArgs += @('-m', $Model) }
+if ($Model -and ($Model -match '^(gpt-|o3|o4|codex)')) { $codexArgs += @('-m', $Model) }
 
 # --- Invoke, with a couple of retries on transient CLI failure --------------
 $maxAttempts = 3
@@ -196,7 +220,18 @@ function Get-RegistryCost([long] $i, [long] $o) {
     if (-not $registry.models.ContainsKey($Model)) { return $null }
     $facts = $registry.models[$Model]
     $on = $env:MODEL_REGISTRY_EFFECTIVE_DATE ?? (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
-    $cost = Get-ModelRegistryCost -Facts $facts -InputTokens $i -OutputTokens $o -Channel api -On $on
+    # Guarded. Get-ModelRegistryCost throws on overlapping api pricing records, and the
+    # only try here covered ConvertFrom-Json -- so a registry DATA error made this wrapper
+    # exit non-zero AFTER the model call had completed and been paid for, the reviewer was
+    # marked FAILED, and the retry through the metered fallback hit the same throw. A
+    # registry error must cost UNKNOWN, never a vendor's vote plus real money.
+    try {
+        $cost = Get-ModelRegistryCost -Facts $facts -InputTokens $i -OutputTokens $o -Channel api -On $on
+    }
+    catch {
+        Write-Warning "Registry pricing for '$Model' is unusable ($($_.Exception.Message)); cost recorded as UNKNOWN."
+        return $null
+    }
     if ($null -ne $cost) { [Math]::Round($cost, 8) }
 }
 $cost = Get-RegistryCost $inTok $outTok
@@ -211,8 +246,6 @@ if ($UsageSidecarPath) {
 # --- Observatory per-call telemetry (fire-and-forget) -----------------------
 # Vendor stays OpenAI (Codex is the OpenAI vote); cost is putative under the sub.
 if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and ($inTok -gt 0 -or $outTok -gt 0)) {
-    # No default endpoint: the destination is deployment-specific and belongs in the
-    # environment, not in a published script. Unset means telemetry is simply not posted.
     $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId = [Guid]::NewGuid().ToString()
     $obsBody = @{

@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import sonarjs from 'eslint-plugin-sonarjs'
 import { defineConfig, globalIgnores } from 'eslint/config'
-// <your-org> projects also spread the shared design-system rules:
+// Projects that consume a shared design-system package also spread its rules:
 //   import { configs as designConfigs } from '@your-org/design/eslint'
 //   ...designConfigs(),
 
@@ -65,12 +65,12 @@ export default defineConfig([
     // IPs are test data.
     files: ['**/*.{test,spec}.{ts,tsx}'],
     rules: {
+      // Test code imports devDependencies (vitest, testing-library) by design.
       'sonarjs/no-duplicate-string': 'off',
       'sonarjs/no-undefined-assignment': 'off',
       'sonarjs/no-wildcard-import': 'off',
       'sonarjs/function-name': 'off',
       'sonarjs/no-hardcoded-ip': 'off',
-      // Test code imports devDependencies (vitest, testing-library) by design.
       'sonarjs/no-implicit-dependencies': 'off',
     },
   },

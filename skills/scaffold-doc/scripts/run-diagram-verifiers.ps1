@@ -41,7 +41,12 @@ foreach ($check in $checks) {
     if (-not (Test-Path -LiteralPath $check -PathType Leaf)) {
         throw "required diagram verifier does not exist: $check"
     }
-    & $python.Source $check $diagramFile
+    # The CommandInfo itself, not `.Source`. `.Source` is the executable path only for an
+    # Application; for an alias or a shell function named `python` - which is how a
+    # pyenv or conda shim commonly lands on PATH - it is the module name or empty, and
+    # `& ''` then fails with a message about an empty command rather than about python.
+    # Invoking the CommandInfo works for every command type.
+    & $python $check $diagramFile
     if ($LASTEXITCODE -ne 0) {
         throw "diagram verifier failed with exit code $LASTEXITCODE`: $check"
     }

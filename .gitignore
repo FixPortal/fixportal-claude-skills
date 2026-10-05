@@ -4,6 +4,10 @@ _leakscan.txt
 .DS_Store
 Thumbs.db
 
+# Python bytecode and test caches written by running the verifiers locally.
+__pycache__/
+.pytest_cache/
+
 # Knowledge-graph tool output (graphify / understand-anything)
 graphify-out/
 .understand-anything/

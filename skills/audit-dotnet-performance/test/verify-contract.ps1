@@ -28,7 +28,7 @@ function Invoke-Inventory {
 }
 
 function Invoke-Manifest {
-    param([string] $ManifestPath, [string] $Mode = 'Publication', [string] $Id)
+    param([string] $ManifestPath, [string] $Mode = 'Publication', [string] $Id, [string] $ReportPath)
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command pwsh).Source
     $start.UseShellExecute = $false
@@ -42,6 +42,30 @@ function Invoke-Manifest {
     $start.ArgumentList.Add('-Mode')
     $start.ArgumentList.Add($Mode)
     if ($Id) { $start.ArgumentList.Add('-FindingId'); $start.ArgumentList.Add($Id) }
+    if ($ReportPath) { $start.ArgumentList.Add('-ReportPath'); $start.ArgumentList.Add($ReportPath) }
+    $process = [Diagnostics.Process]::Start($start)
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    [pscustomobject]@{ stdout = $stdout; stderr = $stderr; exitCode = $process.ExitCode }
+}
+
+function Invoke-Publication {
+    param([string] $StagingDirectory, [string] $DestinationDirectory, [string] $Stem)
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = (Get-Command pwsh).Source
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.ArgumentList.Add('-NoProfile')
+    $start.ArgumentList.Add('-File')
+    $start.ArgumentList.Add($publicationScriptPath)
+    $start.ArgumentList.Add('-StagingDirectory')
+    $start.ArgumentList.Add($StagingDirectory)
+    $start.ArgumentList.Add('-DestinationDirectory')
+    $start.ArgumentList.Add($DestinationDirectory)
+    $start.ArgumentList.Add('-Stem')
+    $start.ArgumentList.Add($Stem)
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
@@ -74,11 +98,55 @@ function Invoke-ManagedBoundary {
     [pscustomobject]@{ stdout = $stdout; stderr = $stderr; exitCode = $process.ExitCode }
 }
 
-$scriptPath = Join-Path $PSScriptRoot '..\scripts\inventory-dotnet-performance.ps1'
-$manifestScriptPath = Join-Path $PSScriptRoot '..\scripts\test-performance-manifest.ps1'
-$boundaryScriptPath = Join-Path $PSScriptRoot '..\scripts\test-managed-product-boundary.ps1'
+$scriptPath = Join-Path $PSScriptRoot '..' 'scripts' 'inventory-dotnet-performance.ps1'
+$manifestScriptPath = Join-Path $PSScriptRoot '..' 'scripts' 'test-performance-manifest.ps1'
+$publicationScriptPath = Join-Path $PSScriptRoot '..' 'scripts' 'publish-performance-audit.ps1'
+$boundaryScriptPath = Join-Path $PSScriptRoot '..' 'scripts' 'test-managed-product-boundary.ps1'
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "Expected production inventory script at '$scriptPath'."
+}
+
+# --- WORKFLOW ORDER ---------------------------------------------------------------------
+# The plan (docs/superpowers/plans/2026-08-26-dotnet-performance-skills.md, Task 6) states
+# an order and says the contract test must assert it. Nothing asserted it, so the ordering
+# lived only as prose in a plan document. The load-bearing part is the tail: DRAFT, then
+# recapture and compare, then validate and publish. The manifest asserts
+# `targetStateUnchanged` and a failed comparison publishes a `Blocked`-depth manifest, so
+# drafting has to precede the proof and publication has to follow it. Publishing first
+# ships an assertion nothing has checked. (CodeRabbit, PR #135.)
+$skillText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..' 'SKILL.md') -Raw
+$workflowAnchors = [ordered]@{
+    'capture repository identity'  = 'git rev-parse --show-toplevel'
+    'inventory'                    = 'inventory-dotnet-performance\.ps1'
+    'choose a workload'            = '(?i)choose a representative workload'
+    'obtain approval'              = '(?i)obtain or verify the approval'
+    'baseline'                     = '(?i)establish correctness and a baseline'
+    'measure and attribute'        = '(?i)then measure and attribute'
+    'cost supported claims'        = '(?i)cost only supported evidence'
+    'draft classifications'        = '(?i)prepare classifications and draft report/manifest content'
+    'recapture and compare'        = '(?i)recapture the same root, HEAD, branch, status body and content fingerprint'
+    'validate and publish'         = '(?i)validate the paired Markdown and manifest, and publish'
+}
+# The CONTENT fingerprint must include the INDEX. Bare `git diff` compares the worktree to
+# the index, so a file staged before the run whose worktree copy still matches the index
+# changes tracked content against HEAD while leaving both the status bytes and the unstaged
+# diff identical - invisible to the exact proof this fingerprint is. (CodeRabbit, PR #135.)
+if ($skillText -notmatch 'git diff --cached') {
+    throw 'audit-dotnet-performance SKILL.md must include `git diff --cached` in the content fingerprint; bare `git diff` cannot see a staged change.'
+}
+
+$previousName = $null
+$previousIndex = -1
+foreach ($anchor in $workflowAnchors.GetEnumerator()) {
+    $match = [regex]::Match($skillText, $anchor.Value)
+    if (-not $match.Success) {
+        throw "audit-dotnet-performance SKILL.md is missing the '$($anchor.Key)' workflow step (pattern: $($anchor.Value))."
+    }
+    if ($match.Index -lt $previousIndex) {
+        throw "audit-dotnet-performance SKILL.md states '$($anchor.Key)' before '$previousName'; the audit flow order is Task 6's contract."
+    }
+    $previousName = $anchor.Key
+    $previousIndex = $match.Index
 }
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ("performance-inventory-" + [guid]::NewGuid())
@@ -94,39 +162,51 @@ $boundaryRepo = Join-Path ([IO.Path]::GetTempPath()) ("performance-managed-bound
 $tools = Join-Path $fixture 'tools'
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'src\Library') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'bench\Benchmarks') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'BenchmarkDotNet.Artifacts\results') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'test\Library.Tests') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'src' 'Library') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'bench' 'Benchmarks') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'BenchmarkDotNet.Artifacts' 'results') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'test' 'Library.Tests') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $fixture 'broken') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'bin\decoy') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'obj\decoy') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture '.git\decoy') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $fixture '.claude\worktrees\decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'bin' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'obj' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture '.git' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture '.claude' 'worktrees' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture '.worktrees' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'spa' 'node_modules' 'decoy') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'python' '.venv' 'decoy') -Force | Out-Null
     New-Item -ItemType Directory -Path $tools -Force | Out-Null
 
     Set-Content -LiteralPath (Join-Path $fixture 'Sample.slnx') -Value '<Solution />'
     Set-Content -LiteralPath (Join-Path $fixture 'global.json') -Value '{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}'
-    Set-Content -LiteralPath (Join-Path $fixture 'src\Library\Library.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Library</OutputType></PropertyGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $fixture 'bench\Benchmarks\Benchmarks.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../../src/Library/Library.csproj" /><PackageReference Include="BenchmarkDotNet" Version="0.14.0" /></ItemGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $fixture 'test\Library.Tests\Library.Tests.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" Version="3.0.1" /></ItemGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $fixture 'broken\Broken.csproj') -Value '<Project><PropertyGroup>'
-    Set-Content -LiteralPath (Join-Path $fixture 'bench\Benchmarks\BenchmarkConfig.cs') -Value @'
+    Set-Content -LiteralPath (Join-Path $fixture 'src' 'Library' 'Library.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Library</OutputType></PropertyGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $fixture 'bench' 'Benchmarks' 'Benchmarks.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../../src/Library/Library.csproj" /><PackageReference Include="BenchmarkDotNet" Version="0.14.0" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $fixture 'test' 'Library.Tests' 'Library.Tests.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" Version="3.0.1" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $fixture 'broken' 'Broken.csproj') -Value '<Project><PropertyGroup>'
+    Set-Content -LiteralPath (Join-Path $fixture 'bench' 'Benchmarks' 'BenchmarkConfig.cs') -Value @'
 using BenchmarkDotNet.Configs;
 class BenchmarkConfig : ManualConfig { }
 '@
-    Set-Content -LiteralPath (Join-Path $fixture 'BenchmarkDotNet.Artifacts\results\Benchmarks-report.json') -Value '{}'
-    Set-Content -LiteralPath (Join-Path $fixture 'src\Library\Large.cs') -Value ("class Large {`n" + [string]::new('x', 65537))
-    Set-Content -LiteralPath (Join-Path $fixture 'src\Library\Workload.cs') -Value @'
+    Set-Content -LiteralPath (Join-Path $fixture 'BenchmarkDotNet.Artifacts' 'results' 'Benchmarks-report.json') -Value '{}'
+    Set-Content -LiteralPath (Join-Path $fixture 'src' 'Library' 'Large.cs') -Value ("class Large {`n" + [string]::new('x', 65537))
+    Set-Content -LiteralPath (Join-Path $fixture 'src' 'Library' 'Workload.cs') -Value @'
 using Microsoft.EntityFrameworkCore;
 using System.Net.Http;
 using Microsoft.Extensions.Hosting;
 class Workload : BackgroundService { DbContext Db = null!; HttpClient Client = new(); protected override Task ExecuteAsync(CancellationToken token) => Parallel.ForEachAsync([], token, (_, _) => ValueTask.CompletedTask); }
 '@
-    Set-Content -LiteralPath (Join-Path $fixture 'bin\decoy\Decoy.cs') -Value 'class Decoy { DbContext x; }'
-    Set-Content -LiteralPath (Join-Path $fixture 'obj\decoy\Decoy.cs') -Value 'class Decoy { HttpClient x; }'
-    Set-Content -LiteralPath (Join-Path $fixture '.git\decoy\Decoy.cs') -Value 'class Decoy : BackgroundService {}'
-    Set-Content -LiteralPath (Join-Path $fixture '.claude\worktrees\decoy\Decoy.cs') -Value 'Parallel.ForEachAsync([], default, (_, _) => ValueTask.CompletedTask);'
+    Set-Content -LiteralPath (Join-Path $fixture 'bin' 'decoy' 'Decoy.cs') -Value 'class Decoy { DbContext x; }'
+    Set-Content -LiteralPath (Join-Path $fixture 'obj' 'decoy' 'Decoy.cs') -Value 'class Decoy { HttpClient x; }'
+    Set-Content -LiteralPath (Join-Path $fixture '.git' 'decoy' 'Decoy.cs') -Value 'class Decoy : BackgroundService {}'
+    Set-Content -LiteralPath (Join-Path $fixture '.claude' 'worktrees' 'decoy' 'Decoy.cs') -Value 'Parallel.ForEachAsync([], default, (_, _) => ValueTask.CompletedTask);'
+    Set-Content -LiteralPath (Join-Path $fixture '.worktrees' 'decoy' 'Decoy.slnx') -Value '<Solution />'
+    Set-Content -LiteralPath (Join-Path $fixture '.worktrees' 'decoy' 'Decoy.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk" />'
+    Set-Content -LiteralPath (Join-Path $fixture '.worktrees' 'decoy' 'Decoy.cs') -Value 'class Decoy { DbContext Context; }'
+    Set-Content -LiteralPath (Join-Path $fixture 'spa' 'node_modules' 'decoy' 'Decoy.slnx') -Value '<Solution />'
+    Set-Content -LiteralPath (Join-Path $fixture 'spa' 'node_modules' 'decoy' 'Decoy.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk" />'
+    Set-Content -LiteralPath (Join-Path $fixture 'spa' 'node_modules' 'decoy' 'Decoy.cs') -Value 'class Decoy : BackgroundService {}'
+    Set-Content -LiteralPath (Join-Path $fixture 'python' '.venv' 'decoy' 'Decoy.slnx') -Value '<Solution />'
+    Set-Content -LiteralPath (Join-Path $fixture 'python' '.venv' 'decoy' 'Decoy.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk" />'
+    Set-Content -LiteralPath (Join-Path $fixture 'python' '.venv' 'decoy' 'Decoy.cs') -Value 'class Decoy { HttpClient Client; }'
     if ($IsWindows) {
         Set-Content -LiteralPath (Join-Path $tools 'dotnet.cmd') -Value @'
 @echo off
@@ -179,7 +259,13 @@ exit 7
     Assert-That ($inventory.probes.runtime.exitCode -eq 7) 'Expected the runtime probe exit code in structured evidence.'
     Assert-That ($inventory.probes.runtime.output -contains 'Microsoft.NETCore.App 10.0.0 [partial]') 'Expected partial runtime stdout to survive a non-zero exit.'
     Assert-That ($inventory.probes.runtime.reason -match 'exit code 7') 'Expected the runtime probe failure reason.'
-    Assert-That (-not (($inventory.markers.file -join "`n") -match '(?i)(^|[\\/])(bin|obj|\.git|worktrees)([\\/]|$)')) 'Expected pruned decoys to be excluded.'
+    Assert-That (-not ($inventory.solutions -match '(?i)(^|[\/])\.worktrees([\/]|$)')) 'Expected root .worktrees solutions to be pruned.'
+    Assert-That (-not ($inventory.projects.path -match '(?i)(^|[\/])\.worktrees([\/]|$)')) 'Expected root .worktrees projects to be pruned.'
+    Assert-That (-not ($inventory.solutions -match '(?i)(^|[\/])node_modules([\/]|$)')) 'Expected node_modules solutions to be pruned.'
+    Assert-That (-not ($inventory.projects.path -match '(?i)(^|[\/])node_modules([\/]|$)')) 'Expected node_modules projects to be pruned.'
+    Assert-That (-not ($inventory.solutions -match '(?i)(^|[\/])\.?venv([\/]|$)')) 'Expected virtual-environment solutions to be pruned.'
+    Assert-That (-not ($inventory.projects.path -match '(?i)(^|[\/])\.?venv([\/]|$)')) 'Expected virtual-environment projects to be pruned.'
+    Assert-That (-not (($inventory.markers.file -join "`n") -match '(?i)(^|[\\/])(bin|obj|\.git|\.?worktrees|node_modules|\.?venv)([\\/]|$)')) 'Expected pruned decoys to be excluded.'
 
     New-Item -ItemType Directory -Path $notARepo | Out-Null
     $outsideResult = Invoke-Inventory -Repository $notARepo
@@ -242,7 +328,7 @@ exit 7
 
     New-Item -ItemType Directory -Path (Join-Path $globalJsonWithoutSdkRepo 'src') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $globalJsonWithoutSdkRepo 'global.json') -Value '{"test":{"runner":"Microsoft.Testing.Platform"}}'
-    Set-Content -LiteralPath (Join-Path $globalJsonWithoutSdkRepo 'src\Worker.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $globalJsonWithoutSdkRepo 'src' 'Worker.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
     & git -C $globalJsonWithoutSdkRepo init -q
     $globalJsonWithoutSdk = Invoke-Inventory -Repository $globalJsonWithoutSdkRepo -ToolPath $tools
     Assert-That ($globalJsonWithoutSdk.exitCode -eq 0) "Expected a global.json without sdk to inventory successfully: $($globalJsonWithoutSdk.stderr)"
@@ -266,6 +352,277 @@ exit 7
     $validManifestPath = Join-Path $manifestDirectory 'valid.manifest.json'
     $validManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $validManifestPath -NoNewline
     $beforeHash = (Get-FileHash -LiteralPath $validManifestPath).Hash
+
+    $reportHeadings = @(
+        '## 1. Orientation and executive summary',
+        '## 2. Repository, scope, and authority boundaries',
+        '## 3. Workload contracts',
+        '## 4. Environment and reproducibility ledger',
+        '## 5. Tool and source ledger',
+        '## 6. Baseline results',
+        '## 7. Attributed hotspot map',
+        '## 8. Costed findings',
+        '## 9. Rejected and inconclusive experiments',
+        '## 10. Recommended experiment order',
+        '## 11. Unassessed dimensions and fidelity gaps',
+        '## 12. Repository-state preservation evidence',
+        '## 13. Artifact ledger',
+        '## 14. Remediation manifest'
+    )
+    $validReportPath = Join-Path $manifestDirectory 'valid.md'
+    (@('# Performance audit') + $reportHeadings + @('Validated with `scripts/test-performance-manifest.ps1`.')) | Set-Content -LiteralPath $validReportPath
+
+    $validV2Manifest = $validManifest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $validV2Manifest.schemaVersion = 2
+    $validV2Manifest.audit | Add-Member -NotePropertyName depth -NotePropertyValue 'Measured'
+    $validV2Manifest | Add-Member -NotePropertyName workloads -NotePropertyValue @(
+        [pscustomobject]@{
+            id = 'request'
+            status = 'Completed'
+            representativeMetrics = @('p95 20 ms', '2.1 KB allocated/op')
+            stability = 'Stable'
+            harnessDisposition = 'Promote'
+            harnessPromotion = [pscustomobject]@{
+                retainedSource = '<artifact-root>/request-harness'
+                cases = @('Representative request')
+                fixtureDependencies = @('Local PostgreSQL')
+                stabilityCaveats = @()
+                proposedDestination = 'benchmarks/Request.Benchmarks'
+                sourceChangeWorkflow = 'Normal reviewed repository change'
+            }
+        }
+    )
+    $validV2ManifestPath = Join-Path $manifestDirectory 'valid-v2.manifest.json'
+    $validV2Manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $validV2ManifestPath -NoNewline
+    $validV2Publication = Invoke-Manifest -ManifestPath $validV2ManifestPath -ReportPath $validReportPath
+    Assert-That ($validV2Publication.exitCode -eq 0) "Expected a paired v2 publication to pass: $($validV2Publication.stderr)"
+
+    $missingOutcome = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $missingOutcome.PSObject.Properties.Remove('workloads')
+    $missingOutcomePath = Join-Path $manifestDirectory 'missing-outcome.manifest.json'
+    $missingOutcome | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $missingOutcomePath -NoNewline
+    $missingOutcomeResult = Invoke-Manifest -ManifestPath $missingOutcomePath
+    Assert-That ($missingOutcomeResult.exitCode -ne 0 -and $missingOutcomeResult.stderr -match 'workloads') 'Expected v2 manifests without workload outcomes to fail.'
+
+    $invalidPromotion = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $invalidPromotion.workloads[0].harnessPromotion.PSObject.Properties.Remove('proposedDestination')
+    $invalidPromotionPath = Join-Path $manifestDirectory 'invalid-promotion.manifest.json'
+    $invalidPromotion | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $invalidPromotionPath -NoNewline
+    $invalidPromotionResult = Invoke-Manifest -ManifestPath $invalidPromotionPath
+    Assert-That ($invalidPromotionResult.exitCode -ne 0 -and $invalidPromotionResult.stderr -match 'proposedDestination') 'Expected incomplete promotion handoffs to fail.'
+
+    $invalidV2Cases = @(
+        @{ name = 'depth'; mutate = { param($m) $m.audit.depth = 'Deep' }; error = 'audit.depth' },
+        @{ name = 'workloads-empty'; mutate = { param($m) $m.workloads = @() }; error = 'workloads' },
+        @{ name = 'workload-id'; mutate = { param($m) $m.workloads[0].id = '' }; error = 'workload.id' },
+        @{ name = 'workload-status'; mutate = { param($m) $m.workloads[0].status = 'Healthy' }; error = 'workload.status' },
+        @{ name = 'completed-metrics'; mutate = { param($m) $m.workloads[0].representativeMetrics = @() }; error = 'representativeMetrics' },
+        @{ name = 'workload-stability'; mutate = { param($m) $m.workloads[0].stability = 'Converged' }; error = 'workload.stability' },
+        @{ name = 'harness-disposition'; mutate = { param($m) $m.workloads[0].harnessDisposition = 'Maybe' }; error = 'harnessDisposition' },
+        @{ name = 'promotion-cases'; mutate = { param($m) $m.workloads[0].harnessPromotion.cases = @() }; error = 'harnessPromotion.cases' },
+        @{ name = 'promotion-dependencies'; mutate = { param($m) $m.workloads[0].harnessPromotion.fixtureDependencies = 'PostgreSQL' }; error = 'fixtureDependencies' },
+        @{ name = 'promotion-workflow'; mutate = { param($m) $m.workloads[0].harnessPromotion.sourceChangeWorkflow = @('review') }; error = 'sourceChangeWorkflow' }
+    )
+    foreach ($case in $invalidV2Cases) {
+        $manifest = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        & $case.mutate $manifest
+        $path = Join-Path $manifestDirectory "$($case.name).manifest.json"
+        $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -NoNewline
+        $result = Invoke-Manifest -ManifestPath $path
+        # ESCAPED. These expectations are field paths, and `-match` reads their dots as
+        # wildcards - `audit.depth` matched "auditXdepth" and, worse, `workload.id`
+        # matched any message containing "workloadDid" or the like, so the assertion
+        # pinned the shape of the message rather than the FIELD it is supposed to name.
+        Assert-That ($result.exitCode -ne 0 -and $result.stderr -match [regex]::Escape($case.error)) "Expected $($case.name) to fail: $($result.stderr)"
+    }
+
+    # Artifact mode must be PUBLISHABLE. SKILL.md tells an artifact-mode run to omit
+    # `targetStateUnchanged` - step 1's captures are repository-mode only, so there is no
+    # baseline - while the validator required it present and true for every manifest, so
+    # a run following the instruction could not publish at all. `audit.mode` decides.
+    $artifactMode = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $artifactMode.audit | Add-Member -NotePropertyName mode -NotePropertyValue 'artifact' -Force
+    $artifactMode.audit.PSObject.Properties.Remove('targetStateUnchanged')
+    $artifactPath = Join-Path $manifestDirectory 'artifact-mode.manifest.json'
+    $artifactMode | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $artifactPath -NoNewline
+    $artifactResult = Invoke-Manifest -ManifestPath $artifactPath
+    Assert-That ($artifactResult.exitCode -eq 0) "an artifact-mode manifest omitting targetStateUnchanged must validate: $($artifactResult.stderr)"
+
+    # ...and asserting it there is refused, because the proof was never constructed.
+    $artifactAsserted = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $artifactAsserted.audit | Add-Member -NotePropertyName mode -NotePropertyValue 'artifact' -Force
+    $artifactAssertedPath = Join-Path $manifestDirectory 'artifact-mode-asserted.manifest.json'
+    $artifactAsserted | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $artifactAssertedPath -NoNewline
+    $artifactAssertedResult = Invoke-Manifest -ManifestPath $artifactAssertedPath
+    Assert-That ($artifactAssertedResult.exitCode -ne 0 -and $artifactAssertedResult.stderr -match [regex]::Escape('targetStateUnchanged')) `
+        "artifact mode must refuse a preservation proof it cannot have constructed: $($artifactAssertedResult.stderr)"
+
+    # Repository mode is unchanged: the field stays required and must be true.
+    $repositoryMissing = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $repositoryMissing.audit.PSObject.Properties.Remove('targetStateUnchanged')
+    $repositoryMissingPath = Join-Path $manifestDirectory 'repository-missing-proof.manifest.json'
+    $repositoryMissing | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $repositoryMissingPath -NoNewline
+    $repositoryMissingResult = Invoke-Manifest -ManifestPath $repositoryMissingPath
+    Assert-That ($repositoryMissingResult.exitCode -ne 0) `
+        'repository mode must still require the preservation proof.'
+
+    $preservationFailed = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $preservationFailed.audit.targetStateUnchanged = $false
+    $preservationFailed.audit.depth = 'Blocked'
+    $preservationFailed.audit | Add-Member -NotePropertyName preservationFailure -NotePropertyValue 'Tracked content changed during measurement.' -Force
+    $preservationFailed.findings = @()
+    $preservationFailedPath = Join-Path $manifestDirectory 'preservation-failed.manifest.json'
+    $preservationFailed | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $preservationFailedPath -NoNewline
+    $preservationFailedResult = Invoke-Manifest -ManifestPath $preservationFailedPath
+    Assert-That ($preservationFailedResult.exitCode -eq 0) "A truthful blocked preservation failure must publish: $($preservationFailedResult.stderr)"
+
+    $preservationFailureArray = $preservationFailed | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $preservationFailureArray.audit.preservationFailure = @('text disguised as array')
+    $preservationFailureArrayPath = Join-Path $manifestDirectory 'preservation-failure-array.manifest.json'
+    $preservationFailureArray | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $preservationFailureArrayPath -NoNewline
+    $preservationFailureArrayResult = Invoke-Manifest -ManifestPath $preservationFailureArrayPath
+    Assert-That ($preservationFailureArrayResult.exitCode -ne 0 -and $preservationFailureArrayResult.stderr -match 'preservationFailure') `
+        'preservationFailure must be rejected unless it is non-empty text.'
+
+    $unavailableWorkload = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $unavailableWorkload.workloads[0].status = 'Unavailable'
+    $unavailableWorkload.workloads[0].representativeMetrics = @()
+    $unavailableWorkload.workloads[0].stability = 'Not assessed'
+    $unavailableWorkload.workloads[0].harnessDisposition = 'Not needed'
+    $unavailableWorkload.workloads[0] | Add-Member -NotePropertyName harnessDispositionBasis `
+        -NotePropertyValue 'The workload could not be run, so there is nothing to re-measure.' -Force
+    $unavailableWorkload.workloads[0].PSObject.Properties.Remove('harnessPromotion')
+    $unavailableWorkloadPath = Join-Path $manifestDirectory 'unavailable-workload.manifest.json'
+    $unavailableWorkload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $unavailableWorkloadPath -NoNewline
+    $unavailableWorkloadResult = Invoke-Manifest -ManifestPath $unavailableWorkloadPath
+    Assert-That ($unavailableWorkloadResult.exitCode -eq 0) "Expected unavailable workload evidence to remain publishable: $($unavailableWorkloadResult.stderr)"
+
+    $noBenchmarkRequired = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $noBenchmarkRequired.workloads[0].status = 'Not required'
+    $noBenchmarkRequired.workloads[0].representativeMetrics = @()
+    $noBenchmarkRequired.workloads[0].stability = 'Not required'
+    $noBenchmarkRequired.workloads[0].harnessDisposition = 'Not needed'
+    $noBenchmarkRequired.workloads[0] | Add-Member -NotePropertyName harnessDispositionBasis `
+        -NotePropertyValue 'No benchmark required: inventory found no material performance-sensitive path, contract, or scale risk.' -Force
+    $noBenchmarkRequired.workloads[0].PSObject.Properties.Remove('harnessPromotion')
+    $noBenchmarkRequiredPath = Join-Path $manifestDirectory 'no-benchmark-required.manifest.json'
+    $noBenchmarkRequired | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $noBenchmarkRequiredPath -NoNewline
+    $noBenchmarkRequiredResult = Invoke-Manifest -ManifestPath $noBenchmarkRequiredPath
+    Assert-That ($noBenchmarkRequiredResult.exitCode -eq 0) "Expected a no-benchmark-required disposition to validate: $($noBenchmarkRequiredResult.stderr)"
+
+    $falseNoBenchmark = $noBenchmarkRequired | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $falseNoBenchmark.workloads[0].harnessDispositionBasis = 'No benchmark required:'
+    $falseNoBenchmarkPath = Join-Path $manifestDirectory 'false-no-benchmark-required.manifest.json'
+    $falseNoBenchmark | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $falseNoBenchmarkPath -NoNewline
+    $falseNoBenchmarkResult = Invoke-Manifest -ManifestPath $falseNoBenchmarkPath
+    Assert-That ($falseNoBenchmarkResult.exitCode -ne 0 -and $falseNoBenchmarkResult.stderr -match 'No benchmark required basis') `
+        'Expected Not required to reject a basis that does not establish the absence of a material workload.'
+
+    $lowercaseNoBenchmark = $noBenchmarkRequired | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $lowercaseNoBenchmark.workloads[0].harnessDispositionBasis = 'no benchmark required: inventory found no material risk.'
+    $lowercaseNoBenchmarkPath = Join-Path $manifestDirectory 'lowercase-no-benchmark-required.manifest.json'
+    $lowercaseNoBenchmark | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $lowercaseNoBenchmarkPath -NoNewline
+    $lowercaseNoBenchmarkResult = Invoke-Manifest -ManifestPath $lowercaseNoBenchmarkPath
+    Assert-That ($lowercaseNoBenchmarkResult.exitCode -ne 0 -and $lowercaseNoBenchmarkResult.stderr -match 'No benchmark required basis') `
+        'Expected Not required to reject a basis that is not the exact-cased "No benchmark required:" phrase.'
+
+    $notRequiredWithPromotion = $noBenchmarkRequired | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $notRequiredWithPromotion.workloads[0] | Add-Member -NotePropertyName harnessPromotion -NotePropertyValue ([pscustomobject]@{}) -Force
+    $notRequiredWithPromotionPath = Join-Path $manifestDirectory 'not-required-with-promotion.manifest.json'
+    $notRequiredWithPromotion | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $notRequiredWithPromotionPath -NoNewline
+    $notRequiredWithPromotionResult = Invoke-Manifest -ManifestPath $notRequiredWithPromotionPath
+    Assert-That ($notRequiredWithPromotionResult.exitCode -ne 0 -and $notRequiredWithPromotionResult.stderr -match 'cannot request harness promotion') `
+        "Expected a Not required workload to reject harnessPromotion: $($notRequiredWithPromotionResult.stderr)"
+
+    $mismatchedStability = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $mismatchedStability.workloads[0].stability = 'Not required'
+    $mismatchedStabilityPath = Join-Path $manifestDirectory 'mismatched-stability.manifest.json'
+    $mismatchedStability | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mismatchedStabilityPath -NoNewline
+    $mismatchedStabilityResult = Invoke-Manifest -ManifestPath $mismatchedStabilityPath
+    Assert-That ($mismatchedStabilityResult.exitCode -ne 0 -and $mismatchedStabilityResult.stderr -match 'only when workload.status is Not required') `
+        "Expected stability Not required to be rejected on a workload whose status is not Not required: $($mismatchedStabilityResult.stderr)"
+
+    $notRequiredPromote = $validV2Manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $notRequiredPromote.workloads[0].status = 'Not required'
+    $notRequiredPromote.workloads[0].representativeMetrics = @()
+    $notRequiredPromote.workloads[0].stability = 'Not required'
+    $notRequiredPromote.workloads[0].harnessDisposition = 'Promote'
+    $notRequiredPromotePath = Join-Path $manifestDirectory 'not-required-promote.manifest.json'
+    $notRequiredPromote | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $notRequiredPromotePath -NoNewline
+    $notRequiredPromoteResult = Invoke-Manifest -ManifestPath $notRequiredPromotePath
+    Assert-That ($notRequiredPromoteResult.exitCode -ne 0 -and $notRequiredPromoteResult.stderr -match 'Not needed harness disposition') `
+        "Expected a Not required workload with a Promote disposition to be rejected: $($notRequiredPromoteResult.stderr)"
+
+    # ...and the basis is REQUIRED there. `Promote` was the only disposition carrying a
+    # mandatory object, so the three cheap exits asserted something about the world that
+    # nobody had to evidence - and there was nowhere in the schema to put one.
+    $unevidencedDisposition = $unavailableWorkload | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $unevidencedDisposition.workloads[0].PSObject.Properties.Remove('harnessDispositionBasis')
+    $unevidencedPath = Join-Path $manifestDirectory 'unevidenced-disposition.manifest.json'
+    $unevidencedDisposition | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $unevidencedPath -NoNewline
+    $unevidencedResult = Invoke-Manifest -ManifestPath $unevidencedPath
+    Assert-That ($unevidencedResult.exitCode -ne 0 -and $unevidencedResult.stderr -match [regex]::Escape('harnessDispositionBasis')) `
+        "a non-Promote disposition must state its basis: $($unevidencedResult.stderr)"
+
+    $extraHeadingReportPath = Join-Path $manifestDirectory 'extra-heading.md'
+    (@('# Performance audit') + $reportHeadings[0..11] + @('## main...origin/main') + $reportHeadings[12..13]) | Set-Content -LiteralPath $extraHeadingReportPath
+    $extraHeadingResult = Invoke-Manifest -ManifestPath $validV2ManifestPath -ReportPath $extraHeadingReportPath
+    Assert-That ($extraHeadingResult.exitCode -ne 0 -and $extraHeadingResult.stderr -match '14 required headings') "Expected an accidental Git-status Markdown heading to fail: $($extraHeadingResult.stderr)"
+
+    $badReferenceReportPath = Join-Path $manifestDirectory 'bad-reference.md'
+    (@('# Performance audit') + $reportHeadings + @('Validated with `scripts/Invoke-DotnetPerformanceInventory.ps1`.')) | Set-Content -LiteralPath $badReferenceReportPath
+    $badReferenceResult = Invoke-Manifest -ManifestPath $validV2ManifestPath -ReportPath $badReferenceReportPath
+    Assert-That ($badReferenceResult.exitCode -ne 0 -and $badReferenceResult.stderr -match 'does not exist') 'Expected a nonexistent referenced skill path to fail.'
+
+    $publicationRoot = Join-Path $manifestDirectory 'published'
+    $publicationLock = Join-Path $publicationRoot '.performance-audit-publish.lock'
+    $lockedStaging = Join-Path $publicationRoot '.staging-locked'
+    New-Item -ItemType Directory -Path $lockedStaging -Force | Out-Null
+    Copy-Item -LiteralPath $validReportPath -Destination (Join-Path $lockedStaging 'report.md')
+    Copy-Item -LiteralPath $validV2ManifestPath -Destination (Join-Path $lockedStaging 'report.manifest.json')
+    New-Item -ItemType Directory -Path $publicationLock | Out-Null
+    $lockedPublication = Invoke-Publication -StagingDirectory $lockedStaging -DestinationDirectory $publicationRoot -Stem '2026-08-29-locked-performance-audit'
+    Assert-That ($lockedPublication.exitCode -ne 0 -and $lockedPublication.stderr -match 'already in progress') 'Expected a destination publication lock to reject a concurrent publisher.'
+    Assert-That (Test-Path -LiteralPath $lockedStaging) 'Expected lock contention to preserve staged evidence.'
+    Assert-That (-not (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-locked-performance-audit.md'))) 'Expected lock contention not to publish either file.'
+    Remove-Item -LiteralPath $publicationLock -Force
+
+    $firstStaging = Join-Path $publicationRoot '.staging-first'
+    New-Item -ItemType Directory -Path $firstStaging -Force | Out-Null
+    Copy-Item -LiteralPath $validReportPath -Destination (Join-Path $firstStaging 'report.md')
+    Copy-Item -LiteralPath $validV2ManifestPath -Destination (Join-Path $firstStaging 'report.manifest.json')
+    $firstPublication = Invoke-Publication -StagingDirectory $firstStaging -DestinationDirectory $publicationRoot -Stem '2026-08-29-full-performance-audit'
+    Assert-That ($firstPublication.exitCode -eq 0) "Expected coordinated publication to pass: $($firstPublication.stderr)"
+    Assert-That (-not (Test-Path -LiteralPath $firstStaging)) 'Expected successful publication to remove only its staging directory.'
+    Assert-That (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-full-performance-audit.md')) 'Expected published Markdown.'
+    Assert-That (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-full-performance-audit.manifest.json')) 'Expected published manifest.'
+
+    $secondStaging = Join-Path $publicationRoot '.staging-second'
+    New-Item -ItemType Directory -Path $secondStaging -Force | Out-Null
+    Copy-Item -LiteralPath $validReportPath -Destination (Join-Path $secondStaging 'report.md')
+    Copy-Item -LiteralPath $validV2ManifestPath -Destination (Join-Path $secondStaging 'report.manifest.json')
+    $secondPublication = Invoke-Publication -StagingDirectory $secondStaging -DestinationDirectory $publicationRoot -Stem '2026-08-29-full-performance-audit'
+    Assert-That ($secondPublication.exitCode -eq 0) "Expected collision-safe publication to pass: $($secondPublication.stderr)"
+    Assert-That (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-full-performance-audit-02.md')) 'Expected deterministic pair suffix for Markdown.'
+    Assert-That (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-full-performance-audit-02.manifest.json')) 'Expected deterministic pair suffix for manifest.'
+
+    $invalidStaging = Join-Path $publicationRoot '.staging-invalid'
+    New-Item -ItemType Directory -Path $invalidStaging -Force | Out-Null
+    Copy-Item -LiteralPath $extraHeadingReportPath -Destination (Join-Path $invalidStaging 'report.md')
+    Copy-Item -LiteralPath $validV2ManifestPath -Destination (Join-Path $invalidStaging 'report.manifest.json')
+    $invalidPublication = Invoke-Publication -StagingDirectory $invalidStaging -DestinationDirectory $publicationRoot -Stem '2026-08-29-invalid-performance-audit'
+    Assert-That ($invalidPublication.exitCode -ne 0) 'Expected invalid publication not to publish.'
+    Assert-That (Test-Path -LiteralPath $invalidStaging) 'Expected failed publication to preserve its staging evidence.'
+    Assert-That (-not (Test-Path -LiteralPath (Join-Path $publicationRoot '2026-08-29-invalid-performance-audit.md'))) 'Expected failed publication not to move Markdown.'
+
+    $extraFileStaging = Join-Path $publicationRoot '.staging-extra-file'
+    New-Item -ItemType Directory -Path $extraFileStaging -Force | Out-Null
+    Copy-Item -LiteralPath $validReportPath -Destination (Join-Path $extraFileStaging 'report.md')
+    Copy-Item -LiteralPath $validV2ManifestPath -Destination (Join-Path $extraFileStaging 'report.manifest.json')
+    Set-Content -LiteralPath (Join-Path $extraFileStaging 'unrelated.txt') -Value 'preserve me'
+    $extraFilePublication = Invoke-Publication -StagingDirectory $extraFileStaging -DestinationDirectory $publicationRoot -Stem '2026-08-29-extra-performance-audit'
+    Assert-That ($extraFilePublication.exitCode -ne 0 -and $extraFilePublication.stderr -match 'only report.md') 'Expected unrelated staging contents to block publication and cleanup.'
+    Assert-That (Test-Path -LiteralPath (Join-Path $extraFileStaging 'unrelated.txt')) 'Expected unrelated staging contents to remain untouched.'
 
     $caseVariantAuditPath = Join-Path $manifestDirectory 'case-variant-audit.manifest.json'
     (($validManifest | ConvertTo-Json -Depth 8) -replace '"audit":', '"Audit":') | Set-Content -LiteralPath $caseVariantAuditPath -NoNewline
@@ -389,13 +746,16 @@ exit 7
         }
         $invalid = Invoke-Manifest -ManifestPath $path
         Assert-That ($invalid.exitCode -ne 0) "Expected $($case.name) manifest to fail."
-        Assert-That ($invalid.stderr -match $case.error) "Expected $($case.name) failure to identify $($case.error): $($invalid.stderr)"
+        # Escaped for the same reason as the v2 loop above: `finding.productBoundary.
+        # exclusions` is a field path, and unescaped its dots match any character, so the
+        # assertion no longer pins the field the message must name.
+        Assert-That ($invalid.stderr -match [regex]::Escape($case.error)) "Expected $($case.name) failure to identify $($case.error): $($invalid.stderr)"
     }
 
     New-Item -ItemType Directory -Path (Join-Path $boundaryRepo 'src') -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Product.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Worker.cs') -Value 'class Worker { }'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\MultiHunk.cs') -Value @(
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Product.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value 'class Worker { }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'MultiHunk.cs') -Value @(
         'class MultiHunk',
         '{',
         '    void First() { }',
@@ -406,7 +766,7 @@ exit 7
         '}'
     )
     Set-Content -LiteralPath (Join-Path $boundaryRepo 'README.md') -Value @('heading', 'context', 'baseline')
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\preexisting.dll') -Value 'harmless baseline text'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'preexisting.dll') -Value 'harmless baseline text'
     & git -C $boundaryRepo init -q
     & git -C $boundaryRepo config user.email 'contract@example.test'
     & git -C $boundaryRepo config user.name 'Contract Test'
@@ -418,7 +778,7 @@ exit 7
     Assert-That ([string]::IsNullOrWhiteSpace($invalidBoundary.stdout)) 'Expected invocation errors not to emit JSON stdout.'
     Assert-That ($invalidBoundary.stderr -match 'Managed product boundary invocation error') 'Expected a precise invocation error on stderr.'
 
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Worker.cs') -Value 'class Worker { int Count() => System.Math.Clamp(2, 0, 3); }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value 'class Worker { int Count() => System.Math.Clamp(2, 0, 3); }'
     Set-Content -LiteralPath (Join-Path $boundaryRepo 'README.md') -Value @('heading', 'context', 'updated')
     & git -C $boundaryRepo add .
     $safe = Invoke-ManagedBoundary -Repository $boundaryRepo
@@ -432,7 +792,7 @@ exit 7
     Assert-That ($safeOutput.manualReviewLimitations -contains 'Generated code requires manual review.') 'Expected generated-code manual-review limitation.'
 
     & git -C $boundaryRepo reset --hard -q HEAD
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\MultiHunk.cs') -Value @(
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'MultiHunk.cs') -Value @(
         'class MultiHunk',
         '{',
         '    /* added block opener',
@@ -448,25 +808,54 @@ exit 7
     Assert-That (@($multiHunkOutput.violations | Where-Object { $_.path -eq 'src/MultiHunk.cs' -and $_.line -eq 7 -and $_.rule -eq 'unsafe-code' }).Count -eq 1) 'Expected unsafe code in the later hunk to be detected at its working-tree line.'
 
     & git -C $boundaryRepo reset --hard -q HEAD
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\UntrackedUnsafe.cs') -Value 'class UntrackedUnsafe { void Run() { var u = "http://x"; unsafe { } } }'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\untracked.dll') -Value 'harmless untracked text'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'UntrackedUnsafe.cs') -Value 'class UntrackedUnsafe { void Run() { var u = "http://x"; unsafe { } } }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'untracked.dll') -Value 'harmless untracked text'
     $untracked = Invoke-ManagedBoundary -Repository $boundaryRepo
     $untrackedOutput = $untracked.stdout | ConvertFrom-Json
     Assert-That ($untracked.exitCode -eq 0 -and -not $untrackedOutput.passed) "Expected untracked unsafe source and native extension to fail without staging: $($untracked.stderr)"
     Assert-That (($untrackedOutput.violations.path -contains 'src/UntrackedUnsafe.cs') -and ($untrackedOutput.violations.path -contains 'src/untracked.dll') -and $untrackedOutput.violations.rule -contains 'unsafe-code') 'Expected untracked source, URL-following unsafe code, and native path evidence.'
 
     & git -C $boundaryRepo reset --hard -q HEAD
-    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src\UntrackedUnsafe.cs') -Force
-    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src\untracked.dll') -Force
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Worker.cs') -Value 'class Worker { string Note = "DllImport LibraryImport NativeLibrary PInvoke unsafe System.Runtime.Intrinsics http://x"; }'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\preexisting.dll') -Value 'modified harmless text'
+    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src' 'UntrackedUnsafe.cs') -Force
+    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src' 'untracked.dll') -Force
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value 'class Worker { string Note = "DllImport LibraryImport NativeLibrary PInvoke unsafe System.Runtime.Intrinsics http://x"; }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'preexisting.dll') -Value 'modified harmless text'
     & git -C $boundaryRepo add .
     $stringOnly = Invoke-ManagedBoundary -Repository $boundaryRepo
     $stringOnlyOutput = $stringOnly.stdout | ConvertFrom-Json
     Assert-That ($stringOnly.exitCode -eq 0 -and $stringOnlyOutput.passed) "Expected forbidden words in a string and modification of a pre-existing native extension to pass: $($stringOnly.stderr)"
 
+    # An escaped quote must not close string state. While '\\' was compared against a
+    # [char] the escape branch was dead, so `"a\"b"` closed early and everything after it
+    # -- including the unsafe block -- was scrubbed as string content and never scanned.
     & git -C $boundaryRepo reset --hard -q HEAD
-    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src\preexisting.dll') -Force
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Escaped.cs') -Value 'class Escaped { string s = "a\"b"; void Run() { unsafe { } } }'
+    & git -C $boundaryRepo add .
+    $escaped = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $escapedOutput = $escaped.stdout | ConvertFrom-Json
+    Assert-That (@($escapedOutput.violations | Where-Object { $_.path -eq 'src/Escaped.cs' -and $_.rule -eq 'unsafe-code' }).Count -eq 1) `
+        "Expected code after an escaped quote to be scanned, not treated as string content: $($escaped.stdout) $($escaped.stderr)"
+
+    # diff.renames has defaulted on since git 2.9, so a tracked file renamed to a native
+    # extension arrives as R###, not A. Matching only 'A' let it in with no violation, and
+    # the untracked pass cannot see it either because it is tracked.
+    & git -C $boundaryRepo reset --hard -q HEAD
+    & git -C $boundaryRepo mv 'src/Worker.cs' 'src/renamed.dll'
+    $renamed = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $renamedOutput = $renamed.stdout | ConvertFrom-Json
+    Assert-That (@($renamedOutput.violations | Where-Object { $_.path -eq 'src/renamed.dll' -and $_.rule -eq 'native-binary' }).Count -eq 1) `
+        "Expected a rename into a native extension to be reported: $($renamed.stdout) $($renamed.stderr)"
+
+    # A subdirectory RepositoryPath is inside the work tree but not its root, so
+    # root-relative diff paths cannot be joined onto it. Refuse by name rather than
+    # failing closed on the first modified file with a message that does not say why.
+    & git -C $boundaryRepo reset --hard -q HEAD
+    $subdirectory = Invoke-ManagedBoundary -Repository (Join-Path $boundaryRepo 'src')
+    Assert-That ($subdirectory.exitCode -eq 2 -and $subdirectory.stderr -match 'subdirectory of the work tree') `
+        "Expected a subdirectory RepositoryPath to be refused by name: $($subdirectory.exitCode) $($subdirectory.stderr)"
+
+    & git -C $boundaryRepo reset --hard -q HEAD
+    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src' 'preexisting.dll') -Force
     $deletedNative = Invoke-ManagedBoundary -Repository $boundaryRepo
     $deletedNativeOutput = $deletedNative.stdout | ConvertFrom-Json
     Assert-That ($deletedNative.exitCode -eq 0 -and $deletedNativeOutput.passed) "Expected deletion of a pre-existing native extension not to fail: $($deletedNative.stderr)"
@@ -490,16 +879,16 @@ exit 7
     }
 
     & git -C $boundaryRepo reset --hard -q HEAD
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Unsafe.cs') -Value 'unsafe class UnsafeWorker { }'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Intrinsic.cs') -Value 'using System.Runtime.Intrinsics; class IntrinsicWorker { }'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Interop.cs') -Value '[System.Runtime.InteropServices.DllImport("native")] [System.Runtime.InteropServices.LibraryImport("native")] static partial void Call(); var handle = System.Runtime.InteropServices.NativeLibrary.Load("native"); // PInvoke declaration'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.dll') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.so') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.dylib') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.a') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.lib') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\native.exe') -Value 'not-a-real-binary'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Product.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Fast.Native" Version="1.0.0" /><ProjectReference Include="../other/Other.csproj" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Unsafe.cs') -Value 'unsafe class UnsafeWorker { }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Intrinsic.cs') -Value 'using System.Runtime.Intrinsics; class IntrinsicWorker { }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Interop.cs') -Value '[System.Runtime.InteropServices.DllImport("native")] [System.Runtime.InteropServices.LibraryImport("native")] static partial void Call(); var handle = System.Runtime.InteropServices.NativeLibrary.Load("native"); // PInvoke declaration'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.dll') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.so') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.dylib') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.a') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.lib') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'native.exe') -Value 'not-a-real-binary'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Product.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Fast.Native" Version="1.0.0" /><ProjectReference Include="../other/Other.csproj" /></ItemGroup></Project>'
     & git -C $boundaryRepo add .
     $unsafe = Invoke-ManagedBoundary -Repository $boundaryRepo
     Assert-That ($unsafe.exitCode -eq 0) "Expected boundary violations to return JSON, not an invocation failure: $($unsafe.stderr)"
@@ -513,12 +902,12 @@ exit 7
 
     & git -C $boundaryRepo reset --hard -q HEAD
     Get-ChildItem -LiteralPath (Join-Path $boundaryRepo 'src') -File | Where-Object Name -ne 'preexisting.dll' | Remove-Item -Force
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Untracked.fs') -Value 'let handle = NativeLibrary.Load("native")'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Untracked.vb') -Value 'Declare Auto Function NativeCall Lib "native" () As Integer'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Generated.g.fs') -Value '[<DllImport("native")>] extern int NativeCall()'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Generated.generated.vb') -Value 'Declare Function GeneratedCall Lib "native" () As Integer'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Added.fsproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Ambiguous.Dependency" Version="1.0.0" /></ItemGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Added.vbproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="..\Other\Other.vbproj" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Untracked.fs') -Value 'let handle = NativeLibrary.Load("native")'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Untracked.vb') -Value 'Declare Auto Function NativeCall Lib "native" () As Integer'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Generated.g.fs') -Value '[<DllImport("native")>] extern int NativeCall()'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Generated.generated.vb') -Value 'Declare Function GeneratedCall Lib "native" () As Integer'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Added.fsproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Ambiguous.Dependency" Version="1.0.0" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Added.vbproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="..\Other\Other.vbproj" /></ItemGroup></Project>'
     $languageBoundary = Invoke-ManagedBoundary -Repository $boundaryRepo
     $languageOutput = $languageBoundary.stdout | ConvertFrom-Json
     Assert-That ($languageBoundary.exitCode -eq 0 -and -not $languageOutput.passed) "Expected untracked F#, VB, generated interop, and project inputs to be inspected: $($languageBoundary.stderr)"
@@ -532,22 +921,62 @@ exit 7
 
     & git -C $boundaryRepo reset --hard -q HEAD
     Remove-Item -LiteralPath @(
-        (Join-Path $boundaryRepo 'src\Untracked.fs'),
-        (Join-Path $boundaryRepo 'src\Untracked.vb'),
-        (Join-Path $boundaryRepo 'src\Generated.g.fs'),
-        (Join-Path $boundaryRepo 'src\Generated.generated.vb'),
-        (Join-Path $boundaryRepo 'src\Added.fsproj'),
-        (Join-Path $boundaryRepo 'src\Added.vbproj')
+        (Join-Path $boundaryRepo 'src' 'Untracked.fs'),
+        (Join-Path $boundaryRepo 'src' 'Untracked.vb'),
+        (Join-Path $boundaryRepo 'src' 'Generated.g.fs'),
+        (Join-Path $boundaryRepo 'src' 'Generated.generated.vb'),
+        (Join-Path $boundaryRepo 'src' 'Added.fsproj'),
+        (Join-Path $boundaryRepo 'src' 'Added.vbproj')
     ) -Force
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src\Worker.cs') -Value '// DllImport NativeLibrary System.Runtime.Intrinsics unsafe PInvoke`nclass Worker { }'
+    # TWO lines, written as an array. The single-quoted form put a LITERAL backtick-n in
+    # the file, so this was one line that was entirely comment - the case proved only that
+    # a comment-only file passes, and never once exercised code following a comment, which
+    # is the property it is named for. With a real line break the second line is live code
+    # the scrubber must still see.
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value @(
+        '// DllImport NativeLibrary System.Runtime.Intrinsics unsafe PInvoke'
+        'class Worker { }'
+    )
     & git -C $boundaryRepo add .
     $comment = Invoke-ManagedBoundary -Repository $boundaryRepo
     $commentOutput = $comment.stdout | ConvertFrom-Json
     Assert-That ($comment.exitCode -eq 0 -and $commentOutput.passed) "Expected forbidden terms in a comment alone not to fail: $($comment.stderr)"
 
+    # ...and the same file with the SAME terms in live code on the second line must fail,
+    # so the case above cannot be satisfied by a scrubber that simply discards everything.
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value @(
+        '// DllImport NativeLibrary System.Runtime.Intrinsics unsafe PInvoke'
+        'unsafe class Worker { }'
+    )
+    & git -C $boundaryRepo add .
+    $afterComment = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $afterCommentOutput = $afterComment.stdout | ConvertFrom-Json
+    Assert-That ($afterComment.exitCode -eq 0 -and -not $afterCommentOutput.passed) `
+        "Expected code on the line AFTER a comment to still be scanned: $($afterComment.stderr)"
+
+    # An XML project file must not be read with the C# lexer. The comment and the
+    # reference are deliberately on ONE line: the `//` in the URL is a C# line comment, so
+    # that lexer BREAKS there and everything after it - the PackageReference itself - is
+    # never scanned. Separate lines would not exercise this, since the damage is
+    # within-line; the apostrophe is here for the same reason, to drive the char-literal
+    # branch across the same text.
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Commented.csproj') -Value @(
+        '<Project>'
+        "  <ItemGroup><!-- don't reorder; see https://example.invalid/docs --><PackageReference Include=""Example.Package"" Version=""1.0.0"" /></ItemGroup>"
+        '</Project>'
+    )
+    & git -C $boundaryRepo add .
+    $xmlProject = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $xmlProjectOutput = $xmlProject.stdout | ConvertFrom-Json
+    Assert-That ($xmlProject.exitCode -eq 0) "Expected the XML project scan to complete: $($xmlProject.stderr)"
+    Assert-That (@($xmlProjectOutput.warnings | Where-Object { $_.rule -eq 'dependency-change' }).Count -ge 1) `
+        'Expected a PackageReference after an apostrophe-bearing XML comment to be seen.'
+    & git -C $boundaryRepo reset --hard -q HEAD
+    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src' 'Commented.csproj') -Force -ErrorAction SilentlyContinue
+
     & git -C $boundaryRepo reset --hard -q HEAD
     New-Item -ItemType Directory -Path (Join-Path $boundaryRepo 'outside') -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $boundaryRepo 'outside\Unsafe.cs') -Value 'unsafe class Outside { }'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'outside' 'Unsafe.cs') -Value 'unsafe class Outside { }'
     & git -C $boundaryRepo add .
     $scoped = Invoke-ManagedBoundary -Repository $boundaryRepo -ProductPath @('src')
     $scopedOutput = $scoped.stdout | ConvertFrom-Json

@@ -25,7 +25,7 @@ function Get-PrunedFiles {
     $pending = [System.Collections.Generic.Queue[string]]::new()
     $pending.Enqueue($Root)
     $queuedDirectories = 1
-    $excluded = '(^|[\\/])(bin|obj|\.git|worktrees)([\\/]|$)'
+    $excluded = '(^|[\\/])(bin|obj|\.git|\.?worktrees|node_modules|\.?venv)([\\/]|$)'
     while ($pending.Count) {
         $directory = $pending.Dequeue()
         $depth = ([IO.Path]::GetRelativePath($Root, $directory) -split '[\\/]').Count
@@ -36,7 +36,20 @@ function Get-PrunedFiles {
         }
         $errors = $null
         $children = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue -ErrorVariable errors)
-        foreach ($error in @($errors)) { $Warnings.Add("Could not enumerate '$directory': $($error.Exception.Message)") }
+        # An unreadable directory is UNSCANNED, not empty. Every other truncation branch
+        # clears $Complete; this one only warned, so the inventory published
+        # projectInventoryComplete = true with no stopping condition over a subtree it
+        # never enumerated, and a consumer gated on those fields read "absent" for files
+        # that were merely unread.
+        # `$readError`, not `$error`: a foreach over $error binds the automatic error
+        # variable for the rest of this scope, so any later read of $error here would see
+        # the loop's last item rather than the session's error record. (PowerShell allows
+        # it - checked, `pwsh -NoProfile -c 'function f { $error = "x"; $error }; f'`
+        # prints x - so the hazard is shadowing, not a failure at the assignment.)
+        foreach ($readError in @($errors)) {
+            $Complete.Value = $false
+            $Warnings.Add("$ScanName scan left '$directory' UNSCANNED: $($readError.Exception.Message)")
+        }
         foreach ($child in $children) {
             $relative = [IO.Path]::GetRelativePath($Root, $child.FullName)
             if ($relative -match $excluded) { continue }
@@ -154,14 +167,19 @@ foreach ($file in $projectFiles) {
 $markers = [System.Collections.Generic.List[object]]::new()
 $maxMarkers = 500
 $markerPatterns = [ordered]@{ DbContext = '\bDbContext\b'; HttpClient = '\bHttpClient\b'; BackgroundService = '\bBackgroundService\b'; 'Parallel.ForEachAsync' = '\bParallel\.ForEachAsync\b' }
+# A file SKIPPED or UNREAD here is a file whose markers were never looked at, which is the
+# same evidentiary state as a truncated enumeration - so it clears the same flag.
+# `$sourceScanComplete` was set only by the directory walk, so an oversized or unreadable
+# source file left the inventory claiming a complete marker scan over content it never
+# opened, and "no DbContext found" then read as proven absence. (CodeRabbit, PR #135.)
 :markerScan foreach ($file in $sourceFiles) {
-    if ($file.Length -gt $maxSourceBytes) { $warnings.Add("Source file exceeds $maxSourceBytes bytes and was skipped: '$([IO.Path]::GetRelativePath($resolved, $file.FullName))'."); continue }
+    if ($file.Length -gt $maxSourceBytes) { $warnings.Add("Source file exceeds $maxSourceBytes bytes and was skipped: '$([IO.Path]::GetRelativePath($resolved, $file.FullName))'."); $sourceScanComplete = $false; continue }
     try { $lines = @(Get-Content -LiteralPath $file.FullName) }
-    catch { $warnings.Add("Could not read source '$([IO.Path]::GetRelativePath($resolved, $file.FullName))': $($_.Exception.Message)"); continue }
+    catch { $warnings.Add("Could not read source '$([IO.Path]::GetRelativePath($resolved, $file.FullName))': $($_.Exception.Message)"); $sourceScanComplete = $false; continue }
     for ($i = 0; $i -lt $lines.Count; $i++) {
         foreach ($marker in $markerPatterns.Keys) {
             if ($lines[$i] -match $markerPatterns[$marker]) {
-                if ($markers.Count -ge $maxMarkers) { $warnings.Add("Marker scan stopped: maximum marker count $maxMarkers reached."); break markerScan }
+                if ($markers.Count -ge $maxMarkers) { $warnings.Add("Marker scan stopped: maximum marker count $maxMarkers reached."); $sourceScanComplete = $false; break markerScan }
                 $markers.Add([pscustomobject]@{ marker = $marker; file = [IO.Path]::GetRelativePath($resolved, $file.FullName); line = $i + 1 })
             }
         }
@@ -194,6 +212,10 @@ if ($sdkProbe.reason) { $warnings.Add("Could not read dotnet SDK version: $($sdk
 if ($runtimeProbe.reason) { $warnings.Add("Could not list dotnet runtimes: $($runtimeProbe.reason)") }
 $stoppingConditions = @()
 if (-not $projectScanComplete) { $stoppingConditions += 'Project inventory is incomplete; stop before selecting measurement depth.' }
+# $sourceScanComplete was computed and discarded. Truncation is the NORMAL case here --
+# the source scan stops at 64 files and 64 directories -- so "no BenchmarkDotNet
+# configuration found" routinely meant "stopped at 64 files" with nothing saying so.
+if (-not $sourceScanComplete) { $stoppingConditions += 'Source-marker scan is incomplete; absent markers are unread, not proven absent.' }
 
 [pscustomobject]@{
     schemaVersion = 1
@@ -217,6 +239,7 @@ if (-not $projectScanComplete) { $stoppingConditions += 'Project inventory is in
     markers = @($markers)
     tools = @($dotnet, (Get-ToolEvidence dotnet-trace), (Get-ToolEvidence dotnet-counters), (Get-ToolEvidence perfcollect), (Get-ToolEvidence perf), (Get-ToolEvidence wpr), (Get-ToolEvidence xperf))
     projectInventoryComplete = $projectScanComplete
+    sourceInventoryComplete = $sourceScanComplete
     stoppingConditions = $stoppingConditions
     completeness = if ($warnings.Count) { 'partial' } else { 'complete' }
     warnings = @($warnings)

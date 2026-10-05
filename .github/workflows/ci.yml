@@ -54,11 +54,8 @@ jobs:
         run: |
           $verifiers = @(
             Get-ChildItem skills -Recurse -Filter 'verify-*.ps1' |
-              Where-Object Name -ne 'verify-collect.ps1' |
               Sort-Object FullName
           )
-          # verify-collect.ps1 is an estate integration skeleton with intentional
-          # <repos-root> placeholders; it cannot run in this standalone public repo.
 
           # On a pull request, run only the verifiers of the skills the PR touched. Any
           # change outside skills/ (.github, .claude, root files) can alter how every

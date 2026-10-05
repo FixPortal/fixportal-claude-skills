@@ -55,12 +55,12 @@
 
 .PARAMETER ChunkTimeoutSeconds
     Wall-clock ceiling per chunk (default 6000). The spine bounds each ROUND with
-    -RoundTimeoutSeconds (default 2700, two rounds), but a hang OUTSIDE the bounded
-    rounds — e.g. an unbounded `gh pr diff` while resolving a PR target — would
-    otherwise stall the whole batch forever. Sized above 2 x the round default so a
-    slow-but-legitimate chunk is not cut off mid-Phase-2. A timed-out chunk is
-    recorded distinctly (timedOut: true in batch-summary.json), not as a non-zero
-    exit.
+    -RoundTimeoutSeconds (default 2700, two rounds), but a hang OUTSIDE the rounds
+    -- e.g. an unbounded `gh pr diff` while resolving a PR target -- would otherwise
+    stall the whole batch forever. Sized above 2 x the round default so a slow but
+    legitimate chunk is not cut off mid-Phase-2. A timed-out chunk is recorded
+    distinctly (timedOut: true, exitCode: null in batch-summary.json), and
+    aggregate-and-emit.ps1 treats it as failed.
 
 .OUTPUTS
     Writes <RunRoot>/<chunkId>/* per chunk (including metrics.json), a
@@ -82,10 +82,15 @@ param(
     [ValidateRange(1, [int]::MaxValue)]
     [int] $BatchSize = 3,
 
-    # Above 2 x the spine's RoundTimeoutSeconds default (2700) so a chunk is only
-    # cut off when something OUTSIDE the bounded rounds has wedged.
-    [ValidateRange(60, 86400)]
-    [int] $ChunkTimeoutSeconds = 6000
+    # ponytail: floor of 1, not 60 -- the floor only blocks nonsense, and the contract
+    # test needs a seconds-scale timeout to exercise the wedge path.
+    [ValidateRange(1, 86400)]
+    [int] $ChunkTimeoutSeconds = 6000,
+
+    # Passed through to every chunk. Batch mode is the documented shape for an audit, and
+    # without this the deliberate-scope decision the dirty-tree gate exists to force could
+    # not be made from here at all: the run just exited 4 on local hygiene.
+    [switch] $AllowDirty
 )
 
 $ErrorActionPreference = 'Stop'
@@ -186,18 +191,17 @@ try {
     throw $cleanupError
 }
 
-# -TimeoutSeconds bounds each chunk: the spine bounds its own rounds, but a hang
-# outside them (an unbounded `gh pr diff` during target resolution is the observed
-# shape) would stall the batch forever. -ErrorAction is NOT accepted in the Parallel
-# parameter set, so the script-level 'Stop' is relaxed around the call — the timeout
-# raises a non-terminating error that would otherwise abort the whole batch. Chunks
-# that never report get a synthesised timed-out row below, distinct from a non-zero
-# exit: a stall is a different diagnosis from a failed spine.
+# Each worker runs its spine under its OWN clock (see .PARAMETER ChunkTimeoutSeconds).
+# ForEach-Object's -TimeoutSeconds is not used: it is one clock for the whole
+# invocation, so later throttled waves would be killed for time earlier waves spent.
+# -ErrorAction is NOT accepted in the Parallel parameter set, so the script-level 'Stop'
+# is relaxed around the call: one worker's error must not abort the whole batch. A chunk
+# that reports no row gets a synthesised failed row below.
 $chunkTimeoutErrors = @()
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -TimeoutSeconds $ChunkTimeoutSeconds -ErrorVariable +chunkTimeoutErrors -Parallel {
+$results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +chunkTimeoutErrors -Parallel {
     $c = $_
     $spine      = $using:spine
     $RunRoot    = $using:RunRoot
@@ -205,6 +209,9 @@ try {
     $Target     = $using:Target
     $ContextPath = $using:ContextPath
     $PreamblePath = $using:PreamblePath
+    $AllowDirty = $using:AllowDirty
+    $timeoutMs  = [int][Math]::Min([int]::MaxValue, [long]$using:ChunkTimeoutSeconds * 1000)
+    $drainMs    = 30000
 
     $chunkDir = Join-Path $RunRoot $c.id
     New-Item -ItemType Directory -Path $chunkDir -Force | Out-Null
@@ -216,51 +223,78 @@ try {
     $ctx = @($ContextPath | Where-Object { $_ }) -join ';'
     if ($ctx) { $a += @('-ContextPath', $ctx) }
     if ($PreamblePath) { $a += @('-PreamblePath', $PreamblePath) }
+    # A switch must be a BARE flag under `pwsh -File`: every argument arrives as a string
+    # there, and a stringified bool binds to neither [bool] nor [switch].
+    if ($AllowDirty) { $a += '-AllowDirty' }
 
+    # ArgumentList quotes each element, so paths with spaces survive. Both streams are
+    # drained asynchronously so a full pipe cannot deadlock the wait.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+    foreach ($arg in $a) { $psi.ArgumentList.Add([string]$arg) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $out = (& pwsh @a 2>&1 | Out-String)
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $proc.StandardOutput.ReadToEndAsync()
+    $stderr = $proc.StandardError.ReadToEndAsync()
+    $finished = $proc.WaitForExit($timeoutMs)
+    if (-not $finished) {
+        # Only the exit-between-wait-and-kill race is expected; any other failure to
+        # kill the tree would leave a wedged spine running, so it must surface.
+        try { $proc.Kill($true) }
+        catch [System.InvalidOperationException] { Write-Verbose "chunk $($c.id) exited before it could be stopped" }
+        [void]$proc.WaitForExit($drainMs)
+    }
     $sw.Stop()
-    $exit = $LASTEXITCODE
+    $exit = if ($finished) { $proc.ExitCode } else { $null }
+    # Bounded too: a surviving grandchild that inherited the pipes would otherwise hold
+    # the reads open and re-hang the worker the ceiling just freed.
+    $drained = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdout, $stderr), $drainMs)
+    $out = if ($drained) { $stdout.Result + $stderr.Result }
+           else { "batch-review: output streams still open ${drainMs}ms after the spine ended; output not captured." }
     Set-Content -LiteralPath (Join-Path $chunkDir 'run-output.txt') -Value $out -Encoding utf8
 
     # A clean chunk (panel convened, zero findings) exits 0 exactly like a chunk with
-    # findings — read pooledCount out of the chunk's status.json so the summary can
-    # tell "clean" apart from both "found issues" and "failed".
+    # findings; status.json's pooledCount is what tells them apart.
     $pooledCount = $null
-    if ($exit -eq 0) {
-        $chunkStatus = Join-Path $chunkDir 'status.json'
-        if (Test-Path -LiteralPath $chunkStatus) {
-            try { $pooledCount = [int]((Get-Content -LiteralPath $chunkStatus -Raw | ConvertFrom-Json).pooledCount) }
-            catch { $pooledCount = $null }
-        }
+    $chunkStatus = Join-Path $chunkDir 'status.json'
+    if ($exit -eq 0 -and (Test-Path -LiteralPath $chunkStatus)) {
+        try { $pooledCount = [int]((Get-Content -LiteralPath $chunkStatus -Raw | ConvertFrom-Json).pooledCount) }
+        catch { $pooledCount = $null }
     }
 
     [pscustomobject]@{
-        chunkId = $c.id; label = $c.label; exitCode = $exit; timedOut = $false
+        chunkId = $c.id; label = $c.label; exitCode = $exit; timedOut = (-not $finished)
         pooledCount = $pooledCount
         elapsedSec = [int]($sw.Elapsed.TotalSeconds); workDir = $chunkDir
         hasMetrics = (Test-Path -LiteralPath (Join-Path $chunkDir 'metrics.json'))
     }
-    }
+}
 }
 finally {
     $ErrorActionPreference = $previousErrorAction
 }
 
 $results = @($results)
-if ($chunkTimeoutErrors.Count -gt 0) {
-    $reportedChunks = @($results | ForEach-Object { $_.chunkId })
-    $wedged = @($chunks | Where-Object { $_.id -notin $reportedChunks })
-    foreach ($m in $wedged) {
-        $results += [pscustomobject]@{
-            chunkId = $m.id; label = $m.label; exitCode = $null; timedOut = $true
-            pooledCount = $null
-            elapsedSec = $ChunkTimeoutSeconds; workDir = (Join-Path $RunRoot $m.id)
-            hasMetrics = $false
-        }
+$reportedChunks = @($results | ForEach-Object { $_.chunkId })
+# A worker that errored before writing its row: recorded as failed, never as timed out.
+$unreported = @($chunks | Where-Object { $_.id -notin $reportedChunks })
+foreach ($m in $unreported) {
+    $results += [pscustomobject]@{
+        chunkId = $m.id; label = $m.label; exitCode = $null; timedOut = $false
+        pooledCount = $null
+        elapsedSec = $null; workDir = (Join-Path $RunRoot $m.id)
+        hasMetrics = $false
     }
+}
+if ($chunkTimeoutErrors.Count -gt 0) {
+    Write-Warning "$($chunkTimeoutErrors.Count) non-terminating error(s) inside the chunk fan-out: $(($chunkTimeoutErrors | ForEach-Object { $_.Exception.Message }) -join ' | ')"
+}
+$wedged = @($results | Where-Object { $_.timedOut })
+if ($wedged) {
     Write-Warning ("$($wedged.Count) chunk(s) hit the ${ChunkTimeoutSeconds}s chunk timeout and were stopped: " +
-        "$(@($wedged | ForEach-Object { $_.id }) -join ', '). A chunk stall is outside the spine's bounded rounds " +
+        "$(@($wedged | ForEach-Object { $_.chunkId }) -join ', '). The stall is outside the spine's bounded rounds " +
         '(check target resolution, e.g. gh pr diff). They contribute no metrics.')
 }
 
@@ -324,8 +358,8 @@ $summaryRows = @($merged.Values) | Sort-Object chunkId
 # (.NET Core 3.0+, so present on any PowerShell 7 runtime) and needs no separate
 # "destination doesn't exist yet" branch -- it handles both.
 $tempSummaryPath = "$summaryPath.tmp-$PID"
-$summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $tempSummaryPath -Encoding utf8
 try {
+    $summaryRows | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $tempSummaryPath -Encoding utf8
     [System.IO.File]::Move($tempSummaryPath, $summaryPath, $true)
 } catch {
     Remove-Item -LiteralPath $tempSummaryPath -Force -ErrorAction SilentlyContinue
@@ -335,9 +369,8 @@ try {
 $timedOutChunks = @($results | Where-Object { $_.timedOut })
 $failed  = @($results | Where-Object { -not $_.timedOut -and $_.exitCode -ne 0 })
 $noMetrics = @($results | Where-Object { $_.exitCode -eq 0 -and -not $_.hasMetrics })
-# A chunk whose panel convened and found nothing is a CLEAN result — not a failure
-# and not a chunk with findings. Surface it by name so "exit 0, no findings" is a
-# deliberate, visible outcome rather than silently reading as either of the others.
+# Panel convened, zero findings: a deliberate, visible outcome -- neither a failure nor
+# a chunk with findings.
 $clean = @($results | Where-Object { $_.exitCode -eq 0 -and $null -ne $_.pooledCount -and $_.pooledCount -eq 0 })
 
 Write-Host ""
@@ -346,7 +379,7 @@ $results | Format-Table chunkId, label, exitCode, timedOut, pooledCount, elapsed
 if ($carried) {
     Write-Host "Kept $($carried.Count) chunk(s) already in this RunRoot ($($carried -join ', ')) — the run now has $($summaryRows.Count) chunk(s) in total."
 }
-if ($clean)    { Write-Host "$($clean.Count) chunk(s) CLEAN (panel convened, zero findings): $($clean.chunkId -join ', ')." }
+if ($clean)     { Write-Host "$($clean.Count) chunk(s) CLEAN (panel convened, zero findings): $($clean.chunkId -join ', ')." }
 if ($failed)    { Write-Warning "$($failed.Count) chunk(s) failed: $($failed.chunkId -join ', ') — they contribute no metrics." }
 if ($noMetrics) { Write-Warning "$($noMetrics.Count) chunk(s) left no metrics.json: $($noMetrics.chunkId -join ', ')." }
 Write-Host ""

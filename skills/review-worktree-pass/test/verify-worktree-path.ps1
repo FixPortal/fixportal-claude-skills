@@ -48,6 +48,9 @@ foreach ($needle in 'origin/HEAD',
 if ($text -match 'origin/main') {
     throw 'SKILL.md must not hard-code origin/main as the project mainline'
 }
+if ($text -notmatch '(?is)closed, unmerged PR.*?stop before batch selection.*?resume the branch.*?abandon the pass') {
+    throw 'A closed, unmerged review PR must stop before batch selection and require an explicit resume or abandon choice.'
+}
 
 foreach ($needle in 'disposition: remediated', 'remediation-tip:', 'validate-report.ps1', '-RepoPath') {
     if ($text -notmatch [regex]::Escape($needle)) {

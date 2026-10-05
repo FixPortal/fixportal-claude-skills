@@ -10,8 +10,7 @@
     and the warnings-as-errors policy.
 
     READ-ONLY. Writes nothing inside the audited repository. Captures `git status`
-    so the caller can prove nothing mutated; when that capture itself fails, `Mutated`
-    is null (unknown) and `GitStatusFailed` is set - never false "proof".
+    so the caller can prove nothing mutated.
 
     It reports raw facts. It does not resolve effective severity or judge findings —
     that is the agent's job, and it needs the real overload/provenance evidence the
@@ -24,10 +23,10 @@
     Treat Path as a workspace: discover every git repo beneath it and inventory each.
 
 .EXAMPLE
-    ./inventory-dotnet-analysis.ps1 -Path <workdir>\your-repo
+    ./inventory-dotnet-analysis.ps1 -Path '<estate-root>\<repo>'
 
 .EXAMPLE
-    ./inventory-dotnet-analysis.ps1 -Path <workdir> -Workspace | Out-File audit.json
+    ./inventory-dotnet-analysis.ps1 -Path '<estate-root>' -Workspace | Out-File audit.json
 #>
 [CmdletBinding()]
 param(
@@ -196,8 +195,16 @@ function Get-ProjectDocuments {
     param(
         [object[]] $Files,
         [string] $Repo,
-        [System.Collections.Generic.List[object]] $ParseErrors,
-        [System.Collections.Generic.List[object]] $UnreadableFiles
+        # Mandatory: both are accumulators the caller reads back, and an omitted one is
+        # $null, on which the .Add() calls below throw mid-scan under
+        # ErrorActionPreference = Stop - a run-ending fault at the point where a single
+        # unreadable file was supposed to be recorded and skipped. Every call site passes
+        # one today; this is what keeps that true.
+        # AllowEmptyCollection is REQUIRED alongside Mandatory here: Mandatory alone
+        # rejects an empty list, and an empty accumulator is the normal starting state -
+        # binding failed on the first call of a clean run.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $ParseErrors,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $UnreadableFiles
     )
 
     $docs = [System.Collections.Generic.List[object]]::new()
@@ -205,15 +212,23 @@ function Get-ProjectDocuments {
         $relative = [IO.Path]::GetRelativePath($Repo, $file.FullName)
         try { $content = Get-Content -LiteralPath $file.FullName -Raw }
         catch {
-            $message = $_.Exception.Message -replace [regex]::Escape($Repo), '<repo>'
-            $UnreadableFiles.Add([pscustomobject]@{ Path = $relative; Error = $message })
+            $UnreadableFiles.Add([pscustomobject]@{ Path = $relative; Error = $_.Exception.Message })
             Write-Warning "Could not read '$($file.FullName)': $($_.Exception.Message)"
+            continue
+        }
+        # Get-Content -Raw on an EMPTY file yields $null, and `[xml] $xml = $null` does
+        # not throw -- so a zero-byte placeholder entered $docs with Xml = $null and
+        # Get-PackageRefs then called a method on it under ErrorActionPreference = Stop,
+        # killing the whole inventory for every repo in a workspace run. One unparseable
+        # file is one ProjectXml error, not a run-ending fault.
+        if ([string]::IsNullOrWhiteSpace($content)) {
+            $ParseErrors.Add([pscustomobject]@{ Kind = 'ProjectXml'; Path = $relative; Error = 'File is empty or whitespace-only.' })
+            Write-Warning "Could not parse '$($file.FullName)': file is empty or whitespace-only."
             continue
         }
         try { [xml] $xml = $content }
         catch {
-            $message = $_.Exception.Message -replace [regex]::Escape($Repo), '<repo>'
-            $ParseErrors.Add([pscustomobject]@{ Kind = 'ProjectXml'; Path = $relative; Error = $message })
+            $ParseErrors.Add([pscustomobject]@{ Kind = 'ProjectXml'; Path = $relative; Error = $_.Exception.Message })
             Write-Warning "Could not parse '$($file.FullName)': $($_.Exception.Message)"
             continue
         }
@@ -275,17 +290,34 @@ function Get-BundledAnalyzers {
         [string] $Id,
         [string] $Version,
         [string] $CacheFolder,
-        [System.Collections.Generic.List[object]] $ParseErrors,
-        [System.Collections.Generic.List[object]] $UnreadableFiles
+        # Mandatory: both are accumulators the caller reads back, and an omitted one is
+        # $null, on which the .Add() calls below throw mid-scan under
+        # ErrorActionPreference = Stop - a run-ending fault at the point where a single
+        # unreadable file was supposed to be recorded and skipped. Every call site passes
+        # one today; this is what keeps that true.
+        # AllowEmptyCollection is REQUIRED alongside Mandatory here: Mandatory alone
+        # rejects an empty list, and an empty accumulator is the normal starting state -
+        # binding failed on the first call of a clean run.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $ParseErrors,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $UnreadableFiles
     )
 
     $root = Join-Path $CacheFolder (Join-Path $Id.ToLowerInvariant() $Version)
     if (-not (Test-Path -LiteralPath $root)) {
+        # ONE shape for both arms. The miss arm used to carry `CacheRoot` and neither
+        # `Dependencies` nor `ShippedConfig`, so a consumer reading `.Dependencies` got
+        # $null on a miss and an array on a hit - and $null and an empty array are the
+        # same thing to `if (...)` and to `.Count` only by accident. Absent on a miss is
+        # UNKNOWN, which is what $null says here, but the KEY has to exist so a reader
+        # never has to tell "absent" from "not applicable" by probing for the property.
         return [pscustomobject]@{
-            Id        = $Id
-            Version   = $Version
-            CacheHit  = $false
-            CacheRoot = $CacheFolder
+            Id            = $Id
+            Version       = $Version
+            CacheHit      = $false
+            CachePath     = $null
+            CacheRoot     = $CacheFolder
+            Dependencies  = $null
+            ShippedConfig = $null
         }
     }
 
@@ -327,34 +359,52 @@ function Get-BundledAnalyzers {
         Version       = $Version
         CacheHit      = $true
         CachePath     = $root
+        CacheRoot     = $CacheFolder
         Dependencies  = $deps
         ShippedConfig = $configs
     }
 }
 
 function Get-GitStatus {
-    <# Always returns an explicit result object. A CLEAN repo yields zero status lines;
-       the Success flag keeps "read successfully, nothing to report" distinct from
-       "could not be read". #>
     param([string] $Repo)
+    # stderr goes to a FILE, not `2>&1`. Merging the streams put git's diagnostics into
+    # $output, and on a SUCCESSFUL run every warning line ("warning: LF will be replaced
+    # by CRLF...") then became a porcelain entry - a repo with no modifications read as
+    # dirty, which is enough to flip Mutated to Changed on evidence git never reported.
+    # `$message`, not `$error`: assigning $error inside a function shadows the automatic
+    # error variable for the whole scope, so any later `$error[0]` here would read this
+    # string instead of the last error record. (Checked: PowerShell does allow the
+    # assignment - `pwsh -NoProfile -c 'function f { $error = "x"; $error }; f'` prints x -
+    # so the hazard is shadowing, not a failure at the assignment.)
+    $stderrPath = [IO.Path]::GetTempFileName()
     try {
-        $output = @(& git -C $Repo status --porcelain 2>&1)
+        $output = @(& git -C $Repo status --porcelain 2>$stderrPath)
         $exitCode = $LASTEXITCODE
+        $stderrText = ''
+        if (Test-Path -LiteralPath $stderrPath) {
+            # An empty stderr file reads back as $null, and `([string]$null).Trim()` throws
+            # - which turned every successful, silent `git status` into a failed probe.
+            $stderrRaw = Get-Content -LiteralPath $stderrPath -Raw
+            if ($stderrRaw) { $stderrText = $stderrRaw.Trim() }
+        }
         if ($exitCode -ne 0) {
-            $error = ((($output | ForEach-Object { $_.ToString() }) -join "`n").Trim() -replace [regex]::Escape($Repo), '<repo>')
-            if (-not $error) { $error = "git status exited with code $exitCode." }
+            $message = $stderrText
+            if (-not $message) { $message = (($output | ForEach-Object { $_.ToString() }) -join "`n").Trim() }
+            if (-not $message) { $message = "git status exited with code $exitCode." }
             return [pscustomobject]@{
                 Success  = $false
                 Status   = @()
                 ExitCode = $exitCode
-                Error    = $error
+                Error    = $message
             }
         }
         return [pscustomobject]@{
             Success  = $true
             Status   = @($output | ForEach-Object { $_.ToString() })
             ExitCode = 0
-            Error    = $null
+            # A warning on a successful run is not a failure and must not empty Status,
+            # but it is not nothing either - carried so a caller can report it.
+            Error    = if ($stderrText) { $stderrText } else { $null }
         }
     }
     catch {
@@ -362,15 +412,66 @@ function Get-GitStatus {
             Success  = $false
             Status   = @()
             ExitCode = -1
-            Error    = ($_.Exception.Message -replace [regex]::Escape($Repo), '<repo>')
+            Error    = $_.Exception.Message
         }
     }
+    finally {
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ContentFingerprint {
+    param([string] $Repo)
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @('-C', $Repo, 'ls-files', '-z', '--cached', '--others', '--exclude-standard')) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($startInfo)
+    if (-not $process) { return $null }
+    try {
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $pathStream = [IO.MemoryStream]::new()
+        try {
+            $process.StandardOutput.BaseStream.CopyTo($pathStream)
+            $process.WaitForExit()
+            $null = $stderrTask.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) { return $null }
+            $pathText = [Text.Encoding]::UTF8.GetString($pathStream.ToArray())
+        }
+        finally { $pathStream.Dispose() }
+    }
+    finally { $process.Dispose() }
+    $paths = @($pathText.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries) | Sort-Object -Unique)
+    $records = foreach ($path in $paths) {
+        $file = Join-Path $Repo $path
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+        try { $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256 -ErrorAction Stop).Hash }
+        catch { return $null }
+        "$path`0$hash`0"
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($records -join ''))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [Convert]::ToHexString($sha.ComputeHash($bytes)) }
+    finally { $sha.Dispose() }
+}
+
+function Get-MutationState {
+    param($Before, $After, $BeforeFingerprint, $AfterFingerprint)
+    if (-not $Before.Success -or -not $After.Success) { return $null }
+    if (($Before.Status -join "`n") -ne ($After.Status -join "`n")) { return $true }
+    if ($null -eq $BeforeFingerprint -or $null -eq $AfterFingerprint) { return $null }
+    return ($BeforeFingerprint -cne $AfterFingerprint)
 }
 
 function Get-RepoInventory {
     param([object[]] $Files, [string] $Repo)
 
     $before = Get-GitStatus -Repo $Repo
+    $beforeFingerprint = Get-ContentFingerprint -Repo $Repo
     $parseErrors = [System.Collections.Generic.List[object]]::new()
     $unreadableFiles = [System.Collections.Generic.List[object]]::new()
 
@@ -422,17 +523,9 @@ function Get-RepoInventory {
     )
 
     $after = Get-GitStatus -Repo $Repo
-    $mutated = if ($before.Success -and $after.Success) {
-        (($before.Status -join "`n") -ne ($after.Status -join "`n"))
-    } else { $null }
-
-    # A failed capture is $null, and $null -eq $null, so joining both nulls would
-    # compare equal and emit Mutated=$false -- an unreadable `git status` rendered as
-    # PROOF of non-mutation. Mutated is $null (unknown) unless both captures read.
-    $gitStatusFailed = ($null -eq $before -or $null -eq $after)
-    if ($gitStatusFailed) {
-        Write-Warning "git status unreadable in '$Repo'; mutation cannot be proven, so Mutated is null - not false."
-    }
+    $afterFingerprint = Get-ContentFingerprint -Repo $Repo
+    $mutated = Get-MutationState -Before $before -After $after `
+        -BeforeFingerprint $beforeFingerprint -AfterFingerprint $afterFingerprint
 
     return [pscustomobject]@{
         Repository          = $Repo
@@ -447,6 +540,8 @@ function Get-RepoInventory {
         UnreadableFiles     = @($unreadableFiles)
         GitStatusBefore     = $before
         GitStatusAfter      = $after
+        ContentFingerprintBefore = $beforeFingerprint
+        ContentFingerprintAfter  = $afterFingerprint
         Mutated             = $mutated
         MutationState       = if ($null -eq $mutated) { 'Unknown' } elseif ($mutated) { 'Changed' } else { 'Unchanged' }
     }

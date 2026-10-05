@@ -1,5 +1,14 @@
 # Review Sweep Runbook
 
+## Contents
+
+- [Discover and scope](#discover-and-scope)
+- [Panel pre-flight](#panel-pre-flight)
+- [Evidence-driven triage](#evidence-driven-triage)
+- [Approval and runbook](#approval-and-runbook)
+- [Execute and consolidate](#execute-and-consolidate)
+
+
 ## Discover and scope
 
 Inspect top-level directories beneath the requested root. Keep roots where
@@ -33,8 +42,18 @@ Join discovery to collector rows by canonical `resolvedPath`. Git fields are
 nested under `.git`: `.git.boundarySha`, `.git.effectiveNeverReviewed`,
 `.git.sinceReviewCount`, `.git.sinceReviewFiles`, `.git.sinceReviewIns`,
 `.git.sinceReviewDel`, and `.git.daysSinceReview`; `hasTrackedSource` is a
-top-level field. Consume the top-level `scopeValidation` and `subsystemPaths`
+top-level field. `sinceReviewCount` and `sinceReviewFiles` count changes after
+the newest usable review boundary. Each `reviewCoverage` group keeps its own
+counts from its own boundary, including changes that predate that review.
+`hasTrackedSource` describes the full tracked tree; `hasCoveredSource` describes
+reviewed groups. Consume the top-level `scopeValidation` and `subsystemPaths`
 exactly as emitted; do not recreate pathspec validation.
+The queue value shows the highest-priority class for the row; a repository can
+also have changed coverage groups or open review records. Process every emitted
+class: new source, each changed group, and open-review age are separate evidence.
+`git.sinceReviewFiles` is the count of covered files changed since the newest
+review boundary. The path names live in each `reviewCoverage[].changedFiles`
+list, while newly uncovered paths live in `newSource`.
 
 Each discovered repo needs exactly one admissible row: `unresolved` and
 `outsideScanPath` false, `vault.isDocumentReview` false, and `resolvedPath`
@@ -57,14 +76,57 @@ declared scope stays UNKNOWN even if another field appears to say it is empty.
 | `scopeValidation = valid`; `hasTrackedSource = false` | skip/void | Record the validated scope as not code-reviewable; do not audit |
 | `scopeValidation = none`; `hasTrackedSource = false` | skip/void | Record the whole repo as not code-reviewable; do not audit |
 | usable scope state; `hasTrackedSource` missing or null | UNKNOWN | STOP before approval |
-| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; boundary set; zero commits | skip | Record unchanged |
-| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; boundary set; later commits | drift | Review `<boundarySha>..HEAD` |
+| `hasTrackedSource = true`; `queue = new-source` | new source | Review the emitted `newSource` paths; do not use the newest scope's boundary for these files |
+| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; all groups unchanged | skip | Record unchanged |
+| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; any group has changed files | drift | Review each changed `reviewCoverage` group under that group's boundary and paths |
+| `openReviewCount > 0` | open review | Report the count and `oldestOpenReviewAgeDays` separately; do not count it as file drift |
 | `hasTrackedSource=true`; `effectiveNeverReviewed=true` | audit | Audit only the approved `subsystemPaths` pathspecs |
 
-`sinceReviewFiles` is a file count, not a list. For drift candidates, run
-`git -C <repo> diff --name-only <boundarySha>..HEAD`; docs/assets/brand-only
-drift becomes skip. Size the total diff, including deletions and context, so
-transport-heavy drift is visible before approval.
+"The approved `subsystemPaths` pathspecs" means the approved SCOPE, which is not always
+that array — read it with `scopeValidation`, which is what says whether the array means
+anything:
+
+- `scopeValidation = valid`: the scope IS `subsystemPaths`; audit or diff under exactly
+  those pathspecs and no others.
+- `scopeValidation = none`: no subsystem was declared, `subsystemPaths` is EMPTY, and the
+  approved scope is the WHOLE REPOSITORY. Run the command with no `--` clause at all.
+  (`git ... --` with nothing after it applies no path restriction and selects everything,
+  so it is harmless here; what is NOT harmless is substituting a placeholder or a guessed
+  path when the array is empty, which silently narrows the audit to something the review
+  never approved.)
+- `scopeValidation = invalid`, or missing/unrecognised: STOP, per the rows above. There is
+  no scope to approve and none to substitute.
+
+`sinceReviewFiles` is a file count, not a list. For drift candidates, expand
+`reviewCoverage` and use each group's boundary and paths; a bare
+range here sizes work the approval will not cover. Size the total diff, including
+deletions and context, so transport-heavy drift is visible before approval.
+
+**Docs/assets/brand-only drift becomes skip**, and the test is the FILE LIST from that
+command, applied to every changed path — not an impression of the change. The drift is
+docs/assets/brand-only when every path is one of:
+
+- a Markdown or plain-text document (`*.md`, `*.mdx`, `*.txt`, `*.adoc`), including
+  `README`, `LICENSE`, `CHANGELOG` and anything under `docs/`;
+- a binary or vector asset — image, font, icon, video, PDF (`.png`, `.jpg`, `.jpeg`,
+  `.gif`, `.svg`, `.webp`, `.ico`, `.woff`, `.woff2`, `.ttf`, `.otf`, `.eot`, `.mp4`,
+  `.webm`, `.pdf`);
+- a brand or content value with no behaviour: a colour, a logo path, a display string, a
+  copy block.
+
+Anything else makes the drift reviewable, and ONE such path is enough — a `*.md` change
+sitting beside a single `*.ts` change is not docs-only. Three shapes are called out
+because they read as content and are not:
+
+- a config or manifest file, even a data-only one (`*.json`, `*.yml`, `*.toml`,
+  `*.csproj`, `package.json`): it changes what runs;
+- a workflow, script or hook under `.github/`, `scripts/` or `hooks/`, whatever its
+  extension;
+- an SVG carrying a `<script>` element, which is code in an asset's clothing.
+
+Where a path genuinely fits none of these — a templating language emitting both markup and
+logic, say — it is REVIEWABLE. The skip exists to spare review budget on changes that
+cannot alter behaviour, and a path whose category is uncertain has not met that bar.
 
 ## Approval and runbook
 
@@ -81,8 +143,15 @@ the equivalent conversation checklist. Update it through compaction.
 
 Invoke `adversarial-review` sequentially:
 
-- drift: `<boundarySha>..HEAD`
+- drift: `<boundarySha>..HEAD -- <approved subsystem pathspecs>`
 - audit: `audit -- <approved subsystem pathspecs>`
+
+Both carry the pathspecs. Approval was granted against the single-subsystem plan,
+so a bare range spends panel budget outside the approved scope and — worse — the
+report then claims a repository boundary the approval never granted, which becomes
+the recorded coverage boundary the next sweep trusts. A genuinely whole-repo
+approval is `scopeValidation = none` with no pathspecs to pass, never a pathspec
+dropped at execution time.
 
 Let each invocation own chunking, synthesis, and vault persistence. Do not
 report per target. At the end provide one row per repository with class,

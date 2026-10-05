@@ -1,6 +1,6 @@
 ---
 name: scaffold-frontend
-description: Use when creating a new frontend (Vite + React + TypeScript) project, or when applying standard frontend preferences to an existing one. Triggers include creating a new web UI, setting up Vite/React, scaffolding an SPA, adding or normalizing ESLint/Vitest config, wiring static analysis (eslint-plugin-sonarjs), or adding architecture tests (ArchUnitTS) to a frontend.
+description: Use when creating or normalizing a Vite + React + TypeScript frontend project to house conventions - ESLint, Vitest, ArchUnitTS, and dependency floors.
 ---
 
 # Scaffold Frontend
@@ -32,7 +32,12 @@ Before selecting or changing dependencies, read
 `~/.agents/notes/npm-publishing-traps.md` (if that note is not present, proceed
 and record the assumption). Pin a mutually compatible set from
 the lockfile evidence; do not equate each package's independent latest version
-with a resolvable stack.
+with a resolvable stack. Before bumping Vitest, `@testing-library/jest-dom`,
+or `eslint-plugin-react-refresh`, also read
+`~/.agents/notes/js-toolchain-traps.md` (if that note is not present, proceed
+and record the assumption) — it records Vitest 5's `Assertion<R,T>`
+widening breaking jest-dom matcher types, and eslint-plugin-react-refresh
+0.5.6's changed recognition of `export const P = Ctx.Provider`.
 
 - **Build**: Vite (latest), `type: module`
 - **Framework**: React 19 + React Router (apps; a component library omits the router)
@@ -133,8 +138,8 @@ record the assumption).
   sources are type-checked by `tsc -b` instead of belonging to no project.
 - Verify each resolved config with
   `npm exec --silent --yes --package=typescript@<version> --call "tsc --showConfig --project <config>"`.
-  `--call` avoids npm-version-specific argument separator handling; reject empty
-  output before parsing JSON.
+  `--call` avoids npm-version-specific argument separator handling; treat empty
+  output as failure before parsing JSON.
 - `templates/src/test/setup.ts` — jest-dom matchers + explicit RTL cleanup
   (needed because globals are off). Add project-specific shims below the core.
 
@@ -211,3 +216,5 @@ When scaffolding or normalizing a frontend, verify:
       wrapper copied, `architecture.spec.ts` with real `FORBIDDEN_EDGES`,
       non-vacuity proven, spec green under `npm test`
 - [ ] All deps on latest mutually compatible releases (except `archunit`, pinned exactly)
+
+Supporting files: Run `test/verify-template-contract.ps1`, `test/verify-version-floor.ps1`, `test/verify-build-gate.ps1` for local contract checks.

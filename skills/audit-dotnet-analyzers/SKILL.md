@@ -2,8 +2,7 @@
 name: audit-dotnet-analyzers
 description: Use when a .NET/C# analyzer or code-style diagnostic is in question — a rule is blamed for blocking modern C#, a build-breaking analyzer error forced a code change, .editorconfig / globalconfig / TreatWarningsAsErrors policy needs auditing, analyzer enforcement differs between projects or CI, an SDK or analyzer upgrade needs assessing, or someone says "Sonar wants X". Also for generating a remediation prompt from accepted analyzer findings.
 type: prompt
-whenToUse: When a .NET/C# analyzer or code-style diagnostic is in question, or someone says "Sonar wants X".
-disableModelInvocation: false
+when_to_use: When a .NET/C# analyzer or code-style diagnostic is in question, or someone says "Sonar wants X".
 ---
 
 # Audit .NET Analyzers
@@ -65,13 +64,27 @@ A control is cheap and worth it: confirm the rule *does* fire on a genuine insta
 
 ## Workflow
 
+   <!-- routing: scope -->
+
 1. **Scope** — one repo, a workspace, or a single finding.
+   <!-- routing: inventory -->
+
 2. **Inventory** — run `scripts/inventory-dotnet-analysis.ps1` for the deterministic sweep (SDK, TFM, LangVersion, analyzer packages, config hierarchy, warning policy). Read `references/audit-checklist.md` for what else to inspect and how to resolve effective config. A non-empty `UnreadablePaths`, `UnreadableFiles`, or `ParseErrors` collection makes every conclusion that depends on the affected path **undeterminable**; never report missing configuration, package references, or bundled analyzer dependencies as absent when their source did not parse.
+   <!-- routing: attribute -->
+
 3. **Attribute** — assign every diagnostic to its owning analyzer. Prefix is a hint, not proof: analyzers arrive bundled (a shared CodeStyle package may ship Sonar transitively). Do not attribute to Sonar merely because Sonar is installed.
+   <!-- routing: reproduce -->
+
 4. **Reproduce** — see the two proof obligations above.
+   <!-- routing: assess -->
+
 5. **Assess** — technical merit against repository intent. Read `references/finding-taxonomy.md` for categories, severity, disposition vocabulary and the report shape.
+   <!-- routing: report-and-stop -->
+
 6. **Report** — facts, inferences and recommendations kept visibly distinct. Every finding carries rule ID, analyzer, version, effective severity, config provenance, evidence, confidence.
 7. **STOP.** Present findings for resolution. Ask. Do not proceed.
+   <!-- routing: remediation-prompt -->
+
 8. **Remediate — only on request, after resolution.** Read `references/remediation-prompt.md`. Emit an agent-neutral, self-contained prompt containing *only* accepted / accepted-with-constraints / validation-authorised findings.
 
 `GitStatusBefore` and `GitStatusAfter` each carry `Success`, `Status`, `ExitCode`, and

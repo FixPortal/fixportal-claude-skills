@@ -85,8 +85,7 @@ try {
     # A pure REORDER reads as current, because Compare-Object is a multiset diff and
     # ignores position. That is a real limit of what this can answer, and it is pinned
     # here so nobody re-asserts the opposite in the docs: the header used to claim a
-    # reorder "reads as drifted (correctly)", which was simply false. Found by Gitar on
-    # <repo>#120.
+    # reorder "reads as drifted (correctly)", which was simply false.
     $reorderedLines = @(
         'def main():'
         '    print("canonical")'
@@ -157,8 +156,7 @@ try {
     # documents and the one a scheduled sweep would use. Every case above pins the
     # explicit -CanonicalPath path instead, so the default asset list, its relative
     # paths, and its resolution against the skill directory were entirely unexercised:
-    # a typo in $DefaultAssets would have shipped green. Found by Gitar on
-    # <repo>#120.
+    # a typo in $DefaultAssets would have shipped green.
     $skillRoot = Split-Path -Parent (Split-Path -Parent $sweep)
     $defaultRoot = Join-Path $root '_default'
     $defaultRepo = Join-Path $defaultRoot 'repo-real'
@@ -169,14 +167,15 @@ try {
 
     # Copy the REAL canonical assets in, so a clean result proves the default list
     # resolves to files that exist at the paths it claims.
-    foreach ($pair in @(
-        @{ From = 'assets/assert_canonical_assets.py';  To = '.github/scripts/assert_canonical_assets.py' }
-        @{ From = 'assets/assert_gate_coverage.py';     To = '.github/scripts/assert_gate_coverage.py' }
-        @{ From = 'assets/assert_workflow_hygiene.py';  To = '.github/scripts/assert_workflow_hygiene.py' }
-        @{ From = 'templates/summarize-stryker.ps1';    To = 'scripts/summarize-stryker.ps1' }
-        @{ From = 'assets/review-tier.yml';             To = '.github/workflows/review-tier.yml' }
-    )) {
-        Copy-Item (Join-Path $skillRoot $pair.From) (Join-Path $defaultRepo $pair.To) -Force
+    # Data-driven from the inventory: every default-swept entry (verbatim, plus
+    # review-tier.yml, the declared variance), so a new registered asset cannot
+    # desync this fixture.
+    $swept = @((Get-Content -LiteralPath (Join-Path $skillRoot 'scripts/canonical-assets.json') -Raw | ConvertFrom-Json).assets |
+        Where-Object { $_.verbatim -or (Split-Path -Leaf $_.canonical) -eq 'review-tier.yml' })
+    foreach ($a in $swept) {
+        $dest = Join-Path $defaultRepo $a.relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+        Copy-Item (Join-Path $skillRoot $a.canonical) $dest -Force
     }
 
     $defaultResult = & $sweep -Root $defaultRoot -Json | ConvertFrom-Json
@@ -184,8 +183,8 @@ try {
     if ($defaultExit -ne 0) {
         throw "the default asset sweep must pass over verbatim copies of canonical; exit $defaultExit`n$($defaultResult | ConvertTo-Json -Depth 4)"
     }
-    if (@($defaultResult).Count -ne 5) {
-        throw "the default sweep must cover the four shipped-verbatim assets and review-tier.yml; got $(@($defaultResult).Count) row(s)"
+    if (@($defaultResult).Count -ne $swept.Count) {
+        throw "the default sweep must cover every default-swept inventory asset ($($swept.Count)); got $(@($defaultResult).Count) row(s)"
     }
     foreach ($row in $defaultResult) {
         if ($row.Status -ne 'current') {
@@ -193,7 +192,7 @@ try {
         }
     }
 
-    # review-tier.yml's DECLARED variance: the trigger's
+    # review-tier.yml's DECLARED variance (canonical review): the trigger's
     # branch line is masked, and a declared local implementation reads `local`, not
     # drifted. Nothing else is excused: a stale copy, or one with no branch line at all,
     # still fails.
@@ -208,16 +207,22 @@ try {
         Set-Content -LiteralPath (Join-Path $repo '.github/workflows/review-tier.yml') -Value $Lines -Encoding utf8
     }
     $jobsLine = $tierCanonical | Where-Object { $_ -match '^jobs:' } | Select-Object -First 1
-    New-TierRepo 'repo-other-branch' ($tierCanonical -replace '^(\s*branches:\s*)\[main\]\s*$', '$1[develop]')
-    New-TierRepo 'repo-local-tier' @('name: Review tier', 'on: pull_request_target', 'jobs: {}')
+    New-TierRepo 'repo-custom-branch' ($tierCanonical -replace '^(\s*branches:\s*)\[main\]\s*$', '$1[release]')
+    New-TierRepo 'repo-local' @('name: Review tier', 'on: pull_request_target', 'jobs: {}')
     New-TierRepo 'repo-tier-stale' ($tierCanonical | Where-Object { $_ -ne $jobsLine })
     New-TierRepo 'repo-no-branches' ($tierCanonical | Where-Object { $_ -notmatch '^\s*branches:' })
 
-    $tierResult = @(& $sweep -Root $tierRoot -LocalTierImplementations 'repo-local-tier' -Json | ConvertFrom-Json | Where-Object Asset -eq 'review-tier.yml')
+    $exceptionsPath = Join-Path $root 'exceptions.json'
+    @{ version = 1; localImplementations = @{ 'review-tier.yml' = @('repo-local') }; sanitisedRepublications = @('repo-mirror') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exceptionsPath
+    New-TierRepo 'repo-mirror' @('deliberately different republication')
+    $withoutExceptions = @(& $sweep -Root $tierRoot -Json | ConvertFrom-Json | Where-Object Asset -eq 'review-tier.yml')
+    if (($withoutExceptions | Where-Object Repo -eq 'repo-local').Status -ne 'drifted') { throw 'no config must grant no local exemption' }
+    if (-not ($withoutExceptions | Where-Object Repo -eq 'repo-mirror')) { throw 'no config must silently exclude no republication' }
+    $tierResult = @(& $sweep -Root $tierRoot -ExceptionsPath $exceptionsPath -Json | ConvertFrom-Json | Where-Object Asset -eq 'review-tier.yml')
     $tierExit = $LASTEXITCODE
     foreach ($case in @(
-        @{ Repo = 'repo-other-branch'; Status = 'current' }
-        @{ Repo = 'repo-local-tier';   Status = 'local' }
+        @{ Repo = 'repo-custom-branch';        Status = 'current' }
+        @{ Repo = 'repo-local'; Status = 'local' }
         @{ Repo = 'repo-tier-stale';   Status = 'drifted' }
         @{ Repo = 'repo-no-branches';  Status = 'drifted' }
     )) {
@@ -227,9 +232,41 @@ try {
         }
     }
     if ($tierExit -eq 0) { throw "drifted review-tier.yml copies must fail the sweep; got exit $tierExit" }
+    if ($tierResult | Where-Object Repo -eq 'repo-mirror') { throw 'configured republication must be excluded' }
+
+    foreach ($invalid in @(
+        '{"version":2,"localImplementations":{},"sanitisedRepublications":[]}',
+        '{"version":"1","localImplementations":{},"sanitisedRepublications":[]}',
+        '{"version":1,"localImplementations":{"review-tier.yml":"repo-local"},"sanitisedRepublications":[]}',
+        '{"version":1,"localImplementations":{},"sanitisedRepublications":"repo-mirror"}',
+        '{"version":1,"localImplementations":{},"sanitisedRepublications":[null]}',
+        '{"version":1,"localImplementations":{"unknown.yml":["repo-local"]},"sanitisedRepublications":[]}',
+        '{"version":1,"localImplementations":{},"sanitisedRepublications":["../repo-local"]}',
+        '{"version":1,"localImplementations":{},"sanitisedRepublications":[],"typo":true}',
+        'not json'
+    )) {
+        Set-Content -LiteralPath $exceptionsPath -Value $invalid
+        $rejected = $false
+        try { & $sweep -Root $tierRoot -ExceptionsPath $exceptionsPath -Json | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "invalid exception config was accepted: $invalid" }
+    }
+    $rejected = $false
+    try { & $sweep -Root $tierRoot -ExceptionsPath (Join-Path $root 'missing.json') -Json | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'specified missing exception config must fail closed' }
+    $insideExceptions = Join-Path $skillRoot ('exceptions-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        @{ version = 1; localImplementations = @{}; sanitisedRepublications = @() } | ConvertTo-Json | Set-Content -LiteralPath $insideExceptions
+        $locationError = $null
+        try { & $sweep -Root $tierRoot -ExceptionsPath $insideExceptions -Json | Out-Null } catch { $locationError = $_.Exception.Message }
+        if ($locationError -ne 'Exception data must live outside the mounted skill directory.') {
+            throw "in-skill exception config must fail the location guard; got: $locationError"
+        }
+    }
+    finally { Remove-Item -LiteralPath $insideExceptions -Force -ErrorAction Stop }
+    @{ version = 1; localImplementations = @{ 'review-tier.yml' = @('repo-local') }; sanitisedRepublications = @('repo-mirror') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exceptionsPath
 
     Remove-Item -LiteralPath (Join-Path $tierRoot 'repo-tier-stale'), (Join-Path $tierRoot 'repo-no-branches') -Recurse -Force
-    & $sweep -Root $tierRoot -LocalTierImplementations 'repo-local-tier' -Json | Out-Null
+    & $sweep -Root $tierRoot -ExceptionsPath $exceptionsPath -Json | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "a masked branch line and a declared local implementation must not fail the sweep; got exit $LASTEXITCODE" }
 
     'sweep-canonical-asset-drift.ps1 OK - current/extended/drifted/local/absent classification, reorder limit, CRLF tolerance, line counts, exit codes, the default multi-asset path, and review-tier.yml''s declared variance'

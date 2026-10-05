@@ -30,7 +30,7 @@ placeholders.
 
 | Skill | What it does |
 |---|---|
-| `adversarial-review` | Cross-vendor code review as a five-reviewer panel spanning four vendors — two Anthropic models, GPT via the Codex CLI, Kimi via the Kimi Code CLI, and Gemini via Antigravity — which then cross-examine each other before a separate Opus judge adjudicates. The panel is data, not code: `reviewers.json` defines it and the driver enforces a minimum vendor-diversity invariant. |
+| `adversarial-review` | Cross-vendor code review: one reviewer seat per vendor (Anthropic, OpenAI via the Codex CLI, Moonshot via the Kimi Code CLI, Google via Antigravity, and xAI via the Grok CLI at the time of writing), which cross-examine each other before a separate judge adjudicates. The panel is data, not code: `reviewers.json` defines it, pins a literal model per seat, and the driver enforces a minimum vendor-diversity invariant. |
 | `review-sweep` | The same review across every repository under a parent folder, one subsystem at a time. |
 | `review-worktree-pass` | Remediate review findings in a dedicated, ephemeral review worktree on a numbered batch branch, so the primary checkout is never disturbed. |
 | `review-digest` | Mine *past* review work across a folder of repos into a dated intelligence report — coverage ledger, recurring-theme digest, risk ranking, and a paste-ready scope brief for the next pass. Read-only; runs no reviews. |
@@ -55,7 +55,6 @@ placeholders.
 
 | Skill | What it does |
 |---|---|
-| `recap` | "Where did we get to?" — a fast, multi-source, journalled recap of work done and what's next, per repo/branch. |
 | `handoff` | Write the brief that survives the session: what is done, what is in flight, and exactly what the next agent must not re-derive. |
 
 ### Domain — depth in the stacks I actually work in
@@ -79,13 +78,19 @@ loaded context stays small until the detail is actually needed.
 
 The whole value is that the reviewers come from **different vendors**. A panel
 made only of Claude models is same-vendor self-review: its errors correlate, so
-the second opinion mostly agrees with the first. Spanning Anthropic, OpenAI,
-Moonshot, and Google is what makes one vendor's blind spot another's finding.
+the second opinion mostly agrees with the first. Spanning several vendors is
+what makes one vendor's blind spot another's finding.
 
 Two rules fall out of that and are enforced rather than documented: the active
 reviewer set must span a minimum number of distinct vendors, and the judge is
 never also a reviewer — an adjudicator that voted earlier is just its own
 opinion, counted twice.
+
+In the private working set each seat names a model *constraint* that a separate
+model registry resolves to whatever is current. This mirror does not ship that
+registry, so every seat also carries a literal model pin; the driver uses the pin
+when no registry is installed. Expect the pins to age — update them, or install
+your own resolver beside the skill.
 
 ## Contributing
 
@@ -97,16 +102,13 @@ machine-specific paths — see [AGENTS.md](AGENTS.md) for the full conventions.
 CI runs four jobs: skill validation (actionlint over the workflows, then the skill
 verifiers), gate coverage (asserts every job in `ci.yml` is wired into the gate), a
 repository-wide sanitisation scan (no machine paths, private tokens, or real endpoints),
-and a required `CI Gate` check that needs the other three. `verify-collect.ps1` is excluded — it is an estate
-integration skeleton with intentional `<repos-root>` placeholders that cannot run
-standalone.
+and a required `CI Gate` check that needs the other three.
 
 Run the verifiers locally before pushing:
 
 ```powershell
 $failed = @()
 Get-ChildItem skills -Recurse -Filter 'verify-*.ps1' |
-  Where-Object Name -ne 'verify-collect.ps1' |
   Sort-Object FullName |
   ForEach-Object {
     # Capture the path BEFORE try: inside catch, $_ rebinds to the ErrorRecord (which

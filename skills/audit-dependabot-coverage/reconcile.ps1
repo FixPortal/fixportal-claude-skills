@@ -7,7 +7,7 @@
   fixed by an open Dependabot PR, or old enough that its absence is a finding?
 
   WHY THIS EXISTS, AND WHY IT IS NOT A CONFIG CHECK. On 2026-08-08 a high-severity
-  nanoid advisory opened on <your-org>/your-learning and no PR was raised for
+  nanoid advisory opened on <org>/<repo> and no PR was raised for
   four days. Every configuration signal read green throughout: security updates
   enabled and unpaused, the registry token present in the Dependabot secret store,
   and that same directory demonstrably able to do transitive dev-scope lockfile
@@ -28,14 +28,14 @@
 .PARAMETER GraceHours
   An alert younger than this is not reported. Dependabot security updates are meant
   to be immediate, but a scheduled window plus queue time is real, so the default
-  spans one weekly window rather than assuming instant.
+  allows 48 hours for scheduler and queue delay rather than assuming instant.
 
 .PARAMETER Json
   Emit the findings as JSON instead of a table.
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Org = @('<your-org>'),
+    [string[]]$Org = @('YourOrg'),
     [string[]]$Repo,
     [int]$GraceHours = 48,
     [ValidateSet('open', 'fixed', 'dismissed', 'auto_dismissed')]
@@ -61,6 +61,81 @@ $ErrorActionPreference = 'Stop'
 #   grouped:    "Updates `@azure/msal-browser` from 5.17.3 to 5.18.0"
 # The body identifies packages. The branch contributes ecosystem/directory context;
 # a grouped branch carries only a hash where a package name would otherwise appear.
+# Compare numeric core and semver prerelease precedence. Build metadata does not affect
+# precedence. Anything unparseable returns $false, which reports the alert rather than
+# suppressing it -- the safe direction for this tool.
+function Test-VersionAtLeast {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Version,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Minimum
+    )
+
+    function Split-Version([string] $value) {
+        $core = ($value -replace '^[=vV^~><\s]+', '').Trim()
+        $build = $core -split '\+', 2
+        if ($build.Count -gt 1) {
+            if (-not $build[1] -or @($build[1] -split '\.' | Where-Object { $_ -notmatch '^[0-9A-Za-z-]+$' }).Count) { return $null }
+            $core = $build[0]
+        }
+        $pre = $null
+        if ($core -match '-') {
+            $split = $core -split '-', 2
+            $core = $split[0]
+            $pre = @($split[1] -split '\.')
+            if ($pre.Count -eq 0 -or @($pre | Where-Object { $_ -notmatch '^[0-9A-Za-z-]+$' }).Count -gt 0) { return $null }
+        }
+        $parts = @($core -split '\.' | ForEach-Object {
+            if ($_ -match '^\d+$') { [int]$_ } else { $null }
+        })
+        # COUNTED, not evaluated for truthiness. `$parts | Where-Object { $null -eq $_ }`
+        # emits the $null elements themselves, and PowerShell evaluates a one-element
+        # array by the truthiness of that element - which is $null, so the condition was
+        # always $false and this guard never fired. (powershell-traps.md, the
+        # single-element unroll.) The consequence is the silent-suppression direction the
+        # comment above promises to avoid: `1.2.3.Final` split to @(1,2,3,$null), the
+        # comparison read the missing segment as 0, and a PR bumping to `1.2.3` counted as
+        # coverage for an advisory requiring `1.2.3.Final`. (CodeRabbit, PR #135.)
+        if ($parts.Count -eq 0 -or @($parts | Where-Object { $null -eq $_ }).Count -gt 0) { return $null }
+        [pscustomobject]@{ Parts = $parts; Prerelease = $pre }
+    }
+
+    $left = Split-Version $Version
+    $right = Split-Version $Minimum
+    if ($null -eq $left -or $null -eq $right) { return $false }
+
+    $length = [Math]::Max($left.Parts.Count, $right.Parts.Count)
+    for ($i = 0; $i -lt $length; $i++) {
+        $l = if ($i -lt $left.Parts.Count) { $left.Parts[$i] } else { 0 }
+        $r = if ($i -lt $right.Parts.Count) { $right.Parts[$i] } else { 0 }
+        if ($l -gt $r) { return $true }
+        if ($l -lt $r) { return $false }
+    }
+    if ($null -eq $left.Prerelease -and $null -eq $right.Prerelease) { return $true }
+    if ($null -eq $left.Prerelease) { return $true }
+    if ($null -eq $right.Prerelease) { return $false }
+    $preLength = [Math]::Min($left.Prerelease.Count, $right.Prerelease.Count)
+    for ($i = 0; $i -lt $preLength; $i++) {
+        $l = [string]$left.Prerelease[$i]
+        $r = [string]$right.Prerelease[$i]
+        $leftNumeric = $l -match '^\d+$'
+        $rightNumeric = $r -match '^\d+$'
+        if ($leftNumeric -and $rightNumeric) {
+            $lNumber = [Numerics.BigInteger]::Parse($l, [Globalization.CultureInfo]::InvariantCulture)
+            $rNumber = [Numerics.BigInteger]::Parse($r, [Globalization.CultureInfo]::InvariantCulture)
+            if ($lNumber -gt $rNumber) { return $true }
+            if ($lNumber -lt $rNumber) { return $false }
+        }
+        elseif ($leftNumeric -ne $rightNumeric) { return -not $leftNumeric }
+        else {
+            $comparison = [StringComparer]::Ordinal.Compare($l, $r)
+            if ($comparison -gt 0) { return $true }
+            if ($comparison -lt 0) { return $false }
+        }
+    }
+    return $left.Prerelease.Count -ge $right.Prerelease.Count
+}
+
 function Test-DependabotPrCoversPackage {
     [OutputType([bool])]
     param(
@@ -69,6 +144,9 @@ function Test-DependabotPrCoversPackage {
         [AllowEmptyString()][string]$HeadRefName = '',
         [AllowEmptyString()][string]$ManifestPath = '',
         [AllowEmptyString()][string]$Ecosystem = '',
+        # The version the advisory says fixes it. When supplied, a PR whose stated
+        # destination does not reach it is NOT coverage.
+        [AllowEmptyString()][string]$FirstPatchedVersion = '',
         [switch]$RequireTargetContext
     )
 
@@ -97,6 +175,27 @@ function Test-DependabotPrCoversPackage {
     }
     if (-not $packageMatched) { return $false }
 
+    # Does this PR actually clear the advisory? Dependabot states its destination as
+    # "from <a> to <b>" on the same line as the package. `none` is the API's way of saying
+    # no patched release exists, so there is nothing to compare against.
+    if ($FirstPatchedVersion.Trim().ToLowerInvariant() -eq 'none') { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($FirstPatchedVersion)) {
+        $toMatch = [regex]::Match(
+            $Body,
+            "(?im)^\s*(?:>\s*)?(?:Bumps|Updates)\s+(?:\[$pkg\]\([^)]*\)|``$pkg``|$pkg)\s+from\s+\S+\s+to\s+(?<to>[^\s,;)]+)")
+        if (-not $toMatch.Success) {
+            # A destination we cannot read is not a destination we can vouch for. Fail
+            # closed: report the alert rather than suppress it on an unparsed body.
+            return $false
+        }
+        # Dependabot ends the sentence with a period, and a version legitimately contains
+        # them -- so the capture keeps dots and the SENTENCE period is trimmed here.
+        $toVersion = $toMatch.Groups['to'].Value.TrimEnd('.')
+        if (-not (Test-VersionAtLeast -Version $toVersion -Minimum $FirstPatchedVersion)) {
+            return $false
+        }
+    }
+
     # Package-only mode is retained for the lexical matcher tests. Reconciliation
     # always supplies alert context and therefore takes the fail-closed path below.
     if ([string]::IsNullOrWhiteSpace($ManifestPath) -and
@@ -106,12 +205,25 @@ function Test-DependabotPrCoversPackage {
         $HeadRefName, '^dependabot/(?<ecosystem>[^/]+)(?:/(?<target>.+))?$')
     if (-not $branchMatch.Success) { return $false }
 
+    # Keyed on the BRANCH spelling, mapped to the alerts-API ecosystem value. Three
+    # entries mixed the two vocabularies: `github_actions` is not a branch prefix (the
+    # branch says `github_actions` and the API says `actions`, not `github-actions`),
+    # Go branches read `go_modules` rather than `gomod`, and `gradle` fell through to
+    # default and could never equal the API's `maven`. Every affected alert with a real
+    # covering PR reported UNCOVERED -- false-positive noise, which this script's own
+    # header names as the thing that gets a check switched off.
     $prEcosystem = switch ($branchMatch.Groups['ecosystem'].Value.ToLowerInvariant()) {
         'npm_and_yarn'   { 'npm' }
-        'github_actions' { 'github-actions' }
+        'github_actions' { 'actions' }
         'bundler'        { 'rubygems' }
-        'gomod'          { 'go' }
+        'go_modules'     { 'go' }
+        'gomod'          { 'go' }        # older branches
+        'gradle'         { 'maven' }
+        'maven'          { 'maven' }
         'cargo'          { 'rust' }
+        'pip'            { 'pip' }
+        'composer'       { 'composer' }
+        'nuget'          { 'nuget' }
         default          { $_ }
     }
     if (-not [string]::IsNullOrWhiteSpace($Ecosystem) -and
@@ -123,15 +235,43 @@ function Test-DependabotPrCoversPackage {
     $lastSlash = $manifest.LastIndexOf('/')
     $alertDirectory = if ($lastSlash -lt 0) { '' } else { $manifest.Substring(0, $lastSlash) }
 
-    $directoryMatch = [regex]::Match(
+    # ALL the clauses, not the first. A grouped PR carries one "in the /<dir> directory:"
+    # clause per directory it touches, and reading only the first compared every package
+    # against that one directory - so a package bumped in /backend was measured against
+    # /frontend. When the alert happened to sit in the first-named directory that reads
+    # as COVERED, which suppresses a real alert with nothing visible to notice.
+    $directoryMatches = @([regex]::Matches(
         $Body,
-        '(?im)^\s*Bumps\s+.+?\s+group\s+with\s+\d+\s+updates?\s+in\s+the\s+/(?<directory>.*?)\s+directory:')
-    if ($directoryMatch.Success) {
+        '(?im)^\s*Bumps\s+.+?\s+group\s+with\s+\d+\s+updates?\s+in\s+the\s+/(?<directory>.*?)\s+directory:'))
+    $directoryMatch = if ($directoryMatches.Count -eq 1) { $directoryMatches[0] } else { $null }
+    if ($directoryMatches.Count -gt 1) {
+        # Each clause is followed by the `Updates <pkg> from a to b` lines it covers, up
+        # to the next clause. Attribute the package to the block that actually lists it;
+        # if no block does, or more than one does, we cannot say which directory the bump
+        # landed in, and the alert is REPORTED rather than suppressed - a visible false
+        # UNCOVERED row is the direction this script is allowed to fail in.
+        $backtick = [char] 96
+        $mention = "(?i)(?:\[|$backtick|\s)$pkg(?:\]|$backtick|[\s,.]|`$)"
+        $owning = @()
+        for ($m = 0; $m -lt $directoryMatches.Count; $m++) {
+            $blockStart = $directoryMatches[$m].Index + $directoryMatches[$m].Length
+            $blockEnd = if ($m + 1 -lt $directoryMatches.Count) { $directoryMatches[$m + 1].Index } else { $Body.Length }
+            if ($Body.Substring($blockStart, $blockEnd - $blockStart) -match $mention) {
+                $owning += $directoryMatches[$m]
+            }
+        }
+        if ($owning.Count -ne 1) { return $false }
+        $directoryMatch = $owning[0]
+    }
+    if ($directoryMatch) {
         $prDirectory = $directoryMatch.Groups['directory'].Value.Trim('/')
     } else {
         $target = $branchMatch.Groups['target'].Value
-        $branchPackage = [regex]::Escape($PackageName.Trim().TrimStart('@').Replace('/', '-'))
-        $packageInBranch = [regex]::Match($target, "(?i)(?:^|/)$branchPackage(?:-[^/]+)?$")
+        $package = $PackageName.Trim().TrimStart('@')
+        $branchPackages = @([regex]::Escape($package))
+        if ($package.Contains('/')) { $branchPackages += [regex]::Escape($package.Replace('/', '-')) }
+        $packagePattern = '(?:' + ($branchPackages -join '|') + ')'
+        $packageInBranch = [regex]::Match($target, "(?i)(?:^|/)(?:@)?$packagePattern(?:-[^/]+)?$")
         if (-not $packageInBranch.Success) { return $false }
         $prDirectory = $target.Substring(0, $packageInBranch.Index).Trim('/')
     }
@@ -143,9 +283,6 @@ function Test-DependabotPrCoversPackage {
 # gh writes its error BODY to stdout and only a one-line summary to stderr, so a
 # 403/404 yields a whole JSON document unless the exit status is checked. Every
 # call here honours $LASTEXITCODE rather than inspecting the payload.
-# stderr is captured, not discarded: its one-line summary is the only thing that
-# distinguishes a 403 from a 404 from a network failure, and without it every
-# failure renders as the same "unreadable" row.
 function Invoke-Gh {
     param([Parameter(Mandatory)][string[]]$Arguments, [switch]$AllowFailure)
 
@@ -228,9 +365,8 @@ function ConvertTo-Utc {
 # Returns $null when the query could not be read at all, and an array (possibly empty)
 # when it genuinely was. Raised in review of PR #59, whose stated cause was wrong -- the
 # `--author app/dependabot` filter does work, verified as 224 PRs total against 71
-# filtered on your-repo, with non-Dependabot authors excluded -- but the
-# uncovered path it pointed at was real. (That flag has since been replaced by a
-# local filter over the paginated pulls API; see the main loop.)
+# filtered on example-app, with non-Dependabot authors excluded -- but the
+# uncovered path it pointed at was real.
 function ConvertFrom-PrListJson {
     param([Parameter(Mandatory)][AllowNull()]$Raw)
 
@@ -329,7 +465,13 @@ function Get-SecurityUpdateState {
     param([Parameter(Mandatory)][string]$Slug)
 
     $raw = Invoke-Gh @('api', "repos/$Slug/automated-security-fixes") -AllowFailure
-    if (-not $raw) { return 'unknown' }
+    if (-not $raw) {
+        if ($script:lastGhError -match '(?i)(?:HTTP\s*)?404|Not Found') {
+            $script:lastGhError = 'HTTP 404 cannot distinguish disabled automated security fixes from a resource hidden by token permissions'
+            return 'unknown'
+        }
+        return 'unknown'
+    }
     try { $j = ($raw | Out-String | ConvertFrom-Json) } catch {
         $script:lastGhError = 'GitHub returned unreadable automated-security-fixes JSON'
         return 'unknown'
@@ -440,11 +582,17 @@ foreach ($slug in $repos) {
             $ageHours = [int]($now - $created).TotalHours
         }
 
+        # The DESTINATION VERSION is part of coverage. Matching on package, ecosystem and
+        # directory alone let an open PR bumping nanoid 3.3.16 -> 3.3.17 suppress an alert
+        # requiring 3.3.18: silent suppression indistinguishable from a fix, in the tool
+        # written because Dependabot reached a wrong verdict on exactly that package.
+        $firstPatched = [string](Get-Prop $a @('security_vulnerability', 'first_patched_version', 'identifier') '')
         $match = $prs | Where-Object {
             Test-DependabotPrCoversPackage -Body ([string]$_.body) -PackageName ([string]$pkg) `
                 -HeadRefName ([string](Get-Prop $_ @('headRefName') '')) `
                 -ManifestPath ([string](Get-Prop $a @('dependency', 'manifest_path') '')) `
                 -Ecosystem ([string](Get-Prop $a @('dependency', 'package', 'ecosystem') '')) `
+                -FirstPatchedVersion $firstPatched `
                 -RequireTargetContext
         } | Select-Object -First 1
 

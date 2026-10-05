@@ -1,7 +1,10 @@
 {
-  "_comment": "Adversarial-review panel composition, as data. The driver (run-review.ps1) reads this to know which reviewers to run, with which wrapper, model, and reasoning effort. Swap or add reviewers HERE, not in code. INVARIANT: the active (enabled) reviewer set must span at least `minVendors` distinct vendors -- uncorrelated error across vendors is the entire point of the panel. v2: all vendors are subscription-backed CLIs (see `wrapper`); the metered-API wrappers are retained as `fallbackWrapper` for when a subscription is unavailable. See docs/METHODOLOGY-v2.md.",
+  "_comment": "Adversarial-review panel composition, as data. The driver (run-review.ps1) reads this to know which reviewers to run, with which wrapper, model, and reasoning effort. Swap or add reviewers HERE, not in code. INVARIANT: the active (enabled) reviewer set must span at least `minVendors` distinct vendors -- uncorrelated error across vendors is the entire point of the panel. v2: all vendors are subscription-backed CLIs (see `wrapper`); the metered-API wrappers are retained as `fallbackWrapper` for when a subscription is unavailable. v3: MODEL IDS ARE NO LONGER WRITTEN HERE -- each seat declares a `select` constraint that the driver resolves against the canonical model registry at run time, so a new model release is picked up by triaging it in the registry, not by editing this file. See docs/METHODOLOGY-v2.md.",
 
-  "minVendors": 2,
+  "_minVendorsComment": "Raised 2 -> 3 on 2026-09-18, when the panel went to one seat per vendor across five vendors. 2 was slack enough that a run could proceed on two vendors while reporting cross-vendor coverage. It is NOT set to 4, which the seat count would otherwise suggest: this value is enforced at THREE sites and two are RUNTIME, not config -- run-review.ps1 checks the enabled set once up front, then Dies if fewer than this many vendors PRODUCE Phase 1 findings, and again on Phase 2 cross-examinations. A seat is dropped from those counts by a wrapper outage OR by writing an off-contract finding heading, and the latter is observed twice (2026-08-16, 2026-08-17 -- the second left five reviewers counting as four vendors). At 4 a single outage plus one formatting quirk kills the chunk and forces a re-run of every seat; 3 absorbs the documented double-loss and still cannot be satisfied by a self-review panel.",
+  "minVendors": 3,
+
+  "_selectComment": "A seat's `select` block is passed to model-registry/resolve.py as --tier/--vendor/--family/--channel, and the best-ranked match becomes the seat's model. RESOLUTION IS FATAL WHEN EMPTY: a seat whose constraint matches nothing kills the run rather than quietly leaving the panel a vendor short, because a silently dropped vendor is indistinguishable from a clean review (model-routing-traps.md traps 2 and 9). `family` is an id prefix and exists for the constraint a tier cannot express -- reviewer F must be a DIFFERENT Anthropic lineage from the Opus judge, and both sit in `frontier`. A literal `model` may still be written instead of `select` to pin a seat; it bypasses the registry entirely, so state why in the seat's comment. The registry is OPTIONAL to the driver: a literal `model` written BESIDE `select` is used only when ../model-registry is absent (a host without the registry, e.g. the public mirror), and a select-only seat on such a host kills the run naming the seat. PUBLIC MIRROR: the model-registry skill is not published alongside this one, so EVERY `select` here carries a literal `model` fallback, pinned to the id the registry resolved for that constraint when this copy was published. With ../model-registry installed beside this skill the `select` wins and the pin is ignored; without it the pin runs. The pins age -- update them, or install a registry, when a vendor ships a newer model.",
 
   "wrappers": {
     "_comment": "Each wrapper is a sibling .ps1. Required minimum parameters: -Instruction -DiffPath -FindingsPath -ContextPath -Model. Optional capabilities: -InstructionPath -Effort -RepoPath -OutPath -UsageSidecarPath. All return review text on stdout and non-zero on failure; the driver introspects optional parameters. Subscription-backed CLI wrappers are primary, with declared fallbacks only.",
@@ -10,63 +13,75 @@
     "kimi": "kimi-review.ps1",
     "agy": "agy-review.ps1",
     "gemini": "gemini-review.ps1",
+    "grok": "grok-review.ps1",
     "openai": "openai-review.ps1",
     "copilot": "external-review.ps1"
   },
 
+  "selectors": {
+    "_comment": "Registry id -> the string this wrapper's CLI actually accepts, applied after resolution. Only Claude Code needs one: the registry stores vendor API ids while `claude -p --model` takes a four-word vocabulary (opus|sonnet|haiku|fable) and rejects anything else. Patterns are FAMILY prefixes, not model ids, so they survive every release within a family -- there is nothing here to edit when Sonnet 6 ships. Codex, Kimi and agy take the registry id verbatim and are absent by design; an unlisted wrapper passes the resolved id through unchanged. Telemetry always records the RESOLVED REGISTRY ID, never the translated selector, so Observatory rows stay keyed on something priceable.",
+    "claude": [
+      { "match": "^claude-opus", "use": "opus" },
+      { "match": "^claude-sonnet", "use": "sonnet" },
+      { "match": "^claude-haiku", "use": "haiku" },
+      { "match": "^claude-fable", "use": "fable" }
+    ]
+  },
+
   "reviewers": [
     {
-      "_comment": "Anthropic reviewer #1 (Sonnet). Subscription-backed via Claude Code (Agent tool in-process) or `claude -p` (claude-review.ps1) on other hosts. Repo-aware and hard read-only (--permission-mode plan). Reviewer != judge: the Phase-3 judge is Opus, so a Sonnet reviewer keeps the anthropic axis decorrelated from the adjudicator.",
-      "id": "B",
-      "label": "Claude Sonnet",
-      "wrapper": "claude",
-      "model": "sonnet",
-      "vendor": "anthropic",
-      "effort": "high",
-      "repoAccess": true,
-      "enabled": true
-    },
-    {
-      "_comment": "Anthropic reviewer #2 (Fable 5). Same vendor as B -- a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Fable is now available in perpetuity on the Claude subscription. Canonical telemetry id: claude-fable-5.",
+      "_comment": "Anthropic reviewer #2 (Fable lineage). Same vendor as B -- a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Constrained by FAMILY, not by id: frontier alone would resolve to whatever Anthropic ranks highest and could collide with the Opus judge, which is precisely the collapse the alternates note below warns about. Fable is available in perpetuity on the Claude subscription.",
       "id": "F",
-      "label": "Claude Fable 5",
+      "label": "Claude Fable",
       "wrapper": "claude",
-      "model": "fable",
+      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-fable", "channel": "cli" }, "model": "claude-fable-5-1",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,
       "enabled": true
     },
     {
-      "_comment": "OpenAI reviewer. PRIMARY = Codex CLI (codex-review.ps1), subscription-backed via a ChatGPT Pro login -- no metered credits. FALLBACK = openai-review.ps1 (direct Chat Completions API) for when no subscription is available; the driver falls back on primary non-zero exit and flags the run degraded-to-API. Repo-aware and HARD read-only (codex exec --sandbox read-only). Note: codex model ids differ from the API model id below; the codex wrapper uses the subscription's default model unless the id is codex-native, and records `model` for telemetry grouping only.",
+      "_comment": "OpenAI reviewer. PRIMARY = Codex CLI (codex-review.ps1), subscription-backed via a ChatGPT Pro login -- no metered credits. FALLBACK = openai-review.ps1 (direct Chat Completions API) for when no subscription is available; the driver falls back on primary non-zero exit and flags the run degraded-to-API. Repo-aware and HARD read-only (codex exec --sandbox read-only). The registry's OpenAI ids ARE the Codex slugs (they are read from the Codex model cache), so the resolved id is passed to -m verbatim.",
       "id": "X",
       "label": "GPT (Codex)",
       "wrapper": "codex",
       "fallbackWrapper": "openai",
-      "model": "gpt-5.6-sol",
+      "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra",
       "vendor": "openai",
       "effort": "high",
       "repoAccess": true,
+      "allowRepoCommands": true,
       "enabled": true
     },
     {
-      "_comment": "Moonshot reviewer. Subscription-backed via the Kimi Code CLI (kimi-review.ps1), Allegretto OAuth login -- no API fallback. The wrapper explicitly pins kimi-code/kimi-for-coding (K2.7 Coding, Standard), independent of the user's current CLI default. The highspeed selector spends roughly 3x credits; kimi-code/k3 is a distinct 1M-context model. repoAccess is false because Kimi has no per-invocation read-only flag; the wrapper runs hermetically with copied context.",
+      "_comment": "Moonshot reviewer. Subscription-backed via the Kimi Code CLI (kimi-review.ps1), Allegretto OAuth login -- no API fallback. WORKHORSE is deliberate and is a COST constraint, not a capability one: the highspeed selector spends roughly 3x credits and kimi-code/k3 is the frontier 1M-context model. Registry rank keeps this on the standard selector; if a cheaper standard model supersedes it, this seat follows without an edit. repoAccess is false because Kimi has no per-invocation read-only flag; the wrapper runs hermetically with copied context.",
       "id": "K",
       "label": "Kimi (standard)",
       "wrapper": "kimi",
-      "model": "kimi-code/kimi-for-coding",
+      "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding",
       "vendor": "moonshot",
       "effort": "high",
       "repoAccess": false,
       "enabled": true
     },
     {
-      "_comment": "Google reviewer (Gemini). Subscription-backed via Antigravity CLI (agy-review.ps1) on the user's paid Google plan. Diff-only (repo-blind): pass the key repo files via -ContextPath. The wrapper pins gemini-3.1-pro-high and runs in read-only plan mode.",
+      "_comment": "Google reviewer (Gemini). Subscription-backed via Antigravity CLI (agy-review.ps1) on the user's paid Google plan. Diff-only (repo-blind): pass the key repo files via -ContextPath. Resolves against the registry's `antigravity` source, which is `agy models` -- a live authenticated roster, and a SEPARATE catalogue from the Gemini CLI one, using different ids for what may be the same weights. agy fuses reasoning effort into the selector (`-high`/`-low`), so the resolved id already carries it and agy-review.ps1 reads the effort back off the suffix rather than appending its own.",
       "id": "G",
       "label": "Gemini",
       "wrapper": "agy",
-      "model": "gemini-3.1-pro-high",
+      "select": { "vendor": "google", "tier": "frontier", "channel": "cli" }, "model": "gemini-3.1-pro-high",
       "vendor": "google",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": true
+    },
+    {
+      "_comment": "xAI reviewer (Grok). Subscription-backed via the Grok CLI (grok-review.ps1), OAuth login -- there is no XAI_API_KEY on this box, so there is no metered fallback and none is declared. FRONTIER by constraint: the seat exists to add a fifth vendor AND a fifth frontier opinion, and the run corpus is what argues for frontier here -- across 60 pooled-maps the two highest-yielding seats were frontier-tier, and the panel's weakest seat was the one held at workhorse for decorrelation reasons a family constraint already covers. repoAccess is false and is NOT negotiable: Grok has no per-invocation read-only mode and grok-review.ps1 passes --always-approve, so the wrapper is made hermetic structurally (throwaway scratch cwd, inputs copied in) exactly as kimi-review.ps1 is. It is listed in noSandboxWrappers for that reason. Grok takes the registry id verbatim (grok-4.6), so it needs no `selectors` entry.",
+      "id": "R",
+      "label": "Grok",
+      "wrapper": "grok",
+      "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7",
+      "vendor": "xai",
       "effort": "high",
       "repoAccess": false,
       "enabled": true
@@ -75,11 +90,22 @@
 
   "alternates": [
     {
-      "_comment": "Opus is reserved as judge (Phase 3) and verifier (Phase 4) -- not a blind reviewer. Do NOT enable as a reviewer: reviewer==judge collapses the anthropic axis to the adjudicator's model seen twice.",
+      "_comment": "Anthropic WORKHORSE, retired from the active panel 2026-09-18 when the xAI seat landed. It held the anthropic axis at workhorse to keep it decorrelated from the Opus judge -- but reviewer F's `family: claude-fable` constraint already makes reviewer==judge collapse unreachable, so that job was being done twice while this seat paid for it in Claude allowance. The vault corpus is what settled it: across 60 pooled-maps / 508 findings / 12 repos it was the LOWEST-yielding seat (73 findings, leading 2 of 12 repos) against Fable's 145 leading 9 of 12. Retiring it leaves exactly one seat per vendor. RE-ENABLE IF: a five-frontier panel starts converging -- this was the only workhorse reviewer, and a cheaper model trips over obvious defects that frontier models can reason past. The evidence that would show it is per-seat acceptance, which is NOT recorded today (aggregate-verdict.json keys on vendor, so B and F merged); wire that first, or the argument for bringing it back cannot be settled by observation either.",
+      "id": "B",
+      "label": "Claude (workhorse)",
+      "wrapper": "claude",
+      "select": { "vendor": "anthropic", "tier": "workhorse", "channel": "cli" }, "model": "claude-sonnet-5",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": false
+    },
+    {
+      "_comment": "The Anthropic frontier Opus lineage is reserved as judge (Phase 3) and verifier (Phase 4) -- not a blind reviewer. Do NOT enable as a reviewer: reviewer==judge collapses the anthropic axis to the adjudicator's model seen twice. Reviewer F's `family` constraint is what makes that collapse unreachable by accident rather than merely discouraged.",
       "id": "O",
       "label": "Claude Opus",
       "wrapper": "claude",
-      "model": "opus",
+      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-opus", "channel": "cli" }, "model": "claude-opus-5-5",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,
@@ -88,26 +114,45 @@
   ],
 
   "roles": {
-    "_comment": "Judgment roles the host runs after the driver's blind+cross-examine spine. Phase 3 (adjudicate) is a single Opus judge for one coherent voice. Phase 3.5 (judge-audit, opt-in) is a cross-vendor sanity check on the adjudicated report -- default a non-Anthropic vendor. Phase 4 (verify) draws from a CROSS-VENDOR pool (Sonnet/Kimi/Codex), rotated by vendor, so verification is not an Anthropic monoculture. REPO ACCESS IS PER POOL MEMBER, NOT PER ROLE: a role-wide flag silently promoted Kimi -- deliberately repoAccess:false as a reviewer because it has no per-invocation read-only mode -- to a repo-aware verifier that could WRITE to the very tree it was verifying, in the one phase whose entire purpose is trustworthy evidence about that tree. A member with repoAccess:false is given the diff and context files only, or a detached-commit `git worktree`; it is never handed -RepoPath on the live tree.",
-    "judge": { "wrapper": "claude", "model": "opus", "effort": "max", "repoAccess": true },
+    "_comment": "Judgment roles the host runs after the driver's blind+cross-examine spine. Phase 3 (adjudicate) is a single Opus-lineage judge for one coherent voice. Phase 3.5 (judge-audit) is a cross-vendor sanity check on the adjudicated report -- default a non-Anthropic vendor; MANDATORY when the review gates a merge or the target is HIGH-tier, optional otherwise (SKILL.md 3.5 defines how a non-PR target is tiered). Phase 4 (verify) draws from a CROSS-VENDOR pool, rotated by vendor, so verification is not an Anthropic monoculture. REPO ACCESS IS PER POOL MEMBER, NOT PER ROLE: a role-wide flag silently promoted Kimi -- deliberately repoAccess:false as a reviewer because it has no per-invocation read-only mode -- to a repo-aware verifier that could WRITE to the very tree it was verifying, in the one phase whose entire purpose is trustworthy evidence about that tree. A member with repoAccess:false is given the diff and context files only, or a detached-commit `git worktree`; it is never handed -RepoPath on the live tree. repoAccess:false is a WRITE-ISOLATION rule, not a trust claim about the source -- and a detached worktree cannot hold uncommitted work, so for a target that included any, SKILL.md 4 requires working-tree.patch applied and hashed before that route may be used.",
+    "judge": {
+      "wrapper": "claude",
+      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-opus", "channel": "cli" }, "model": "claude-opus-5-5",
+      "vendor": "anthropic",
+      "effort": "max",
+      "repoAccess": true
+    },
     "judgeAudit": {
       "effort": "high",
       "pool": [
-        { "wrapper": "kimi", "repoAccess": false },
-        { "wrapper": "codex", "repoAccess": true }
+        { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true },
+        { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
       ]
     },
     "verifier": {
       "effort": "high",
       "pool": [
-        { "wrapper": "claude", "model": "sonnet", "repoAccess": true },
-        { "wrapper": "kimi", "repoAccess": false },
-        { "wrapper": "codex", "repoAccess": true }
+        {
+          "wrapper": "claude",
+          "select": { "vendor": "anthropic", "tier": "workhorse", "channel": "cli" }, "model": "claude-sonnet-5",
+          "vendor": "anthropic",
+          "repoAccess": true
+        },
+        { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true },
+        { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
       ]
     },
-    "synthesis": { "wrapper": "claude", "model": "opus", "effort": "high", "repoAccess": false }
+    "synthesis": {
+      "wrapper": "claude",
+      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-opus", "channel": "cli" }, "model": "claude-opus-5-5",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": false
+    }
   },
 
-  "_sandboxComment": "Wrappers with NO hard per-invocation read-only mode. A wrapper listed here must never carry repoAccess:true anywhere in this manifest -- as a reviewer, in a role, or in a role's pool. claude-review.ps1 uses --permission-mode plan and codex-review.ps1 uses --sandbox read-only; kimi-review.ps1 has neither and runs under the CLI's global yolo default, so its only guard is a prompt plus the git working tree. verify-audit-contract.ps1 enforces this.",
-  "noSandboxWrappers": ["kimi"]
+  "_sandboxComment": "Wrappers with NO hard per-invocation read-only mode. A wrapper listed here must never carry repoAccess:true anywhere in this manifest -- as a reviewer, in a role, or in a role's pool. claude-review.ps1 uses --permission-mode plan and codex-review.ps1 uses --sandbox read-only; kimi-review.ps1 has neither and runs under the CLI's global yolo default, so its only guard is a prompt plus the git working tree. grok-review.ps1 likewise has no read-only flag and passes --always-approve, which auto-approves every tool execution; both are therefore made hermetic structurally -- a throwaway scratch working directory with the inputs copied in -- so a stray write lands in scratch rather than in source. verify-audit-contract.ps1 enforces this.",
+  "noSandboxWrappers": ["kimi", "grok"]
 }

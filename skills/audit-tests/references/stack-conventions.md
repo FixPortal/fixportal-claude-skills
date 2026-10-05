@@ -8,6 +8,7 @@ Apply the row matching the stack of the code under test. Do not mix conventions 
 |---|---|---|---|---|---|
 | .NET | xUnit v3 (`xunit.v3`) — or match the project's existing framework rather than mixing versions | AwesomeAssertions (`using AwesomeAssertions;`), `.Should()`. Never `Assert.*`. Never the `FluentAssertions` package (it went commercially licensed at v8; AwesomeAssertions is the Apache-2.0 fork, same API, `AwesomeAssertions` namespace since v9) | NSubstitute in unit tests. Real instances in integration tests — never empty substitutes | `dotnet-coverage` | Stryker.NET |
 | Frontend | Vitest | Vitest matchers + React Testing Library | Vitest mocks, sparingly | `vitest run --coverage` | Stryker (JS) only if already present — do not introduce |
+| Python (uv) | pytest, run as `uv run pytest` | Plain `assert` | Hand-written fakes and `monkeypatch`; match what the repo already has | coverage.py branch coverage: `uv run coverage run -m pytest -rs`, then `uv run coverage report`. Per-test durations from `pytest --durations`, since there is no TRX | No house tool. Hand-written mutants run by the orchestrator, recorded in the report; do not introduce one |
 
 ### Architecture tests
 

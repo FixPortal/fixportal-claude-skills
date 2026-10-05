@@ -12,6 +12,7 @@ Create .NET test projects that mirror `src/`, preserve the repository's framewor
 - Put new projects in `tests/{ProjectName}.Tests`; preserve established names such as `.UnitTests`.
 - Use `Microsoft.NET.Sdk`, the matching `ProjectReference`, and the solution's `tests` folder.
 - With central package management, put concrete `PackageVersion` entries in `Directory.Packages.props` and versionless `PackageReference` entries in the test project.
+- Restore, build, and run the repository's real test command before declaring success.
 
 ## Framework decision
 
@@ -25,9 +26,7 @@ Before adding a test project, inspect test `.csproj` files and `Directory.Packag
 
 If there is no existing test framework it is a new solution: use xUnit v3, with packages `xunit.v3`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `NSubstitute`, and `AwesomeAssertions` at target-compatible versions. These `xunit.v3` package and layout instructions apply only to a new project with no existing test framework. New xUnit v3 projects set `<OutputType>Exe</OutputType>`; retain `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio`, and do not set `UseMicrosoftTestingPlatformRunner` merely for Stryker.
 
-For an existing suite, keep its framework and runner; add `NSubstitute` and `AwesomeAssertions` if absent at target-compatible versions, without upgrading or converting either.
-
-Never convert an existing suite while scaffolding.
+For an existing suite, keep its framework and runner; add `NSubstitute` and `AwesomeAssertions` if absent at target-compatible versions, without upgrading or converting either. Never convert an existing suite while scaffolding.
 
 ## Test style
 
@@ -94,22 +93,22 @@ Do not substitute a concrete library merely to configure its extension methods: 
 
 Read [references/async-and-timing.md](references/async-and-timing.md) before writing async, concurrent, transport, or shutdown tests. The enforceable rules are:
 
+- Await a real signal or poll the condition; never sleep then assert.
 - Every operation that can miss completion gets one generous diagnostic hang ceiling.
-- Use xUnit `[Fact(Timeout = ...)]` only after inspecting `xunit.runner.json` and confirming conservative scheduling or that parallelization is disabled. Aggressive or unknown scheduling requires an operation-local `WaitAsync(TimeSpan)` or a token backed by `CancelAfter` instead.
+- Use xUnit `[Fact(Timeout = ...)]` only after inspecting `xunit.runner.json` and confirming conservative scheduling or that parallelization is disabled. Aggressive or unknown scheduling requires an operation-local `WaitAsync(TimeSpan)` or a token backed by `CancelAfter`.
 - A ceiling answers "did completion go missing?"; it is not a performance assertion.
 - Gate negative assertions on a later positive signal; absence after an arbitrary delay proves nothing.
-- A duration passed into production code is configuration, not a test timer.
+- A duration passed to production code is configuration, not a test timer.
 
 ## CI eligibility
 
 Read [references/ci-test-budgets.md](references/ci-test-budgets.md) whenever tests or test projects will run in CI. PR eligibility is a cost contract with per-test, per-job, and aggregate ceilings; end-to-end, stress/load/soak, repeated concurrency, slow packaging, and compatibility matrices run weekly/manual in a structurally separate lane.
 
-When the runner contract permits a framework ceiling, keep cancellation attribution precise and fail through AwesomeAssertions. `sender`/`sink` are the test's system-under-test handles:
-
+xUnit v3 only: when its runner permits a framework ceiling, keep cancellation attribution precise and fail through AwesomeAssertions:
 ```csharp
 private const int HangCeilingMs = 30_000;
 
-// Runs a blocking teardown off the thread-pool so a blocked send cannot starve it.
+// Blocking teardown, off the pool.
 private static Task RunOnDedicatedThread(Action action) =>
     Task.Factory.StartNew(action, CancellationToken.None,
         TaskCreationOptions.LongRunning, TaskScheduler.Default);
@@ -132,7 +131,7 @@ public async Task Shutdown_WhenSendIsBlocked_ReturnsWithoutCompletingSend()
 }
 ```
 
-**xUnit v3 only** — `TestContext.Current` is absent in v2. `[Fact(Timeout = ...)]` exists (v2.4+) but is documented undefined under parallelization, so prefer a token source on a kept xUnit v2 suite:
+xUnit v2 lacks `TestContext.Current` and its timeout is undefined under parallelization; a kept v2 suite uses a token source:
 
 ```csharp
 using var ceiling = new CancellationTokenSource();

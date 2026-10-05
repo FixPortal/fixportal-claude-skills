@@ -72,9 +72,8 @@ param(
     # Where the asset lives inside a consuming repo. Required with -CanonicalPath.
     [string] $RelativePath,
 
-    # Repositories that run their own review-tier classifier; their review-tier.yml copies
-    # read local` rather than drifted`.
-    [string[]] $LocalTierImplementations = @(),
+    # Caller-owned JSON outside the skill directory; omitted means no repo exemptions.
+    [string] $ExceptionsPath,
 
     # Emit JSON rather than a table, for a scheduled task or another script.
     [switch] $Json
@@ -93,19 +92,49 @@ $ErrorActionPreference = 'Stop'
 # here rather than excusing the whole file:
 #
 #   Mask                  the trigger's `branches: [...]` line names the repository's
-#                         default branch -- some repositories watch `develop`. Masked on
+#                         default branch, which need not be `main`. Masked on
 #                         BOTH sides, so a copy with no such line still reads as drifted.
-#   LocalImplementations  repositories that run their own tier classifier, supplied by
-#                         -LocalTierImplementations (the canonical copy of this script
-#                         lists its estate's repositories here). A copy there
+#   LocalImplementations  repositories that run their own tier classifier. A copy there
 #                         that lacks canonical lines reads `local`: named in the output,
 #                         never failed, and never compared for equivalence -- the
 #                         repository owns it.
 $DeclaredVariance = @{
     'review-tier.yml' = @{
         Mask                 = '^\s*branches:\s*\[[^\]]*\]\s*$'
-        LocalImplementations = $LocalTierImplementations
+        LocalImplementations = @()
     }
+}
+
+$skillRoot = Split-Path -Parent $PSScriptRoot
+$SanitisedRepublications = @()
+if ($ExceptionsPath) {
+    $resolvedExceptions = (Resolve-Path -LiteralPath $ExceptionsPath -ErrorAction Stop).Path
+    $resolvedSkill = [IO.Path]::GetFullPath($skillRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if ($resolvedExceptions.StartsWith($resolvedSkill + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Exception data must live outside the mounted skill directory.'
+    }
+    $config = Get-Content -LiteralPath $resolvedExceptions -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    if ($config -isnot [System.Collections.IDictionary] -or $config.Count -ne 3 -or
+        -not $config.ContainsKey('version') -or $config.version -isnot [long] -or $config.version -ne 1 -or
+        -not $config.ContainsKey('localImplementations') -or $config.localImplementations -isnot [System.Collections.IDictionary] -or
+        -not $config.ContainsKey('sanitisedRepublications') -or $config.sanitisedRepublications -isnot [array]) {
+        throw 'Invalid exception schema: require version 1, localImplementations object and sanitisedRepublications array, with no other keys.'
+    }
+    foreach ($assetName in $config.localImplementations.Keys) {
+        if (-not $DeclaredVariance.ContainsKey($assetName) -or $config.localImplementations[$assetName] -isnot [array]) {
+            throw "Invalid local implementation asset '$assetName'; only declared-variance assets accept repository arrays."
+        }
+    }
+    $lists = @($config.sanitisedRepublications) + @($config.localImplementations.Values | ForEach-Object { $_ })
+    foreach ($repoName in $lists) {
+        if ($repoName -isnot [string] -or $repoName -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') {
+            throw 'Exception repository entries must be nonempty repository basenames, without path separators.'
+        }
+    }
+    foreach ($assetName in $config.localImplementations.Keys) {
+        $DeclaredVariance[$assetName].LocalImplementations = $config.localImplementations[$assetName]
+    }
+    $SanitisedRepublications = $config.sanitisedRepublications
 }
 
 $inventoryPath = Join-Path $PSScriptRoot 'canonical-assets.json'
@@ -178,9 +207,7 @@ function Compare-AgainstCanonical([string[]] $CanonicalLines, [string[]] $CopyLi
 # copies are behaviourally identical to canonical, which is the question that actually
 # matters for a published checker. Removing it from this sweep without that would be
 # silence bought by deletion.
-# The canonical copy of this script names its sanitised public republication here; this
-# public copy has none to exclude.
-$SanitisedRepublications = @()
+# Repository identities are caller-owned exception data, never embedded defaults.
 
 function Get-Repositories([string] $RootPath) {
     # A linked worktree's .git is a FILE, not a directory. Sweeping worktrees would
@@ -192,8 +219,6 @@ function Get-Repositories([string] $RootPath) {
             Sort-Object Name
     )
 }
-
-$skillRoot = Split-Path -Parent $PSScriptRoot
 
 if ($CanonicalPath) {
     if (-not $RelativePath) { throw '-RelativePath is required when -CanonicalPath is given.' }

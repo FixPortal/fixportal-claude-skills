@@ -34,36 +34,39 @@ try {
     if ('latest' -notin $values -or 'should-not-appear' -in $values) {
         throw "Traversal did not prune node_modules before inventory: $($values -join ', ')"
     }
+
     # The fixture's .git is an empty directory, so `git status` FAILS there by design.
-    $failed = $result.Repositories[0]
-    if ($failed.GitStatusBefore.Success -or $failed.GitStatusAfter.Success -or
-        $failed.MutationState -ne 'Unknown' -or $null -ne $failed.Mutated) {
-        throw 'A repo whose git status cannot be read must retain both failed probes and MutationState=Unknown'
+    $failedRepo = $result.Repositories[0]
+    if ($failedRepo.GitStatusBefore.Success -ne $false -or $null -ne $failedRepo.Mutated -or $failedRepo.MutationState -ne 'Unknown') {
+        throw 'A repo whose git status cannot be read must report a failed status probe and Mutated=$null / Unknown, never false proof.'
     }
 
-    # A REAL clean repo: `git status --porcelain` exits 0 with NO output. The status
-    # capture must read that as success (Mutated=$false), not collapse it into the
-    # failed-capture shape -- an empty status array unrolls to $null on the pipeline,
-    # which is exactly the regression this guards.
+    # A REAL clean repo: `git status --porcelain` exits 0 with NO output. That must read
+    # as success (Mutated=false, Unchanged), not collapse into the failed-capture shape.
+    # It also carries a Central Package Management override: `PackageReference Update=`
+    # has no Include attribute, and reading Include alone made those overrides invisible.
     $cleanRepo = Join-Path $tempRoot 'clean-repo'
-    New-Item -ItemType Directory -Path $cleanRepo | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $cleanRepo 'src') | Out-Null
     git -C $cleanRepo init --quiet
     if ($LASTEXITCODE -ne 0) { throw "fixture git init failed (exit $LASTEXITCODE)" }
-    git -C $cleanRepo config user.email 'you@example.com'
+    git -C $cleanRepo config user.email 'fixture@example.test'
     git -C $cleanRepo config user.name 'Prune Fixture'
     Set-Content -LiteralPath (Join-Path $cleanRepo 'Directory.Build.props') -Value '<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>'
-    git -C $cleanRepo add Directory.Build.props
+    Set-Content -LiteralPath (Join-Path $cleanRepo 'src/App.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Update="Override.Analyzer" Version="2.0.0" /></ItemGroup></Project>'
+    git -C $cleanRepo add --all
     if ($LASTEXITCODE -ne 0) { throw "fixture git add failed (exit $LASTEXITCODE)" }
-    git -C $cleanRepo commit --quiet -m 'chore: fixture'
+    git -C $cleanRepo -c commit.gpgsign=false commit --quiet -m 'chore: fixture'
     if ($LASTEXITCODE -ne 0) { throw "fixture git commit failed (exit $LASTEXITCODE)" }
 
-    $cleanResult = & $inventory -Path $cleanRepo 3>$null | ConvertFrom-Json
-    $clean = $cleanResult.Repositories[0]
-    if (-not $clean.GitStatusBefore.Success -or -not $clean.GitStatusAfter.Success) {
-        throw 'A CLEAN repo must retain both successful empty git-status probes'
+    $clean = (& $inventory -Path $cleanRepo 3>$null | ConvertFrom-Json).Repositories[0]
+    if ($clean.GitStatusBefore.Success -ne $true) {
+        throw 'A CLEAN repo must not report a failed git status probe - empty status output is success'
     }
     if ($clean.Mutated -ne $false -or $clean.MutationState -ne 'Unchanged') {
-        throw "A clean repo must report Mutated=`$false and MutationState=Unchanged, got '$($clean.Mutated)'/'$($clean.MutationState)'"
+        throw "A clean repo must report Mutated=`$false / Unchanged, got '$($clean.Mutated)' / '$($clean.MutationState)'"
+    }
+    if ('Override.Analyzer' -notin @($clean.AllPackageRefs.Id)) {
+        throw 'PackageReference Update= (Central Package Management override) must be inventoried'
     }
 }
 finally {
@@ -72,7 +75,7 @@ finally {
 
 Write-Host 'Pruned traversal verification passed.'
 
-# The inventory child runs git inside a fixture with an empty .git — asserted, not
+# The inventory child runs git inside a fixture with an empty .git - asserted, not
 # fatal. Clear its native status so a caller that checks $LASTEXITCODE after a PASS does
 # not read the child's failure.
 $global:LASTEXITCODE = 0
