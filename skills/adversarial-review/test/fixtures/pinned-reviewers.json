@@ -1,0 +1,47 @@
+{
+  "_comment": "Manifest fixture for contract tests that exercise the DRIVER's own control flow (argument guards, fatal exit codes, run-identity evidence) and have nothing to say about model selection. Every seat carries a literal `model` rather than a `select` block, which the driver documents as bypassing the registry entirely -- so resolve.py is never invoked and a registry that has drifted (a tier momentarily matching nothing, a retired id, no python on PATH) cannot turn a driver test red and be read as a driver regression. Seat selection itself is covered by a registry-selection verifier that needs the model-registry sibling skill, which this tree does not publish; verify-registry-optional.ps1 covers the registry-absent path. The ids are deliberately not the live panel's: nothing here should read as a claim about who reviews.",
+
+  "minVendors": 2,
+
+  "wrappers": {
+    "claude": "claude-review.ps1",
+    "codex": "codex-review.ps1"
+  },
+
+  "reviewers": [
+    {
+      "_comment": "Pinned, not selected: see the file comment. The id is fictional on purpose.",
+      "id": "T1",
+      "label": "pinned anthropic seat",
+      "wrapper": "claude",
+      "model": "claude-fixture-1",
+      "vendor": "anthropic",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    },
+    {
+      "_comment": "Second vendor so the minVendors invariant is satisfied and the run dies at the gate under test rather than on diversity.",
+      "id": "T2",
+      "label": "pinned openai seat",
+      "wrapper": "codex",
+      "model": "gpt-fixture-1",
+      "vendor": "openai",
+      "effort": "high",
+      "repoAccess": true,
+      "enabled": true
+    }
+  ],
+
+  "roles": {
+    "judge": {
+      "wrapper": "claude",
+      "model": "claude-fixture-1",
+      "vendor": "anthropic",
+      "effort": "max",
+      "repoAccess": true
+    }
+  },
+
+  "noSandboxWrappers": []
+}

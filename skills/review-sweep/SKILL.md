@@ -25,11 +25,13 @@ Read [references/runbook.md](references/runbook.md) before starting.
 
 ## Contract
 
+<!-- routing: discover-and-preflight -->
 Resolve and invoke both `adversarial-review` and `review-digest` through the
 active runtime. Run the configured wrapper preflights exactly as documented by
 `PREFLIGHT_COMMAND:` and `PREFLIGHT_SUCCESS:`; honour `fallbackWrapper` and
 `minVendors`. Never name remembered reviewers or models.
 
+<!-- routing: triage-scope -->
 Before triage, verify every target is on the approved merged mainline and the
 pass covers one named subsystem. Stop for explicit approval if either cannot be
 proved or the request is broader.
@@ -40,6 +42,12 @@ Only after `scopeValidation` is usable (`valid`, or `none` for a whole-repo
 row) may `hasTrackedSource=false` map to skip/void; missing or null source
 evidence is unknown is STOP. Never re-infer scope validity from Git.
 
+Row-level change counts are unions across coverage groups. For drift, expand
+`reviewCoverage` and review each changed group using its own boundary and paths.
+For `queue=new-source`, review only the emitted `newSource` paths. Exempt rows
+are not queued and receive no prompt.
+
+<!-- routing: approve-execute-and-summarise -->
 Present the complete evidence-driven plan once. After approval, record units in
 the runtime's durable plan and run them to completion in the agent loop. Reviews
 are read-only; remediation worktrees and change-oriented quality gates are out
@@ -52,3 +60,5 @@ of scope.
 - Target state is dirty, not merged mainline, or scope spans subsystems without
   explicit approval.
 - Execution would replace `adversarial-review` with same-host workers.
+
+Supporting files: Run `test/verify-runtime-neutral.ps1`, `test/verify-triage-fields.ps1` for local contract checks.

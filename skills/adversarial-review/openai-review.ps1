@@ -22,8 +22,8 @@
       $env:OPENAI_API_KEY  -- an OpenAI API key with Chat Completions access.
     Optional:
       $env:OPENAI_BASE_URL -- override the API base URL (default
-                              https://api.openai.com/v1), e.g. for an
-                              API-compatible gateway or proxy.
+                              https://api.openai.com/v1), e.g. an API-compatible
+                              gateway. Must be https://; plain http is refused.
 
 .PARAMETER Instruction
     The review or cross-examination instruction (the brief). Typically supplied
@@ -42,9 +42,11 @@
     Inlined into the user message, clearly labelled as not-under-review.
 
 .PARAMETER Model
-    OpenAI model id for the Chat Completions API. Note: Copilot-internal aliases
-    (e.g. gpt-5.4) may differ from the canonical API model id -- verify against
-    https://api.openai.com/v1/models before setting.
+    OpenAI model id for the Chat Completions API. Mandatory, no default --
+    resolve one through model-registry (resolve.py --tier <tier> --vendor openai
+    --channel api) rather than leaning on a pinned id here. Note:
+    Copilot-internal aliases (e.g. gpt-5.4) may differ from the canonical API
+    model id -- verify against https://api.openai.com/v1/models before setting.
 
 .NOTES
     PREFLIGHT_COMMAND: pwsh -NoProfile -Command 'exit [int][string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)'
@@ -64,7 +66,7 @@
     The model's review text on stdout. Non-zero exit code on failure.
 
 .EXAMPLE
-    pwsh -NoProfile -File openai-review.ps1 -InstructionPath brief.txt -DiffPath review-diff.txt -Model gpt-4o
+    pwsh -NoProfile -File openai-review.ps1 -InstructionPath brief.txt -DiffPath review-diff.txt -Model gpt-5.5
 #>
 [CmdletBinding()]
 param(
@@ -84,7 +86,9 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gpt-4o',
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $Model,
 
     # Optional. When set, the review text is written here instead of stdout, so
     # the calling command needs no '> file' redirect (redirects, like inline
@@ -128,7 +132,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine()
 if (-not $FindingsPath) {
     # Phase-1 style directive only: in Phase 2 (-FindingsPath) the brief owns the
-    # verdict format, and an appended per-finding directive AFTER it conflicts.
+    # verdict format, and a per-finding directive appended AFTER it contradicts it.
     [void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate from the diff.')
     [void]$sb.AppendLine()
 }
@@ -182,18 +186,15 @@ $retryableStatus = @(401, 408, 429, 500, 502, 503, 504)
 $maxAttempts = 4
 $response = $null
 
-# Endpoint override for API-compatible gateways/proxies; defaults to the public
-# OpenAI Chat Completions endpoint (a public vendor URL, not a secret).
+# Endpoint override for API-compatible gateways; defaults to the public endpoint. The
+# key rides the Authorization header on EVERY request below, so anything but an
+# absolute https:// URI is refused before a request is attempted.
 $openAiBaseUrl = [string]::IsNullOrWhiteSpace($env:OPENAI_BASE_URL) ? 'https://api.openai.com/v1' : $env:OPENAI_BASE_URL.TrimEnd('/')
-
-# The API key rides the Authorization header on EVERY request below, so an
-# override pointing at plain http:// would transmit the credential in the clear.
-# Require an absolute https:// URI before any request is attempted.
 $openAiBaseUri = $null
 if (-not [System.Uri]::TryCreate($openAiBaseUrl, [System.UriKind]::Absolute, [ref] $openAiBaseUri) -or
     $openAiBaseUri.Scheme -ne 'https') {
     Write-Error ("OPENAI_BASE_URL must be an absolute https:// URI (got '$openAiBaseUrl'); " +
-        'the API key is sent in the Authorization header on every request, so plain HTTP would expose it.')
+        'the API key is sent on every request, so plain HTTP would expose it.')
     exit 1
 }
 
@@ -256,7 +257,16 @@ function Get-RegistryCost([long] $inTok, [long] $outTok) {
     if (-not $registry.models.ContainsKey($Model)) { return $null }
     $facts = $registry.models[$Model]
     $on = $env:MODEL_REGISTRY_EFFECTIVE_DATE ?? (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
-    $cost = Get-ModelRegistryCost -Facts $facts -InputTokens $inTok -OutputTokens $outTok -Channel api -On $on
+    # Guarded: Get-ModelRegistryCost throws on overlapping api pricing records, and only
+    # ConvertFrom-Json sat inside a try. A registry DATA error must degrade to UNKNOWN,
+    # not fail a wrapper whose model call has already completed and been paid for.
+    try {
+        $cost = Get-ModelRegistryCost -Facts $facts -InputTokens $inTok -OutputTokens $outTok -Channel api -On $on
+    }
+    catch {
+        Write-Warning "Registry pricing for '$Model' is unusable ($($_.Exception.Message)); cost recorded as UNKNOWN."
+        return $null
+    }
     if ($null -ne $cost) { [Math]::Round($cost, 8) }
 }
 
@@ -283,8 +293,6 @@ if ($UsageSidecarPath -and $response.usage) {
 # Reasoning tokens (o1/o3/o4) are stored in cacheWriteTokens by convention,
 # matching the Gemini wrapper's treatment of thinking tokens.
 if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL -and $response.usage) {
-    # No default endpoint: the destination is deployment-specific and belongs in the
-    # environment, not in a published script. Unset means telemetry is simply not posted.
     $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId      = [Guid]::NewGuid().ToString()
     if ($inTok -gt 0 -or $outTok -gt 0) {

@@ -16,6 +16,8 @@ $repo = if (Test-Path -LiteralPath $repoPath) { [string](Get-Content -LiteralPat
     $null
 }
 $audit = Get-Content (Join-Path $root 'audit-ci' 'SKILL.md') -Raw
+$audit += "`n" + (Get-Content (Join-Path $root 'audit-ci/references/inventory.md') -Raw)
+$audit += "`n" + (Get-Content (Join-Path $root 'audit-ci/references/evaluation.md') -Raw)
 $estate = Get-Content (Join-Path $root 'audit-github-estate' 'SKILL.md') -Raw
 $gateRoot = Join-Path $root 'quality-gate-review'
 $gate = @(
@@ -45,8 +47,8 @@ $agents = if (Test-Path -LiteralPath $agentsPath) { [string](Get-Content -Litera
 #     comments with no dismissal API -- the whole reason ai-findings-ledger exists -- and
 #     free deterministic coverage is not a reason to turn them on.
 #
-# UNVERIFIED: that public Code Quality is free. The maintainer verified it against
-# the organization's billing and UI on 2026-09-09, and the estate has run it on all eight
+# UNVERIFIED: that public Code Quality is free. The maintainer verified it against the
+# organization's billing and UI on 2026-09-09, and the estate has run it on all eight
 # public repositories since 2026-08-14. GitHub's published docs state no public exemption:
 # its changelog calls Code Quality purchasable from GA on 2026-07-20, billed as a base
 # subscription plus metered per-committer usage. Refuted if the organization's bill shows a
@@ -202,7 +204,7 @@ foreach ($mutation in @(
     @{ Name = 'private enablement masked by AI-findings clause'; Line = 'Private repositories enable Code Quality with AI findings disabled.' },
     # The mirror image: the only "disabled" belongs to the PRODUCT clause, and the
     # AI-findings clause enables them. The guard read the whole line for the AI check
-    # and accepted it. (CodeRabbit, public mirror PR #124.)
+    # and accepted it.
     @{ Name = 'AI-findings enablement masked by the product clause'; Line = 'Enable Code Quality AI findings; keep Code Quality disabled on private repositories.' }
 )) {
     $rejected = $false

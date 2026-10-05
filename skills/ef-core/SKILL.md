@@ -110,3 +110,5 @@ public sealed class TradeConfiguration : IEntityTypeConfiguration<Trade>
 
 For model-wide conventions and reusable converter classes, use
 [the central-conventions alternative](references/nodatime-sql-server.md).
+
+Supporting files: Run `test/verify-guidance-contract.ps1` for local contract checks.

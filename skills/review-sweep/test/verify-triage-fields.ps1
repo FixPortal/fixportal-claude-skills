@@ -12,7 +12,7 @@ if ($text -match 'sinceReviewFiles`?\s*contains') {
 }
 
 # The triage fields are nested under a per-repo `.git` object, not top level.
-foreach ($needle in 'diff --name-only',
+foreach ($needle in 'reviewCoverage[].changedFiles',
                     '.git.sinceReviewCount',
                     'file count, not a list',
                     'UNKNOWN', 'STOP', 'unresolved', 'outsideScanPath',
@@ -28,7 +28,8 @@ if (-not $triageTable.Success) { throw 'Triage decision table is missing.' }
 # Each literal case is anchored to one decision-table row. Restoring an unconditional
 # hasTrackedSource=false shortcut, or mapping an unknown scope to skip, must fail.
 $triageCases = @(
-    @{ Name = 'reviewed drift'; Pattern = '(?m)^\| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; boundary set; later commits \| drift \| Review `<boundarySha>\.\.HEAD` \|$' },
+    @{ Name = 'reviewed drift'; Pattern = '(?m)^\| `hasTrackedSource = true`; `effectiveNeverReviewed = false`; any group has changed files \| drift \| Review each changed `reviewCoverage` group under that group''s boundary and paths \|$' },
+    @{ Name = 'new source'; Pattern = '(?m)^\| `hasTrackedSource = true`; `queue = new-source` \| new source \| Review the emitted `newSource` paths; do not use the newest scope''s boundary for these files \|$' },
     @{ Name = 'true never-reviewed code'; Pattern = '(?m)^\| `hasTrackedSource=true`; `effectiveNeverReviewed=true` \| audit \| Audit only the approved `subsystemPaths` pathspecs \|$' },
     @{ Name = 'validated empty subsystem'; Pattern = '(?m)^\| `scopeValidation = valid`; `hasTrackedSource = false` \| skip/void \| Record the validated scope as not code-reviewable; do not audit \|$' },
     @{ Name = 'invalid subsystem'; Pattern = '(?m)^\| `scopeValidation = invalid` \| UNKNOWN \| STOP before approval; report the invalid declared subsystem paths \|$' },

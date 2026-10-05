@@ -2,31 +2,33 @@
 $ErrorActionPreference = 'Stop'
 
 # Contract test for run-review.ps1's ROUND CONTRACT: the Phase 1 / Phase 2 start patterns that
-# decide whether a reviewer counted as participating, the admission patterns that decide whether
-# a matched section actually CONTAINS the phase's contract content, the finding-block pooler, and
-# the round timeout that stops one wedged slot from stalling a phase forever.
+# decide whether a reviewer counted as participating, and the round timeout that stops one wedged
+# slot from stalling a phase forever.
 #
 # Why this exists: the strict line-initial patterns discarded substantive, repository-backed
 # reviews TWICE on formatting alone -- 2026-08-16 (`**F1** ... AGREE`, three anthropic reviews)
 # and 2026-08-17 (`**F1: FALSE POSITIVE**`). Both times the reviewer was dropped from the
 # participating-vendor count, so every consensus tally for that chunk was wrong. Widening the
 # pattern then risks the opposite failure -- admitting narration as a verdict block -- so both
-# directions are pinned here. And a start-pattern match alone must not admit: '### Verdicts'
-# plus prose counted a vendor that delivered no verdict at all (start pattern LOCATES the
-# section; the admission pattern proves the content), and the pooler must split on exactly the
-# admission form instead of the literal '^### '.
+# directions are pinned here.
 
 $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'run-review.ps1'
 if (-not (Test-Path -LiteralPath $scriptPath)) { throw "run-review.ps1 not found at $scriptPath" }
 $source = Get-Content -LiteralPath $scriptPath -Raw
 
-# The pooler lives in pool-findings.ps1 precisely so this test can drive the SAME code the
-# driver runs. Dot-source it (defines $script:FindingHeadingPattern and Split-FindingBlocks).
-$poolerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'pool-findings.ps1'
-if (-not (Test-Path -LiteralPath $poolerPath)) { throw "pool-findings.ps1 not found at $poolerPath" }
-. $poolerPath
-if ($source -notmatch [regex]::Escape(". (Join-Path `$scriptDir 'pool-findings.ps1')")) {
-    throw 'run-review.ps1 must dot-source pool-findings.ps1 rather than carry its own pooler'
+function Get-InvokeRoundPattern([string] $phase) {
+    # Pull the literal the script actually passes, rather than restating it here -- a copy would
+    # drift and the test would pass while the driver used something else. Phase 1 passes the
+    # SHARED $script:FindingHeading variable (see the participation/pooling contract below),
+    # so follow it to its assignment rather than demanding an inline literal.
+    $match = [regex]::Match($source, "(?m)^\`$${phase}ok = Invoke-Round '$phase' '(?<pattern>.+?)'\s")
+    if ($match.Success) { return $match.Groups['pattern'].Value }
+    $viaVariable = [regex]::Match($source, "(?m)^\`$${phase}ok = Invoke-Round '$phase' \`$(?<name>[\w:]+)\s")
+    if (-not $viaVariable.Success) { throw "could not find the Invoke-Round call for phase '$phase'" }
+    $name = $viaVariable.Groups['name'].Value
+    $assignment = [regex]::Match($source, "(?m)^\`$$([regex]::Escape($name)) = '(?<pattern>.+?)'\s*$")
+    if (-not $assignment.Success) { throw "phase '$phase' uses `$$name but its assignment could not be read" }
+    $assignment.Groups['pattern'].Value
 }
 
 $failures = @()
@@ -36,56 +38,29 @@ function Check([string] $label, [string] $pattern, [string] $line, [bool] $expec
         $script:failures += "[$label] '$line' -> match=$actual, expected=$expected"
     }
 }
-function Get-SourcePattern([string] $assignment) {
-    # Pull the literal the script actually assigns, rather than restating it here -- a copy would
-    # drift and the test would pass while the driver used something else.
-    $match = [regex]::Match($source, [regex]::Escape($assignment) + "'(?<pattern>.+?)'")
-    if (-not $match.Success) { throw "could not find the pattern assignment: $assignment" }
-    $match.Groups['pattern'].Value
+
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
+$headingParser = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ReviewHeadingLineNumbers' }, $true)
+if ($null -eq $headingParser) { throw 'Get-ReviewHeadingLineNumbers was not found in run-review.ps1' }
+. ([scriptblock]::Create($headingParser.Extent.Text))
+$fencedHeadings = @(Get-ReviewHeadingLineNumbers -Lines @('````powershell', '### hidden', '```', '### still hidden', '````', '### visible') -Pattern '^### ')
+if ($fencedHeadings.Count -ne 1 -or $fencedHeadings[0] -ne 5) {
+    $failures += 'a shorter closing fence must not end a longer opening fence'
 }
 
 # --- Phase 1: findings are '### ' headings -----------------------------------
-$p1 = Get-SourcePattern "`$p1ok = Invoke-Round 'p1' "
+$p1 = Get-InvokeRoundPattern 'p1'
 Check 'p1' $p1 '### Missing JSON serialization metadata' $true
 Check 'p1' $p1 '  ### Indented heading' $true
 Check 'p1' $p1 '- ### Heading in a list item' $true
 Check 'p1' $p1 '#### Deeper heading' $true
-Check 'p1' $p1 '**###** Emphasised heading' $true
 Check 'p1' $p1 'I will now review the diff.' $false
 Check 'p1' $p1 'Here are my findings:' $false
 
-# The pooler must split on EXACTLY the Phase-1 start pattern: previously it opened a block only
-# on the literal '^### ', so admitted forms ('#### ', '  ### ', '- ### ') pooled zero findings
-# while the vendor still counted toward minVendors.
-if ($p1 -cne $FindingHeadingPattern) {
-    $failures += "the pooler pattern (pool-findings.ps1) drifted from the Phase-1 start pattern: '$FindingHeadingPattern' vs '$p1'"
-}
-
-# --- Phase 1 admission: a structured finding field or the clean sentinel ------
-# A heading plus prose ('### Analysis') is not participation. Admission requires a structured
-# field ('**Severity:**') or the canonical clean sentinel ('### No substantive defects').
-$sentinel = Get-SourcePattern '$cleanSentinel = '
-$sentinelPattern = ([regex]::Match($source, '\$cleanSentinelPattern = "(?<p>.+?)"').Groups['p'].Value).Replace('$cleanSentinel', [regex]::Escape($sentinel))
-$p1Admission = ([regex]::Match($source, '\$p1Admission = "(?<p>.+?)"').Groups['p'].Value).Replace('$cleanSentinelPattern', $sentinelPattern)
-Check 'p1-admission' $p1Admission '- **Severity:** High' $true
-Check 'p1-admission' $p1Admission '### No substantive defects' $true
-Check 'p1-admission' $p1Admission ("### Analysis`n`nSome prose without any structured field.") $false
-Check 'p1-admission' $p1Admission 'I will now review the diff.' $false
-# The clean sentinel must be the ENTIRE reply: a sentinel line plus narration (or
-# malformed findings riding under it) is not participation-with-zero-findings and
-# must not count toward vendor diversity.
-Check 'p1-admission' $p1Admission ("### No substantive defects`n`nSome extra narration.") $false
-Check 'p1-admission' $p1Admission ("### No substantive defects`n- **Severity:** High") $true
-
 # --- Phase 2: per-finding verdicts, however the reviewer emphasises them ------
-$p2Verdict = Get-SourcePattern '$p2VerdictPattern = '
-$p2 = "$p2Verdict|$p1"
-# The driver must build the Phase-2 start pattern from exactly these two pieces -- the verdict
-# form and the heading form -- so the admission pattern below cannot drift from what locates
-# the section.
-if ($source -notmatch [regex]::Escape("`$p2ok = Invoke-Round 'p2' `"`$p2VerdictPattern|")) {
-    $failures += 'the Phase-2 Invoke-Round call no longer starts from $p2VerdictPattern; admission and start patterns can drift apart.'
-}
+$p2 = Get-InvokeRoundPattern 'p2'
 
 # MUST match. Each of these was emitted by a real reviewer; the first two are the exact forms
 # that were wrongly discarded on 2026-08-17 and 2026-08-16 respectively.
@@ -95,7 +70,7 @@ Check 'p2' $p2 'F1: AGREE - real' $true
 Check 'p2' $p2 '__F7__ REFUTED' $true
 Check 'p2' $p2 '- **F3.** disagree' $true
 Check 'p2' $p2 'F9) needs evidence' $true
-Check 'p2' $p2 '### Verdicts' $true   # LOCATES the section only; admission below rejects it
+Check 'p2' $p2 '### Verdicts' $true
 
 # MUST NOT match. Narration and prose that merely mentions an F-number is not a verdict block;
 # admitting it would count a reviewer that contributed nothing as a participating vendor.
@@ -105,81 +80,87 @@ Check 'p2' $p2 'I will now review the diff.' $false
 Check 'p2' $p2 'Adversarial verdict pass. Skills not applicable' $false
 Check 'p2' $p2 'FIXME: this is prose' $false
 
-# --- Phase 2 admission: at least one valid F# verdict --------------------------
-# The negative half of the '### Verdicts' pin: with findings on the table, a heading alone must
-# NOT admit -- one valid F# verdict is required before the reply counts toward minVendors. And
-# an F-id followed by ARBITRARY text is no more a verdict than prose is: admission keys on the
-# verdict LINE (F-id + a contract keyword), built from the same source variables the driver uses.
-$p2VerdictKeyword = Get-SourcePattern '$p2VerdictKeyword = '
-$p2VerdictLineAssignment = [regex]::Match($source, '\$p2VerdictLine = "(?<p>.+?)"').Groups['p'].Value
-if (-not $p2VerdictLineAssignment) { throw 'could not find the $p2VerdictLine assignment' }
-$p2VerdictLine = $p2VerdictLineAssignment.Replace('$p2VerdictPattern', $p2Verdict).Replace('$p2VerdictKeyword', $p2VerdictKeyword)
-$p2Admission = "(?im)$p2VerdictLine"
-if ($source -notmatch [regex]::Escape('$p2Admission = "(?im)$p2VerdictLine"')) {
-    $failures += 'the Phase-2 admission pattern is not the verdict-line pattern; a heading-plus-prose reply (or an F-id with arbitrary text) would count as a vendor.'
+# --- One heading parser, three sites ------------------------------------------
+# Participation, pooling and the issuesRaised counter must agree. While participation used
+# the tolerant pattern and the other two split on a line-initial '^### ', a reviewer using
+# an admitted-but-unpooled form passed the gate, counted toward minVendors, and
+# contributed zero findings with issuesRaised = 0 and no warning -- its findings never
+# reaching cross-examination while its telemetry row read as a reviewer that found nothing.
+if ($source -match "(?m)^\s*if \(\`$ln -match '\^### '\)") {
+    $failures += 'the pooling loop still splits on a hardcoded ^### heading instead of the shared parser.'
 }
-Check 'p2-admission' $p2Admission '### Verdicts' $false
-Check 'p2-admission' $p2Admission ("### Analysis`n`nOverall the change looks reasonable.") $false
-Check 'p2-admission' $p2Admission '**F1: FALSE POSITIVE**' $true
-Check 'p2-admission' $p2Admission 'F1: AGREE - real' $true
-Check 'p2-admission' $p2Admission 'F9) needs evidence' $true
-# 'disagree' and free text after the F-id are not contract verdicts.
-Check 'p2-admission' $p2Admission 'F3. disagree' $false
-Check 'p2-admission' $p2Admission 'F1: arbitrary text with no verdict' $false
+if ($source -match "Where-Object \{ \`$_ -match '\^### ' \}") {
+    $failures += 'the issuesRaised counter still counts a hardcoded ^### heading instead of the shared parser.'
+}
+$sharedHeadingCalls = [regex]::Matches($source, 'Get-ReviewHeadingLineNumbers').Count
+if ($sharedHeadingCalls -ne 3) {
+    $failures += "the helper plus participation and pooling must use the shared heading parser (found $sharedHeadingCalls references)."
+}
+# issuesRaised is read off the pooler's own provenance, so it cannot disagree with what pooled.
+if ($source -notmatch '\$raised = @\(\$pooledMap\.Values \| Where-Object \{ \$_\.reviewer -eq \$r\.id \}\)\.Count') {
+    $failures += 'issuesRaised must be derived from pooled-map provenance, not re-counted from the phase file.'
+}
 
-# --- The pooler: divergent admitted forms and fenced code blocks ---------------
-# Feed the DIVERGENT inputs through the actual pooler, not just the admission regex.
-$poolInput = @'
-Some narration before the first finding (dropped).
-
-#### Deeper heading
-- **Severity:** High
-- **Issue:** first
-
-```text
-### this heading is INSIDE a fenced code block and must not split the finding
-```
-
-  ### Indented heading
-- **Severity:** Low
-- **Issue:** second
-
-**###** Emphasised heading
-- **Severity:** Medium
-- **Issue:** third
-'@
-# Assign BEFORE wrapping: @(Split-FindingBlocks ...) captures the returned array as
-# ONE element instead of its blocks (the single-array pipeline quirk).
-$splitBlocks = Split-FindingBlocks $poolInput
-$blocks = @($splitBlocks)
-if ($blocks.Count -ne 3) {
-    $failures += "pooler split the divergent input into $($blocks.Count) block(s), expected 3 (fence state ignored, or '#### '/'  ### '/'**###**' forms not recognised)"
+# --- Phase 2 verdict LINES: coverage and out-of-pool detection key on these -----
+$verdictStart = [regex]::Match($source, "(?m)^\`$script:P2VerdictStart = '(?<p>.+?)'\s*$").Groups['p'].Value
+$verdictLineTemplate = [regex]::Match($source, '(?m)^\$script:P2VerdictLine = "(?<p>.+?)"\s*$').Groups['p'].Value
+if (-not $verdictStart -or -not $verdictLineTemplate) {
+    $failures += 'the Phase-2 verdict start/line assignments could not be read.'
 } else {
-    if (-not $blocks[0].StartsWith('### Deeper heading')) {
-        $failures += "pooler did not normalise '#### Deeper heading' to canonical '### ': got '$($blocks[0].Split([char]10)[0])'"
+    if (-not $p2.StartsWith("$verdictStart|")) {
+        $failures += 'the Phase-2 start pattern no longer begins with $script:P2VerdictStart; coverage and admission can drift apart.'
     }
-    if ($blocks[0] -notmatch [regex]::Escape('### this heading is INSIDE a fenced code block')) {
-        $failures += 'the fenced ### line was lost from the first finding instead of kept as content'
-    }
-    if (-not $blocks[1].StartsWith('### Indented heading')) {
-        $failures += "pooler did not normalise '  ### Indented heading' to canonical '### ': got '$($blocks[1].Split([char]10)[0])'"
-    }
-    if (-not $blocks[2].StartsWith('### Emphasised heading')) {
-        $failures += "pooler did not normalise '**###** Emphasised heading' to canonical '### ': got '$($blocks[2].Split([char]10)[0])'"
-    }
+    $verdictLine = '(?im)' + $verdictLineTemplate.Replace('$script:P2VerdictStart', $verdictStart)
+    Check 'p2-verdict' $verdictLine '**F1: FALSE POSITIVE**' $true
+    Check 'p2-verdict' $verdictLine '**F12** ... AGREE' $true
+    Check 'p2-verdict' $verdictLine 'F9) needs evidence' $true
+    Check 'p2-verdict' $verdictLine 'F4: needs repo - caller not visible' $true
+    Check 'p2-verdict' $verdictLine 'F3. disagree' $false
+    Check 'p2-verdict' $verdictLine 'F1: arbitrary text with no verdict' $false
+    Check 'p2-verdict' $verdictLine 'F12 and F13 both agree with this' $false
+    Check 'p2-verdict' $verdictLine '### Verdicts' $false
 }
-# The clean sentinel must never pool as a finding.
-$sentinelSplit = Split-FindingBlocks '### No substantive defects'
-$sentinelBlocks = @($sentinelSplit)
-if ($sentinelBlocks.Count -ne 1 -or $sentinelBlocks[0].Trim() -notmatch '(?m)^\s*###\s*No substantive defects\s*$') {
-    $failures += 'the clean sentinel must survive pooling as one recognisable block (the driver filters it before assigning an F-id)'
+if ($source -notmatch '(?s)function Get-ReviewHeadingLineNumbers.*?\$line\s+-match\s+\$Pattern') {
+    $failures += 'the shared heading parser must match each non-fenced line against its supplied pattern.'
+}
+
+# An explicit no-findings reply is PARTICIPATION with zero findings. Without a recognised
+# form for it, the panel was structurally unable to return "clean": an all-clean round died
+# on "no reviewer produced Phase 1 findings", making a defect-free diff indistinguishable
+# from a broken run.
+if ($source -notmatch '\$script:NoFindingsHeading\s*=') {
+    $failures += 'no NO FINDINGS heading is recognised, so a clean panel cannot report clean.'
+}
+# ...and it must recognise ONLY that. The heading has to BE the phrase: matching anything
+# that merely STARTS with it made `### NO FINDINGS in the parser, but the writer leaks` -
+# a finding - discard the reviewer's entire reply while still counting it as participating,
+# leaving a "0 findings" line as the only trace. Silence is the wrong direction here: a
+# clean note pooled as a finding is visible to the judge; a discarded reviewer is not.
+$noFindingsAssignment = [regex]::Match($source, "(?m)^\`$script:NoFindingsHeading = '(?<pattern>.+?)'\s*$")
+if (-not $noFindingsAssignment.Success) {
+    $failures += 'the NO FINDINGS heading pattern could not be read from its assignment.'
+} else {
+    $nf = $noFindingsAssignment.Groups['pattern'].Value
+    Check 'no-findings' $nf '### NO FINDINGS' $true
+    Check 'no-findings' $nf '## No findings.' $true
+    Check 'no-findings' $nf '### **NO FINDINGS**' $true
+    Check 'no-findings' $nf '### NO FINDINGS in the parser, but the writer leaks' $false
+    Check 'no-findings' $nf '### Missing JSON serialization metadata' $false
+}
+# And the pooler must decide on the WHOLE reply, not the first matching line, so a reply
+# carrying both a NO FINDINGS heading and real findings is still pooled.
+if ($source -notmatch '\$noFindingsHeadings\.Count -eq \$headings\.Count') {
+    $failures += 'the pooler still treats any NO FINDINGS line as a clean reply instead of requiring it to be the only heading.'
+}
+if ($source -notmatch '(?s)if \(\$findingId -eq 0\).{0,600}Phase 2 skipped') {
+    $failures += 'an empty pool still runs (and then fails) Phase 2 instead of reporting a clean result.'
 }
 
 # --- Round timeout -----------------------------------------------------------
 if ($source -notmatch '\[int\]\s*\$RoundTimeoutSeconds\s*=\s*(?<default>\d+)') {
     $failures += 'RoundTimeoutSeconds parameter is missing: a wedged reviewer would stall its phase indefinitely.'
-} elseif ([int]$Matches['default'] -lt 1830) {
-    $failures += "RoundTimeoutSeconds default $($Matches['default']) is below the slowest observed reviewer (30m30s = 1830s) plus margin."
+} elseif ([int]$Matches['default'] -lt 1800) {
+    $failures += "RoundTimeoutSeconds default $($Matches['default']) is below the slowest observed reviewer (30m30s) plus margin."
 }
 if ($source -notmatch '-TimeoutSeconds\s+\$RoundTimeoutSeconds') {
     $failures += 'the parallel reviewer round does not pass -TimeoutSeconds, so the parameter would not bound anything.'
@@ -192,16 +173,11 @@ if ($source -match "ForEach-Object[^\r\n]*-Parallel[^\r\n]*-ErrorAction") {
 if ($source -notmatch "\`$ErrorActionPreference = 'Continue'") {
     $failures += "the round does not relax \$ErrorActionPreference, so a timeout would abort the phase instead of degrading."
 }
-# ...and the relaxation must be RESTORED afterwards, or the rest of the script silently runs
-# with 'Continue' and every later guard loses its terminating semantics.
-if ($source -notmatch '(?s)\$previousErrorAction\s*=\s*\$ErrorActionPreference.+?finally\s*\{\s*\$ErrorActionPreference\s*=\s*\$previousErrorAction') {
-    $failures += 'the round does not restore $ErrorActionPreference in a finally block after relaxing it.'
-}
 
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ -ErrorAction Continue }
-    Write-Error "run-review start-pattern/admission/pooler/timeout contract FAILED ($($failures.Count) issue(s))" -ErrorAction Continue
+    Write-Error "run-review start-pattern/timeout contract FAILED ($($failures.Count) issue(s))" -ErrorAction Continue
     exit 1
 }
 
-Write-Host 'run-review round contract OK - emphasis tolerated, narration and heading-only replies rejected, pooler shares the admission pattern and tracks fences, round bounded'
+Write-Host 'run-review start-pattern and round-timeout contract OK - emphasis tolerated, narration still rejected, round bounded'

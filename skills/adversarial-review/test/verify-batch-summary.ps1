@@ -1,3 +1,4 @@
+#requires -Version 7
 $ErrorActionPreference = 'Stop'
 <#
   batch-summary.json is the source of truth for WHICH chunks belong to a run.
@@ -22,20 +23,14 @@ foreach ($s in @($batch, $agg)) {
     if (-not (Test-Path -LiteralPath $s)) { throw "script under test not found: $s" }
 }
 
-$savedApiKey = $env:OBSERVATORY_API_KEY
-$savedUrl = $env:OBSERVATORY_URL
+$env:OBSERVATORY_API_KEY = ''
+$env:OBSERVATORY_URL     = ''
 
-# $root is computed BEFORE try (a Join-Path cannot fail on a fresh guid), but the
-# env clearing and fixture creation go INSIDE it: a fixture-creation failure before
-# try would skip the finally and leave the caller's telemetry vars blanked.
 $root = Join-Path ([IO.Path]::GetTempPath()) ('ar-batch-summary-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$fakeRepo = Join-Path $root 'not-a-repo'
+New-Item -ItemType Directory -Path $fakeRepo -Force | Out-Null
 
 try {
-    $env:OBSERVATORY_API_KEY = ''
-    $env:OBSERVATORY_URL     = ''
-
-    $fakeRepo = Join-Path $root 'not-a-repo'
-    New-Item -ItemType Directory -Path $fakeRepo -Force | Out-Null
     function New-Manifest([string] $path, [string[]] $ids, [string] $labelPrefix = 'chunk') {
         @($ids | ForEach-Object { [pscustomobject]@{ id = $_; label = "$labelPrefix $_" } }) |
             ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath $path -Encoding utf8
@@ -158,6 +153,65 @@ try {
         "batch-review.ps1 SKIPPED — rollback-on-abort fault injection needs Windows file-share semantics"
     }
 
+    # --- a wedged chunk is bounded, and a clean chunk is named -----------------
+    # The spine bounds its own ROUNDS, but a hang outside them (an unbounded
+    # `gh pr diff` while resolving a PR target is the observed shape) stalled the
+    # whole batch forever. And a chunk whose panel convened and found nothing exits 0
+    # exactly like one with findings, so "clean" was invisible in the summary.
+    # A stand-in spine beside a copy of batch-review.ps1 plays all three outcomes.
+    $fakeSkill = Join-Path $root 'fake-skill'
+    New-Item -ItemType Directory -Path $fakeSkill -Force | Out-Null
+    Copy-Item -LiteralPath $batch -Destination $fakeSkill
+    @'
+param([string] $Target, [string] $RepoPath, [string] $WorkDir, [string] $Pathspec)
+$id = Split-Path -Leaf $WorkDir
+if ($id -eq 'WEDGE') { Start-Sleep -Seconds 45; exit 0 }
+if ($id -like 'SLOW*') { Start-Sleep -Seconds 3 }
+$pooled = if ($id -eq 'CLEAN') { 0 } else { 2 }
+@{ pooledCount = $pooled } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkDir 'status.json') -Encoding utf8
+@{ participants = @() } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkDir 'metrics.json') -Encoding utf8
+exit 0
+'@ | Set-Content -LiteralPath (Join-Path $fakeSkill 'run-review.ps1') -Encoding utf8
+    $m16 = Join-Path $root 'm16.json'; New-Manifest $m16 @('CLEAN', 'FOUND', 'WEDGE')
+    $runRoot16 = Join-Path $root 'run16'
+    $sw16 = [Diagnostics.Stopwatch]::StartNew()
+    $out16 = & pwsh -NoProfile -File (Join-Path $fakeSkill 'batch-review.ps1') -ChunkManifest $m16 -RepoPath $fakeRepo `
+        -RunRoot $runRoot16 -BatchSize 3 -ChunkTimeoutSeconds 5 2>&1 | Out-String
+    $sw16.Stop()
+    if ($LASTEXITCODE -ne 0) { throw "a batch with a wedged chunk must still complete, exited $LASTEXITCODE`n$out16" }
+    if ($sw16.Elapsed.TotalSeconds -ge 40) { throw "the chunk timeout did not bound the wedged chunk (took $([int]$sw16.Elapsed.TotalSeconds)s)" }
+    $rows16 = @(Get-Content -LiteralPath (Join-Path $runRoot16 'batch-summary.json') -Raw | ConvertFrom-Json)
+    $wedge = @($rows16 | Where-Object chunkId -eq 'WEDGE')
+    if ($wedge.Count -ne 1 -or $wedge[0].timedOut -ne $true -or $null -ne $wedge[0].exitCode) {
+        throw "the wedged chunk must be recorded once as timedOut with no exit code, got: $($wedge | ConvertTo-Json -Compress)"
+    }
+    $cleanRow = @($rows16 | Where-Object chunkId -eq 'CLEAN')[0]
+    $foundRow = @($rows16 | Where-Object chunkId -eq 'FOUND')[0]
+    if ($cleanRow.pooledCount -ne 0 -or $foundRow.pooledCount -ne 2) {
+        throw "pooledCount must be read from each chunk's status.json, got CLEAN=$($cleanRow.pooledCount) FOUND=$($foundRow.pooledCount)"
+    }
+    $tail16 = ($out16.Trim() -split "`r?`n")[-1] | ConvertFrom-Json
+    if ($tail16.timedOut -ne 1 -or $tail16.clean -ne 1 -or $tail16.failed -ne 0) {
+        throw "the batch result must count 1 timed out, 1 clean, 0 failed, got: $($tail16 | ConvertTo-Json -Compress)"
+    }
+    if ($out16 -notmatch 'CLEAN \(panel convened, zero findings\)') { throw "a clean chunk must be named in the batch output:`n$out16" }
+    "batch-review.ps1 OK — a wedged chunk is cut off at -ChunkTimeoutSeconds and a clean chunk is named"
+
+    # The ceiling is PER CHUNK. Three 3-second chunks run one at a time (three waves)
+    # take ~9s in all; a 5s ceiling must stop none of them. A batch-wide clock would
+    # kill the later waves for time the earlier ones spent.
+    $m17 = Join-Path $root 'm17.json'; New-Manifest $m17 @('SLOW1', 'SLOW2', 'SLOW3')
+    $runRoot17 = Join-Path $root 'run17'
+    $out17 = & pwsh -NoProfile -File (Join-Path $fakeSkill 'batch-review.ps1') -ChunkManifest $m17 -RepoPath $fakeRepo `
+        -RunRoot $runRoot17 -BatchSize 1 -ChunkTimeoutSeconds 5 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "a multi-wave batch must complete, exited $LASTEXITCODE`n$out17" }
+    $rows17 = @(Get-Content -LiteralPath (Join-Path $runRoot17 'batch-summary.json') -Raw | ConvertFrom-Json)
+    $killed17 = @($rows17 | Where-Object { $_.timedOut -or $_.exitCode -ne 0 })
+    if ($rows17.Count -ne 3 -or $killed17.Count -ne 0) {
+        throw "each chunk ran under the 5s ceiling, so none may time out or fail, got: $($rows17 | ConvertTo-Json -Compress)"
+    }
+    "batch-review.ps1 OK — -ChunkTimeoutSeconds is a per-chunk clock across waves"
+
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process
     # dying between truncate and write-complete must not leave a corrupted summary
@@ -215,11 +269,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "a summary naming every chunk must emit, exited $LASTEXITCODE`n$out" }
     if ($out -notmatch '\(3 chunks\)') { throw "ChunkCount must be the true number of chunks, got:`n$out" }
     if ($out -notmatch '\b24\b') { throw "issuesRaised must sum across chunks (3 x 8 = 24), got:`n$out" }
-    # The model-registry skill is a sibling in the private home and is not part of this
-    # public mirror, so the registry-backed judge assertion is skipped when it is absent.
-    # The stale-cost assertion below does not need the registry and still runs.
+    # Public mirror: the model-registry sibling skill is not published here, so the
+    # registry-backed judge assertions are skipped when it is absent. The stale-cost
+    # assertion below does not need the registry and still runs.
     $registryPath = Join-Path $PSScriptRoot '..' '..' 'model-registry' 'registry.json'
-    if (Test-Path -LiteralPath $registryPath) {
+    $hasRegistry = Test-Path -LiteralPath $registryPath
+    if ($hasRegistry) {
         $registry = Get-Content $registryPath -Raw | ConvertFrom-Json -AsHashtable
         $expectedJudge = $registry.models.GetEnumerator() |
             Where-Object { $_.Key.StartsWith('claude-opus-') -and $_.Value.availability.cli -eq 'available' -and -not $_.Value.retired } |
@@ -228,12 +283,46 @@ try {
         if (-not $expectedJudge -or $out -notmatch [regex]::Escape($expectedJudge.Key)) {
             throw "judge moving alias must resolve to the current registry model, got:`n$out"
         }
-    }
-    else {
-        Write-Host "SKIP: model-registry sibling not present in this tree - $registryPath"
+    } else {
+        Write-Host "SKIP: model-registry not present in this tree - judge moving-alias resolution not asserted"
     }
     if ($out -match '\b999\b') { throw "judge must not preserve a stale caller-supplied cost for a moving alias:`n$out" }
     "aggregate-and-emit.ps1 OK — refuses a truncated summary, sums the true run when honest"
+
+    # --- a registry price CLEARS a verdict-seeded costUnknown -----------------
+    # The flag was seeded from the verdict and only ever set to $true, so a judge the
+    # registry prices perfectly well stayed UNKNOWN forever once a verdict said so.
+    if ($hasRegistry) {
+        [ordered]@{
+            accepted = [ordered]@{}
+            judge = [ordered]@{ reviewer='anthropic'; model='opus'; inputTokens=1000000; outputTokens=0
+                               costUnknown=$true; reviewDurationMs=1000 }
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runRoot2 'aggregate-verdict.json') -Encoding utf8
+        $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot2 -Repo test-repo 2>&1 | Out-String)
+        $judgeLine = @($out -split "`r?`n" | Where-Object { $_ -match '\(judge\)' })[0]
+        if ($LASTEXITCODE -ne 0 -or $judgeLine -match 'UNKNOWN') {
+            throw "a judge the registry prices must not stay UNKNOWN because the verdict seeded it, got:`n$out"
+        }
+        "aggregate-and-emit.ps1 OK — a registry-priced judge clears a verdict-seeded unknown"
+    } else {
+        Write-Host "SKIP: model-registry not present in this tree - registry-priced judge case needs registry pricing"
+    }
+
+    # --- same-vendor seats on different models name both ----------------------
+    # Fable + Sonnet both roll up to one anthropic row; first-wins labelled the whole
+    # sum with whichever model happened to be read first.
+    $runRoot15 = Join-Path $root 'run15'
+    $d15 = Join-Path $runRoot15 'C01'; New-Item -ItemType Directory -Path $d15 -Force | Out-Null
+    [ordered]@{ participants = @(
+        [ordered]@{ reviewer = 'anthropic'; model = 'model-b'; inputTokens = 1; outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 1 },
+        [ordered]@{ reviewer = 'anthropic'; model = 'model-a'; inputTokens = 1; outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 1 }
+    ) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d15 'metrics.json') -Encoding utf8
+    New-Summary $runRoot15 @('C01')
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot15 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $out -notmatch 'model-a\+model-b') {
+        throw "a vendor row summing two models must name both (model-a+model-b), got:`n$out"
+    }
+    "aggregate-and-emit.ps1 OK — same-vendor seats on different models are joined, not first-wins"
 
     # --- the summary's workDir path form must not decide what is found --------
     # batch-review.ps1 does not resolve -RunRoot, so a relative one persists
@@ -389,6 +478,24 @@ try {
     $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot8 -Repo test-repo 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 3) { throw "an empty RunRoot must exit 3 (no metrics to aggregate), got $LASTEXITCODE`n$out" }
 
+    # A failed chunk is a fatal completeness gap unless explicitly included as
+    # partial; the opt-in makes every participant's cost unknown and names it.
+    $runRoot14 = Join-Path $root 'run14'
+    $d14 = Join-Path $runRoot14 'C01'; New-Item -ItemType Directory -Path $d14 -Force | Out-Null
+    [ordered]@{ participants = @([ordered]@{ reviewer = 'anthropic'; model = 'm'; inputTokens = 1
+                outputTokens = 1; costUsd = 0.1; reviewDurationMs = 1; issuesRaised = 1 }) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d14 'metrics.json') -Encoding utf8
+    @(
+        [pscustomobject]@{ chunkId = 'C01'; exitCode = 0; hasMetrics = $true }
+        [pscustomobject]@{ chunkId = 'C02'; exitCode = 1; hasMetrics = $false }
+    ) | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $runRoot14 'batch-summary.json') -Encoding utf8
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot14 -Repo test-repo 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 8) { throw "failed chunk must refuse aggregation by default (exit 8), got $LASTEXITCODE`n$out" }
+    $out = (& pwsh -NoProfile -File $agg -RunRoot $runRoot14 -Repo test-repo -AllowFailedChunks 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $out -notmatch 'C02' -or $out -notmatch 'UNKNOWN') {
+        throw "partial aggregation must name C02 and mark cost UNKNOWN, got exit $LASTEXITCODE`n$out"
+    }
+
     # exit 2: emit-review-telemetry.ps1 missing beside the script. Copy the aggregator
     # to a lone dir with a valid run so it gets past arg parsing to the emitter check.
     $isolated = Join-Path $root 'isolated'
@@ -405,13 +512,5 @@ try {
     "aggregate-and-emit.ps1 OK — exit codes 2 (no emitter) and 3 (no metrics) stay distinct from 1"
 }
 finally {
-    # Restore the caller's telemetry configuration; assigning $null removes the
-    # variable, so an originally-unset var is restored to unset.
-    $env:OBSERVATORY_API_KEY = $savedApiKey
-    $env:OBSERVATORY_URL = $savedUrl
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-# The exit-2 child above is asserted, not fatal — clear its native status so a caller
-# that checks $LASTEXITCODE after a PASS does not read the child's deliberate failure.
-$global:LASTEXITCODE = 0

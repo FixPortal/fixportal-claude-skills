@@ -1,5 +1,19 @@
 # Audit-tests orchestration runbook
 
+## Contents
+
+- [Audit modes](#audit-modes)
+- [Phase 0 — recon (main loop)](#phase-0--recon-main-loop)
+- [Phase 1 — evidence fan-out](#phase-1--evidence-fan-out)
+- [Timing evidence](#timing-evidence)
+- [Phase 2 — synthesis (main loop)](#phase-2--synthesis-main-loop)
+- [Phase 3 — verify](#phase-3--verify)
+- [Phase 4 — report](#phase-4--report)
+- [Phase 5 — fix pass (only if opted in)](#phase-5--fix-pass-only-if-opted-in)
+- [Failure handling table](#failure-handling-table)
+- [Common mistakes](#common-mistakes)
+
+
 Read this reference for the detailed recon, dispatch, synthesis, verification, reporting, and approved fix-pass mechanics.
 
 ## Audit modes
@@ -54,8 +68,24 @@ decide validity.
    targets committed HEAD only or includes the named working-tree changes; a fix
    pass always needs a clean base.
 4. Stack detection: `*.sln` / `*.slnx` / `*.csproj` → .NET. `package.json` +
-   `vitest.config.*` / `vite.config.*` → frontend. Both → hybrid (run both
-   conventions). Neither → stop and say so; do not guess.
+   `vitest.config.*` / `vite.config.*` → frontend. `pyproject.toml` + `uv.lock` →
+   Python (uv), the `scaffold-python` layout. .NET plus frontend → hybrid (run both
+   conventions). None of these → stop and say so; do not guess.
+
+   **Say WHICH thing is true when you stop.** A repo this skill cannot audit is not a
+   repo with no test-quality gap: unlocked Python, Go, a Jest frontend and a plain Node
+   service all land here, and every one can hold exactly the defects this audit exists
+   to find. Report `no instrument covers this stack (<label>)` — never `n/a`, and never
+   a clean row. Step 4 only classifies .NET, Vitest/Vite frontend, Python (uv), hybrid,
+   or none, so `<label>` comes from the MANIFEST that was actually found, named plainly:
+   `pyproject.toml` without `uv.lock`, or `requirements.txt` → `Python (not uv)`, `go.mod` → `Go`, `package.json` with a
+   Jest config → `Jest frontend`, `package.json` with neither Vite nor Jest → `Node`,
+   `Cargo.toml` → `Rust`, and anything else → `unknown stack (<the manifest filenames
+   seen>)`. Naming the manifests rather than guessing a framework keeps the row
+   falsifiable: a reader can check what was on disk. A sweep that renders both the same way claims coverage it does not have,
+   and the repos most likely to be unaudited are then the least likely to be noticed.
+   The limit is the instrument's conventions (xUnit/NSubstitute/AwesomeAssertions,
+   Vitest), not a judgement that other stacks need no auditing.
 5. Locate test projects (paths go to Phase 1 workers) and any
    coverage / mutation artefacts (`TestResults/`, `StrykerOutput/`,
    `coverage/`, `*.cobertura.xml`). A middle-anchored `**\<name>\**` `Glob`
@@ -105,7 +135,7 @@ Prompt = full text of `references/axis-brief.md` with `<AXIS>` and
 Repository root: <toplevel>
 Audit mode: <full | delta>
 Evidence scope: <entire repository | changed paths plus impacted surface>
-Stack: <.NET | frontend | hybrid — from Phase 0>
+Stack: <.NET | frontend | Python (uv) | hybrid — from Phase 0>
 Test project paths: <from Phase 0>
 Knowledge graph: <toplevel>\graphify-out\ exists — consult it before walking the tree.   [omit this line if absent]
 Glob ** is unreliable both for dot-directories AND for middle-anchored patterns like **\<name>\** — enumerate both by literal path or Get-ChildItem -Recurse -Directory; an empty ** result is never evidence of absence.
@@ -289,12 +319,25 @@ out-of-repo mechanism that would have to hold. It stays out of Section 2's cover
 stays out of the dropped-items appendix, and may become a Section 6 slice only once a
 human has supplied the missing evidence.
 
-Every other REFUTED gap is removed from Sections 3 and 6 — it is not a gap, not a
-slice — and logged in an **"Items dropped in verification"** appendix with its
-refutation reason. It also UPDATES Section 2: record the behaviour as
-effectively covered, anchored to the test the skeptic cited, so a real gap
-the skeptic closed by finding coverage isn't thrown away with the false
-claim. No Section 6 slice may reference a REFUTED item.
+**Route every other REFUTED gap by the check that refuted it, because only two of the
+four produce a cited test.** The `HOST-UNVERIFIED` carve-out above is scoped to one
+reason string; the condition underneath it — a refutation citing no test — is broader,
+and promoting those into Section 2 recorded a confirmed-real gap as covered, anchored to
+nothing.
+
+- **Checks 1 and 3** cite a real test. Remove the gap from Sections 3 and 6, log it in
+  the **"Items dropped in verification"** appendix with its reason, and UPDATE Section 2:
+  record the behaviour as effectively covered, **anchored to that cited test**, so a real
+  gap the skeptic closed by finding coverage is not thrown away with the false claim.
+- **Check 2** refutes on a phantom symbol. That makes the finding malformed; it does not
+  make the behaviour covered. Dropped-items appendix only — never Section 2.
+- **Check 4** refutes because the *proposed* test would not fail on the regression, which
+  `references/verify-refute.md` calls "a different, more useful finding" — the gap is
+  real, uncovered, and worse than stated. Re-enter it in the backlog restated around what
+  the skeptic found, at no lower priority. Never Section 2.
+
+The Section 2 promotion is gated on the refutation actually citing a test: no citation,
+no promotion. No Section 6 slice may reference a REFUTED item.
 
 A CONFIRMED backlog-gap verdict may carry a non-empty `constructionWarning` — the gap is
 real, but the obvious test shape cannot fail on the regression. **Store it
@@ -323,8 +366,38 @@ baseline report, baseline commit, exact diff range, selected axes, changed paths
 and any out-of-diff impacted paths. Add the reconciliation appendix defined in
 Phase 2 and state plainly that unchanged baseline items were not revalidated.
 
-Chat gets section 1 (assessment) plus section 3 (backlog) as a table: id,
-priority, behaviour, level, cost, confidence.
+The YAML frontmatter also records these scalar fields:
+
+```yaml
+status: <Complete or an explicit partial status>
+required-evidence-axes: <comma-separated axis letters>
+completed-evidence-axes: <comma-separated axis letters>
+failed-evidence-axes: <comma-separated axis letters or none>
+unverified-critical-items: <non-negative integer>
+unverified-high-items: <non-negative integer>
+```
+
+List each axis separately; `A-G` is not a completed-axis shorthand. `Complete` is valid
+only when every required axis completed, no required axis failed, and both unverified
+counts are zero. Otherwise use an explicit partial status such as
+`Critical tier verified; High tier deferred`.
+
+**Every "Unsettled — host evidence required" item increments the count matching its
+tier** — `unverified-critical-items` for a Critical, `unverified-high-items` for a High.
+Write each item as one list entry beginning `- **Critical** —` or `- **High** —` so the
+report validator can count it.
+Without that, a report carrying an unexamined Critical downstream risk validated as
+`Complete` and shipped: the item is deliberately not the `UNVERIFIED` flag used for a
+discarded verdict, and nothing connected it to the counters the status gate reads.
+
+Draft outside the vault, run `scripts/test-audit-report.ps1 -Path <draft>`, and publish
+to the unused final filename only after it passes. A validator failure forbids publication.
+
+Chat gets section 1 (assessment), section 3 (backlog) as a table (id, priority,
+behaviour, level, cost, confidence), **and the "Unsettled — host evidence required"
+section in full**. Unsettled is the only section that asks the human for something, so
+delivering the report without it leaves that request with no path to the person who can
+discharge it.
 
 A report-only run ENDS HERE. Say where the report is; stop.
 

@@ -26,7 +26,14 @@ param(
 
     [string] $FindingsPath,
     [string[]] $ContextPath,
-    [string] $Model = 'gemini-3.1-pro-high',
+    # Mandatory, no default: the driver supplies a registry-resolved agy selector,
+    # and a direct caller resolves one the same way (model-registry/resolve.py
+    # --tier <tier> --host agy) rather than leaning on a pinned id here. agy fuses
+    # reasoning effort into the selector, so the id carries it and -Effort below
+    # is read back off the suffix rather than appended.
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $Model,
 
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
     [string] $Effort = 'high',
@@ -89,13 +96,17 @@ try {
     if ($contextPaths) {
         $contextDir = Join-Path $work 'context'
         New-Item -ItemType Directory -Path $contextDir -Force | Out-Null
+        $contextIndex = [System.Collections.Generic.List[string]]::new()
         for ($i = 0; $i -lt $contextPaths.Count; $i++) {
             $path = $contextPaths[$i]
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                 Write-Error "Context file not found: $path"; exit 2
             }
-            Copy-Item -LiteralPath $path -Destination (Join-Path $contextDir ('{0:D2}_{1}' -f $i, (Split-Path $path -Leaf))) -Force
+            $copyName = '{0:D2}_{1}' -f $i, (Split-Path $path -Leaf)
+            Copy-Item -LiteralPath $path -Destination (Join-Path $contextDir $copyName) -Force
+            $contextIndex.Add("$copyName`t$((Resolve-Path -LiteralPath $path).Path)")
         }
+        Set-Content -LiteralPath (Join-Path $contextDir 'INDEX.txt') -Value $contextIndex -Encoding utf8
     }
 
     # ABSOLUTE paths, and an explicit ban on searching. agy does NOT resolve a bare
@@ -111,18 +122,35 @@ try {
         "Read the brief at $(Join-Path $work 'brief.txt') and follow it exactly."
         "Review ONLY the change in $(Join-Path $work 'review-diff.txt')."
         $(if ($FindingsPath) { "Cross-examine $(Join-Path $work 'pooled-findings.txt') as the brief directs." })
-        $(if ($contextPaths) { "Use files under $(Join-Path $work 'context') only as supporting background; do not raise findings against them." })
+        $(if ($contextPaths) { "Original supporting paths are in $(Join-Path $work 'context/INDEX.txt'); files are not under review." })
         $(if ($RepoPath) { "You may read the repository at $RepoPath for context; do not modify it." })
         'Do NOT search the filesystem for these files. Use exactly the absolute paths given above.'
         'If a path above cannot be read, stop and say so; never substitute another file.'
         'Output only the review text in the exact format the brief requests. No preamble or narration.'
     ) | Where-Object { $_ }
 
-    # agy accepts only low|medium|high. A model-name suffix wins when present;
-    # otherwise -Effort applies, with the panel-contract values xhigh/max folded
-    # down to high (the deepest agy supports) rather than rejected, so the uniform
-    # five-value -Effort contract shared with claude-review.ps1 still binds.
-    $agyEffort = ($Model -match '-(low|medium|high)$') ? $Matches[1] : (($Effort -in @('xhigh', 'max')) ? 'high' : $Effort)
+    # agy --effort accepts low|medium|high ONLY (verified against `agy --help`), while
+    # the shared wrapper contract carries Claude's wider vocabulary, which also has
+    # xhigh and max. Clamping those to high is required - passing them through makes
+    # agy reject the invocation - but doing it SILENTLY means a seat configured for
+    # max runs at high and the run record never says so.
+    if ($Model -match '-(low|medium|high)$') {
+        # agy fuses reasoning effort into the model selector, so a suffixed model
+        # already carries it and the suffix wins. Deliberate precedence.
+        $agyEffort = $Matches[1]
+        if ($Effort -and $Effort -ne $agyEffort) {
+            Write-Warning "-Effort '$Effort' ignored: the model selector '$Model' already pins effort to '$agyEffort'."
+        }
+    }
+    elseif ($Effort -in @('low', 'medium')) {
+        $agyEffort = $Effort
+    }
+    else {
+        $agyEffort = 'high'
+        if ($Effort -and $Effort -ne 'high') {
+            Write-Warning "agy has no '$Effort' effort level (it accepts low|medium|high); clamped to 'high'."
+        }
+    }
     $agyArgs = @(
         '-p', ($prompt -join "`n")
         '--model', $Model

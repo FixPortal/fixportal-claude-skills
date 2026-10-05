@@ -1,0 +1,33 @@
+{
+  "_comment": "Per-phase model routing. reconcile.ps1 does the enumeration and matching; the model's work is reading its output under a decision contract whose whole point is keeping UNKNOWN distinct from clean. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "reconcile",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Invokes reconcile.ps1 with the requested org, repo, grace window and alert state. Estate enumeration, PR matching at the Bumps/Updates anchor, and the grace calculation are the script's work.",
+      "adjust": []
+    },
+    {
+      "id": "interpret-output",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Reports findings without self-triaging by severity, age, scope or rule family, and must keep three states apart that a careless reader collapses into one: UNKNOWN security-update health, confirmed DISABLED or PAUSED, and NOT CHECKED after an API failure. Reporting unread evidence as clean is the specific failure this phase exists to avoid, and it is silent.",
+      "adjust": [
+        {
+          "when": "notCheckedRows > 0",
+          "step": 1,
+          "why": "A NOT CHECKED row means part of the estate was never read. Deciding what may still be said about it, without letting the gap read as clean, is the hardest judgement this skill makes."
+        },
+        {
+          "when": "unmatchedAlerts == 0",
+          "step": -1,
+          "why": "With nothing unmatched and no unread rows, the output is a clean reconciliation to relay rather than a set of dispositions to reason about."
+        }
+      ]
+    }
+  ]
+}

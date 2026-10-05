@@ -1,5 +1,19 @@
 # CI workflow contract
 
+## Contents
+
+- [Non-negotiable house rules for `ci.yml`](#non-negotiable-house-rules-for-ciyml)
+- [Runners — `ubuntu-latest` by default, Blacksmith for heavy lanes](#runners--ubuntu-latest-by-default-blacksmith-for-heavy-lanes)
+- [Pinned action versions (current house standard)](#pinned-action-versions-current-house-standard)
+- [`ci.yml` skeleton (hybrid; drop the job you don't need)](#ciyml-skeleton-hybrid-drop-the-job-you-dont-need)
+- [Extended tests — weekly/manual, never a PR gate](#extended-tests--weeklymanual-never-a-pr-gate)
+- [Deploy (optional, documented pattern — not boilerplate)](#deploy-optional-documented-pattern--not-boilerplate)
+- [A tag trigger is not a review gate — assert ancestry](#a-tag-trigger-is-not-a-review-gate--assert-ancestry)
+- [Job naming — CI dashboard lane contract](#job-naming--ci-dashboard-lane-contract)
+- [`CI Gate` — the required status check](#ci-gate--the-required-status-check)
+- [Shipped assets and templates](#shipped-assets-and-templates)
+
+
 Read this reference whenever `ci.yml`, deploy/publish jobs, runners, or the CI Gate are in scope.
 
 ## Non-negotiable house rules for `ci.yml`
@@ -362,7 +376,7 @@ that an unreviewed tag cannot simply omit.
 
 ### Job naming — CI dashboard lane contract
 
-A CI dashboard (`your-repo`) sorts workflow **jobs** into
+The CI dashboard (`your-repo`) sorts workflow **jobs** into
 board lanes — **Deploys** and **Packages** — by a case-insensitive substring
 match on the **job `name:`**. Names that break this contract mis-lane (a deploy
 rendered as a package) or vanish from the board entirely (a job whose name
@@ -498,3 +512,9 @@ Rules, each of which is a way this goes wrong:
 `scaffold-repo` owns the matching `required_status_checks` rule. A gate with no requirement
 is decoration; a requirement with no gate blocks every merge — so if you add one, check the
 other exists.
+
+## Shipped assets and templates
+
+- `assets/review-policy-guard.yml` -- verifies the review policy is tracked and workflow hygiene is valid.
+- `assets/review-tier.yml` -- reclassifies on each push or edit and applies or removes the `review-high` label.
+- `assets/secret-sweep.yml` -- secret scanning with TruffleHog detection.

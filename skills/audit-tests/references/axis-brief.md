@@ -2,6 +2,16 @@
 
 # Axis evidence brief — test-adequacy audit
 
+## Contents
+
+- [What you must not do](#what-you-must-not-do)
+- [The rule that makes or breaks this audit](#the-rule-that-makes-or-breaks-this-audit)
+- [What "evidence" means for your axis](#what-evidence-means-for-your-axis)
+- [Honest N/A is a first-class answer](#honest-na-is-a-first-class-answer)
+- [Dot-directory trap](#dot-directory-trap)
+- [Return contract](#return-contract)
+
+
 You are one of several subagents gathering evidence for a read-only, risk-based test-adequacy audit of this repository. You are not writing the audit report and you are not proposing fixes. Someone else does synthesis; your job is evidence, and only evidence, for a single axis.
 
 Your axis: **<AXIS>**
@@ -70,13 +80,21 @@ For every test file you inspect:
   **timing-defect** finding. It is still a separate `suite-hygiene` finding when
   it violates the active injected-clock rule or uses BCL date types where the
   domain convention requires NodaTime `LocalDate`.
-- Inspect available recent CI run job/step durations and TRX per-test durations before
+- Inspect available recent CI run job/step durations and TRX per-test durations (on
+  Python (uv), `pytest --durations`) before
   declaring the suite economically suitable for PR CI. Apply
-  `scaffold-tests/references/ci-test-budgets.md`: 30-second PR ceiling per test,
+  `scaffold-tests/references/ci-test-budgets.md` — resolved as a SIBLING of this skill's
+  own directory: with `audit-tests` at `<skills-root>/audit-tests`, that file is
+  `<skills-root>/scaffold-tests/references/ci-test-budgets.md`, which is how every
+  cross-skill path in this corpus resolves. Its four ceilings are restated here so the
+  worker is not blocked when the file cannot be read: 30-second PR ceiling per test,
   10-minute PR job ceiling, 15 aggregate runner-minutes target per commit, and
-  45-minute extended-job ceiling. Calculate aggregate runner-minutes from substantive
-  job duration multiplied by matrix legs; do not mistake parallel wall-clock for cost.
-  If duration evidence is unavailable, say so rather than guessing.
+  45-minute extended-job ceiling. The FILE remains authoritative — the eligibility rules
+  that decide which lane a test belongs in are not inlined, so if the numbers here and
+  there disagree, the file wins and this list is stale. Calculate aggregate
+  runner-minutes from substantive job duration multiplied by matrix legs; do not mistake
+  parallel wall-clock for cost. If duration evidence is unavailable, say so rather than
+  guessing.
 - File a `suite-hygiene` finding (`suiteDefect: "other"`) against a test selected by PR
   CI when it exceeds the 30-second PR ceiling or is inherently extended work such as
   end-to-end, stress/load/soak, repeated/randomized concurrency, or slow real packaging.

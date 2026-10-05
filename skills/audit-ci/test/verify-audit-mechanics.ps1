@@ -731,6 +731,9 @@ jobs:
     if (-not $guardFailed) { throw 'A guard that skips workflow hygiene passed the audit.' }
 
     $skill = Get-Content -LiteralPath (Join-Path $skillRoot 'SKILL.md') -Raw
+    foreach ($reference in 'inventory.md', 'evaluation.md') {
+        $skill += "`n" + (Get-Content -LiteralPath (Join-Path $skillRoot 'references' $reference) -Raw)
+    }
     foreach ($required in @('inventory count', 'freshness drift', 'does not change the repository verdict', 'verification timestamp')) {
         if (-not $skill.Contains($required, [StringComparison]::OrdinalIgnoreCase)) {
             throw "audit-ci guidance is missing required contract text: $required"

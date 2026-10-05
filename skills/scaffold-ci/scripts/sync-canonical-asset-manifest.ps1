@@ -32,7 +32,7 @@ replacement characters could never verify). This script writes ONLY the manifest
 never edits assets, ci.yml, or the review policy.
 
 .EXAMPLE
-pwsh -File scaffold-ci/scripts/sync-canonical-asset-manifest.ps1 -RepoRoot <workdir>\your-repo
+pwsh -File scaffold-ci/scripts/sync-canonical-asset-manifest.ps1 -RepoRoot "<repo>"
 #>
 [CmdletBinding()]
 param(

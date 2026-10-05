@@ -14,14 +14,14 @@ half-finished thought, the one command that was about to run. `handoff`
 writes the missing artefact, and writes it BEFORE the loss, not after.
 
 It is not `close` (which parks a session and persists durable memory for
-*this* agent to find later) and not `recap` (which reconstructs "where were
-we" from cold artefacts once memory is already gone). Those run after the
-fact; `handoff` writes the brief before the context is lost. `handoff` produces
+*this* agent to find later) or a current-state repository sweep. Those operate
+from durable artefacts; `handoff` writes the brief before the context is lost. `handoff` produces
 one thing: a brief a *different* session — possibly a different agent entirely —
 can pick up cold, plus one resume line to invoke it with.
 
 Canonical in ~/.agents/skills/, junctioned into ~/.claude/skills/,
-~/.gemini/config/skills/, and ~/.gemini/antigravity-cli/skills/ — keep it
+~/.gemini/config/skills/, ~/.gemini/antigravity-cli/skills/, ~/.pi/skills/,
+and ~/.pi/agent/skills/ — keep it
 host-agnostic and MCP-free.
 
 ## Modes
@@ -55,6 +55,24 @@ procedure below for the answer given.
 
 Codex and Copilot CLI are separate targets with separate rule files — do not
 read one and assume it covers the other.
+
+The table keys on CLI names, but a handoff is sometimes requested by **model**
+("hand this to GPT Astra"). Never map a model name to a vendor from memory —
+resolve it against the registry, matching on id and display name:
+
+```text
+python -c "import json, re; ms = json.load(open(r'<skills-home>/model-registry/registry.json'))['models']; t = lambda s: [x for x in re.split(r'[^a-z0-9]+', s.lower()) if x]; q = t('<name>'); print([(k, v.get('vendor'), v.get('tier')) for k, v in ms.items() if all(any(x in c for c in t(k) + t(v.get('display_name', ''))) for x in q)])"
+```
+
+Read the vendor off the result and continue as the CLI that serves that vendor
+here: anthropic -> Claude Code, openai -> Codex, moonshot -> Kimi Code,
+google -> Antigravity / Gemini. A vendor with no CLI on this box has no direct
+target — say so in the brief rather than routing to a lookalike. Multiple hits
+from ONE vendor still identify the vendor, which is all this step needs. But
+an empty result, or one whose entries span more than one vendor, does not
+identify a single vendor: the empty case is a model the registry does not
+know, the multi-vendor case a query too loose to route, and both end the same
+way — name no target and record what was asked for instead.
 
 Read it at runtime — do not recall it from memory or from this session's own
 rule file. Do not assume the rule files have reached parity; they have not,
@@ -122,7 +140,7 @@ translate a resolved family to its supported short alias as documented by
 `model-registry`; do not pass a full API ID where the host accepts aliases only.
 
 Routing facts that outlive any roster live in
-`~/.agents/notes/model-routing-traps.md` — which vendor CLI fails where, and why.
+`~/.agents/notes/model-routing-traps.md` — which vendor CLI fails where, and why (if that note is not present, proceed and record the assumption).
 Read it here rather than restating its contents, so the two cannot drift apart.
 That applies to entry 1 in particular: it has already been corrected once, so read
 its current status before routing around any vendor CLI and **do not assume it still
@@ -138,10 +156,15 @@ states today, and say nothing if it states none.
 
 ### 6. Write the brief and hand off
 
-The output is a file, always, at a fixed, predictable path — never chat text.
-When a repository is in scope, use `<repo>/.claude/handoff`. No repository is in scope
-means an estate handoff: use the stable estate key `estate`, not
-the cwd or host name, and `~/.agents/handoff/estate`.
+The output is a file, always — never chat text. When a repository is in scope, write it
+under `<repo>/.claude/handoff`. No repository is in scope means an estate handoff: use the
+stable estate key `estate`, not the cwd or host name, and `~/.agents/handoff/estate`.
+
+**The filename is unique per request, and nothing in this directory is ever overwritten.**
+Several agents work the same repository at once, so a shared or predictable output name is
+one agent's brief silently destroying another's. The date and slug describe the request;
+a random token makes the name collision-proof without coordinating with the other agents,
+whose existence this skill cannot see.
 
 In PowerShell, construct these paths with `Join-Path` — PowerShell 5.1 has no
 path-safe string interpolation shortcut:
@@ -151,44 +174,57 @@ $estateKey = 'estate'
 $estateHome = Join-Path $HOME '.agents'
 $estateHandoffRoot = Join-Path $estateHome (Join-Path 'handoff' $estateKey)
 $handoffRoot = if ($repoRoot) { Join-Path $repoRoot (Join-Path '.claude' 'handoff') } else { $estateHandoffRoot }
-$datedBrief = Join-Path $handoffRoot "$date-$slug.md"
-$datedTemp = Join-Path $handoffRoot ".$date-$slug.md.tmp"
-$latestBrief = Join-Path $handoffRoot 'latest.md'
-$latestTemp = Join-Path $handoffRoot '.latest.md.tmp'
+# The request token, NOT a counter and NOT the slug: a counter has to read the
+# directory to pick its next value, which is exactly the race between two agents
+# that this name exists to survive.
+$token = [guid]::NewGuid().ToString('n').Substring(0, 8)
+$briefFile = Join-Path $handoffRoot "$date-$slug-$token.md"
+$briefTemp = Join-Path $handoffRoot ".$date-$slug-$token.md.tmp"
 ```
 
-Run this one twin-update procedure. The temporary files are siblings, so their
-renames are atomic; do not overwrite an existing dated brief — choose a new
-slug instead:
+Write through the temporary sibling so the rename into place is atomic — a
+concurrent reader sees a whole brief or no brief, never a half-written one:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path $handoffRoot | Out-Null
-Set-Content -LiteralPath $datedTemp -Value $brief -Encoding UTF8
-[System.IO.File]::Move($datedTemp, $datedBrief)
-Copy-Item -LiteralPath $datedBrief -Destination $latestTemp
-if (Test-Path -LiteralPath $latestBrief) {
-    [System.IO.File]::Replace($latestTemp, $latestBrief, $null)
-} else {
-    [System.IO.File]::Move($latestTemp, $latestBrief)
-}
-if ((Get-FileHash -LiteralPath $datedBrief).Hash -ne (Get-FileHash -LiteralPath $latestBrief).Hash) {
-    throw 'latest.md differs from the dated brief; repeat only the pointer update'
-}
+Set-Content -LiteralPath $briefTemp -Value $brief -Encoding UTF8
+[System.IO.File]::Move($briefTemp, $briefFile)
 ```
 
-The dated brief is authoritative. If `latest.md differs from the dated brief`,
-retain the dated file and repeat only the temporary-pointer update; never
-overwrite the dated brief. A failed pointer update is therefore recoverable,
-and the resume line is printed only after the hashes match.
+**The `File.Move` throw IS the never-overwrite guard** — it refuses an existing
+destination, which is exactly the wanted behaviour, so do not add a `Test-Path` before it
+and do not wrap it in a try that continues. With the token in the name it should never
+fire; if it does, regenerate the token and re-run rather than reusing the name. What the
+throw leaves behind is a `.tmp` sibling: the content was already written, and nothing
+removes it. Clean it up on the failure path:
 
-`latest.md` is a **replacement**, not an addition: the previous pointer is gone
-once it lands, and another session may be relying on it to resume. Writing a new
-dated brief needs no permission — it only adds a file — but replacing an
-existing `latest.md` does. When one is already present, say which brief it
-currently points at and get explicit approval before the replace, unless the
-request already authorized the handoff write (`/handoff`, "write the handoff",
-"hand this off to X" all do). Never replace it as a side effect of a request
-that only asked for a summary.
+```powershell
+Remove-Item -LiteralPath $briefTemp -WhatIf   # then, once the path is confirmed, without -WhatIf
+```
+
+Show the `-WhatIf` line and the path before removing anything. The file holds a brief that
+was just written and not yet published, so it is the only copy of that content; the cleanup
+is a convenience, and an unattended delete of the one artefact the operator might still
+want is not.
+
+Left in place, that file sits beside the briefs with a name close enough to be mistaken
+for one, and the next run's directory listing shows a brief that was never published.
+
+Every publish only ever **adds** a file, so no approval gate is needed and none of this
+step may be turned into one that replaces or prunes. Do not write a `latest.md`, a
+`current.md`, or any other fixed-name pointer alongside the briefs: a pointer is shared
+mutable state between agents that cannot see each other, so the last writer wins and the
+brief another session was about to resume from is gone with no trace that it existed.
+The resume line below already carries the one path the receiver needs. A receiver who has
+lost that line reads the directory instead — the names sort by date, and the newest for
+this task is the current one:
+
+```powershell
+Get-ChildItem -LiteralPath $handoffRoot -Filter '*.md' | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+```
+
+Do not prune old briefs on the way past. They are another agent's context until that agent
+says otherwise.
 
 Briefs are session ephemera and must never reach a PR, so confirm the directory
 is ignored — but test whether it is *ignored*, not whether it is *listed*:
@@ -241,12 +277,13 @@ Excerpt, do not dump.>
 <tier, roster-bound name or an honest "roster unreadable", plus caveats>
 ```
 
-Then print the resume line, with the brief's **absolute** path — the receiving
-CLI may not start in the repo root, and a receiver that cannot resolve the path
-cannot read the brief that would have told it where the brief is:
+Then print the resume line, naming **this request's own brief** by its **absolute** path —
+the receiving CLI may not start in the repo root, and a receiver that cannot resolve the
+path cannot read the brief that would have told it where the brief is. Print the full
+filename including the token; an abbreviated or guessed name resolves to nothing:
 
 ```text
-read <workdir>\repo\.claude\handoff\latest.md and continue
+read <workdir>\repo\.claude\handoff\2026-09-16-fix-envelope-mapper-9f2c41ab.md and continue
 ```
 
 ## Red flags — STOP
@@ -260,3 +297,7 @@ read <workdir>\repo\.claude\handoff\latest.md and continue
   to cover for it.
 - You are about to commit, stash, or push to "tidy up before the handoff".
   Report the dirty tree; do not resolve it.
+- You are about to write a fixed-name output (`latest.md`, `current.md`, `handoff.md`) or
+  otherwise produce a name a second agent in this repo could produce too. The brief you
+  overwrite is one nobody gets to read again, and the agent relying on it finds out by
+  resuming the wrong task.

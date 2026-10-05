@@ -1,0 +1,40 @@
+{
+  "_comment": "Per-phase model routing. review-digest is a collector: collect.ps1 and write-report.ps1 own every number, and the skill forbids hand-editing counts, ranges, file lists or scores. The subtle judgements about what counts as a review live in the script, not in the model, so the tiers are low by construction. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "collect",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Invokes collect.ps1 over the given paths with a unique output file. Vault-record parsing, range resolution and coverage attribution are the script's work.",
+      "adjust": []
+    },
+    {
+      "id": "write-and-publish",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Invokes write-report.ps1 and files the result under the dated ledger path. Existing ledgers are immutable, so there is no merge decision to make - a correction is a new dated report.",
+      "adjust": []
+    },
+    {
+      "id": "present-ranked-queue",
+      "tier": "mechanical",
+      "floor": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Hands over the ranked table and the per-repository prompts the script already generated. The skill explicitly forbids hand-editing any figure: a disagreement is fixed in the evidence or the script and rerun, never in the reply.",
+      "adjust": [
+        {
+          "when": "unusableRuns > 0",
+          "step": 1,
+          "why": "An unusable run needs its reason diagnosed and usually a frontmatter correction chosen, which is judgement about which record is wrong rather than transcription of a number."
+        },
+        {
+          "when": "historyResetRepos > 0",
+          "step": 1,
+          "why": "A reset history moves every reviewed tip off HEAD's ancestry. The collector measures drift as a tree diff from the replaced history's reviewed state, and the handoff prompt must keep that distinction; presenting it as a commit range either re-reviews merged work or hides unreviewed code."
+        }
+      ]
+    }
+  ]
+}

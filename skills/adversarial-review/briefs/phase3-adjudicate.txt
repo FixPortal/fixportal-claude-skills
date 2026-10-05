@@ -5,14 +5,12 @@ Phase 2 cross-examinations.
 Produce the final report:
 
 - Deduplicate findings that describe the same defect.
-- For each surviving finding give: title, severity, location, trigger, issue,
-  impact, suggested fix, and a consensus tag. MEASURE CONSENSUS BY VENDOR, NOT BY
+- For each surviving finding give: title, severity, location, issue, impact,
+  suggested fix, and a consensus tag. MEASURE CONSENSUS BY VENDOR, NOT BY
   REVIEWER HEADCOUNT. Reviewers that share a vendor are not independent
   corroboration of each other (same training lineage, correlated blind spots),
   so collapse each group of same-vendor reviewers into a single vendor-vote,
-  then tally consensus across the distinct vendors on the panel. An intra-vendor
-  split (that vendor's reviewers disagree) collapses to DISSENT for that vendor,
-  never to concurrence:
+  then tally consensus across the distinct vendors on the panel:
   [unanimous] - every vendor treated it as real
   [majority]  - most vendors did; note the dissent in one line
   [contested] - the vendors split; state both sides, do NOT pick a winner
@@ -75,10 +73,6 @@ chat). Use this house style for every finding:
   **Where** — `file:line`  (put EVERY identifier, type, member, path, and
   file:line in backtick code spans)
 
-  **Trigger** — <the caller/path/input that reaches the defect — mandatory for
-  Critical/High; Phase 4 verifies against this, so omitting it strands the
-  finding. For a latent Medium, say what is missing that keeps it from firing>
-
   **What's wrong** — <mechanism>
 
   **Impact** — <consequence; omit the line if it would only restate What's wrong>
@@ -88,8 +82,10 @@ chat). Use this house style for every finding:
   **Consensus** — <for [majority]/[contested], the dissent or both sides>
 
   **Verification** — <Phase-4 outcome: CONFIRMED | REFUTED | INDETERMINATE plus
-  the evidence; mandatory on every Critical, every High and every contested
-  finding — leave it only for findings outside Phase-4 scope>
+  the evidence. MANDATORY on every Critical, every High and every [contested]
+  finding: write "PENDING (Phase 4)" now and the host replaces it with the
+  verifier's verdict; validate-report.ps1 rejects a report whose in-scope block
+  lacks this line. Omit it only for findings outside Phase-4 scope>
 
 Leave a blank line between every block. Keep any severity tally as a markdown
 table. Render a long tail of minor (Low) findings as a bulleted list — one line

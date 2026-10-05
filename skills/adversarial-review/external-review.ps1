@@ -11,8 +11,8 @@
     and write tools are denied, built-in MCP servers are disabled, and
     repository custom instructions are not loaded. Inputs are copied into a
     throwaway scratch directory and file access is whitelisted (--add-dir) to
-    that directory alone, so repo paths supplied via -ContextPath never expose
-    their parent directories. The agent can read those inputs and emit text --
+    that directory alone, so a repo file passed via -ContextPath never exposes
+    its parent directory. The agent can read those inputs and emit text --
     nothing is executed and nothing is modified.
 
     The Copilot CLI rejects plain-text files as --attachment ("native
@@ -44,8 +44,10 @@
     findings in their own right.
 
 .PARAMETER Model
-    Copilot model id. Must be a non-Claude model so the review adds genuine
-    cross-vendor diversity to the panel.
+    Copilot model id. Mandatory, no default -- resolve one through
+    model-registry rather than leaning on a pinned id here. Must be a
+    non-Claude model so the review adds genuine cross-vendor diversity to the
+    panel.
 
 .OUTPUTS
     The model's review text on stdout. Non-zero exit code on failure.
@@ -69,7 +71,9 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gpt-5.4'
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $Model
 )
 
 if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) {
@@ -100,37 +104,35 @@ $contextFiles = foreach ($path in $contextPaths) {
     (Resolve-Path -LiteralPath $path).Path
 }
 
-# Run from a throwaway working directory for cwd hygiene. The inputs are COPIED
-# into it and that single dir is the only --add-dir: whitelisting each input's
-# parent directory would hand this repo-blind wrapper repository directories
-# whenever -ContextPath points at repo files.
+# Run from a throwaway scratch dir, and COPY the inputs into it: that one dir is the only
+# --add-dir. Whitelisting each input's parent directory handed this repo-blind wrapper
+# the repository whenever -ContextPath named a repo file.
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('adv-review-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 
 try {
+$i = 0
+$reviewFiles = foreach ($f in $reviewFiles) {
+    $dest = Join-Path $scratch ('review-{0:D2}-{1}' -f $i, (Split-Path $f -Leaf))
+    Copy-Item -LiteralPath $f -Destination $dest -Force -ErrorAction Stop
+    $i++
+    $dest
+}
+if ($contextFiles) {
+    $ctxDir = Join-Path $scratch 'context'
+    New-Item -ItemType Directory -Path $ctxDir -Force | Out-Null
     $i = 0
-    $copiedReview = foreach ($f in $reviewFiles) {
-        $dest = Join-Path $scratch ('review-{0:D2}-{1}' -f $i, (Split-Path $f -Leaf))
+    $contextFiles = foreach ($f in $contextFiles) {
+        $dest = Join-Path $ctxDir ('{0:D2}_{1}' -f $i, (Split-Path $f -Leaf))
         Copy-Item -LiteralPath $f -Destination $dest -Force -ErrorAction Stop
         $i++
         $dest
     }
-    $copiedContext = @()
-    if ($contextFiles) {
-        $ctxDir = Join-Path $scratch 'context'
-        New-Item -ItemType Directory -Path $ctxDir -Force | Out-Null
-        $i = 0
-        $copiedContext = foreach ($f in $contextFiles) {
-            $dest = Join-Path $ctxDir ('{0:D2}_{1}' -f $i, (Split-Path $f -Leaf))
-            Copy-Item -LiteralPath $f -Destination $dest -Force -ErrorAction Stop
-            $i++
-            $dest
-        }
-    }
+}
 
-    # The model reads the inputs itself; spell out which files and forbid wandering.
-    $reviewList = ($copiedReview | ForEach-Object { "- $_" }) -join "`n"
-    $prompt = @"
+# The model reads the inputs itself; spell out which files and forbid wandering.
+$reviewList = ($reviewFiles | ForEach-Object { "- $_" }) -join "`n"
+$prompt = @"
 $Instruction
 
 --- FILES TO REVIEW ---
@@ -140,9 +142,9 @@ are the material under review.
 $reviewList
 "@
 
-    if ($copiedContext) {
-        $contextList = ($copiedContext | ForEach-Object { "- $_" }) -join "`n"
-        $prompt += @"
+if ($contextFiles) {
+    $contextList = ($contextFiles | ForEach-Object { "- $_" }) -join "`n"
+    $prompt += @"
 
 
 --- REPO CONTEXT (read-only background, NOT under review) ---
@@ -153,28 +155,28 @@ permit null, is the type reachable. Do NOT raise findings against these files;
 they are background, not the change under review.
 $contextList
 "@
-    }
+}
 
-    # -p                  headless, single-shot run (exits when done)
-    # --allow-all-tools   required by the CLI for non-interactive mode...
-    # --deny-tool         ...but shell + write are denied (deny takes precedence),
-    #                     leaving a read-only analysis call with no side effects.
-    # --disable-builtin-mcps / --no-custom-instructions  close the repo/MCP
-    #                     side-channels so the review depends only on the inputs.
-    $copilotArgs = @(
-        '-p', $prompt
-        '--model', $Model
-        '-C', $scratch
-        '--allow-all-tools'
-        '--deny-tool=shell'
-        '--deny-tool=write'
-        '--disable-builtin-mcps'
-        '--no-custom-instructions'
-        '--no-ask-user'
-        '--no-color'
-        '--silent'
-        '--add-dir', $scratch
-    )
+# -p                 headless, single-shot run (exits when done)
+# --allow-all-tools   required by the CLI for non-interactive mode...
+# --deny-tool         ...but shell + write are denied (deny takes precedence),
+#                     leaving a read-only analysis call with no side effects.
+# --disable-builtin-mcps / --no-custom-instructions  close the repo/MCP
+#                     side-channels so the review depends only on the inputs.
+$copilotArgs = @(
+    '-p', $prompt
+    '--model', $Model
+    '-C', $scratch
+    '--allow-all-tools'
+    '--deny-tool=shell'
+    '--deny-tool=write'
+    '--disable-builtin-mcps'
+    '--no-custom-instructions'
+    '--no-ask-user'
+    '--no-color'
+    '--silent'
+    '--add-dir', $scratch
+)
 
     $captured = (& copilot @copilotArgs 2>&1 | Out-String)
     $exitCode = $LASTEXITCODE

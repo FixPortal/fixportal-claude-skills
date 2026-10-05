@@ -1,3 +1,4 @@
+#requires -Version 7
 $ErrorActionPreference = 'Stop'
 
 $skillDir = Split-Path $PSScriptRoot -Parent
@@ -17,15 +18,39 @@ $manifest = Get-Content (Join-Path $skillDir 'reviewers.json') -Raw | ConvertFro
 $google = $manifest.reviewers | Where-Object id -eq 'G'
 if ($manifest.wrappers.agy -ne 'agy-review.ps1') { throw 'manifest must map agy to agy-review.ps1' }
 if ($google.wrapper -ne 'agy') { throw 'reviewer G must use the agy wrapper' }
-if ($google.model -ne 'gemini-3.1-pro-high') { throw 'reviewer G must pin gemini-3.1-pro-high' }
+
+# The seat is a CONSTRAINT, not a pinned id: a new Gemini is picked up by triaging it
+# in the registry. What must not drift is that the constraint still lands on something
+# agy accepts. Assert the contract (google + frontier + cli) and that it resolves at
+# all -- an empty resolution is the silent-vendor-drop shape, and the driver dies on it.
+# Public mirror: the model-registry sibling is not published here, so the seat carries a
+# literal `model` BESIDE its `select` as the registry-absent fallback (run-review.ps1
+# Resolve-SeatModel). A literal without `select` would still be a pin, so require select.
+if (-not $google.select) { throw 'reviewer G must resolve through the registry (select), not only pin a literal model id' }
+if ($google.select.vendor -ne 'google') { throw 'reviewer G must select the google vendor' }
+if ($google.select.tier -ne 'frontier') { throw 'reviewer G must select the frontier tier' }
+
+$resolveScript = Join-Path (Split-Path $skillDir -Parent) 'model-registry' 'resolve.py'
+if (Test-Path -LiteralPath $resolveScript) {
+    $resolved = @(& python $resolveScript `
+        --tier $google.select.tier --vendor $google.select.vendor --channel ($google.select.channel ?? 'cli')) |
+        Where-Object { $_ -and $_ -notmatch '^note:' } | Select-Object -First 1
+} else {
+    Write-Host "SKIP: model-registry not present in this tree - checking reviewer G's literal fallback instead of resolving its constraint"
+    $resolved = $google.model
+}
+if (-not $resolved) { throw "reviewer G's constraint resolves to no model; the panel would run a vendor short" }
+# agy fuses reasoning effort into the selector, so the resolved id must carry a suffix
+# the wrapper can read an effort back off. One without it would silently take the
+# wrapper's own default instead of the seat's declared effort.
+if ($resolved -notmatch '-(low|medium|high)$') {
+    throw "reviewer G resolved to '$resolved', which carries no agy effort suffix"
+}
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('agy-review-test-' + [guid]::NewGuid().ToString('N'))
 $fakeBin = Join-Path $root 'bin'
 New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
 
-# Capture BEFORE try: a throw during fixture setup must not leave the finally
-# assigning $null back into $env:PATH.
-$oldPath = $env:PATH
 try {
     $brief = Join-Path $root 'brief.txt'
     $diff = Join-Path $root 'diff.txt'
@@ -49,6 +74,7 @@ try {
         "'FAKE REVIEW'"
     )
 
+    $oldPath = $env:PATH
     $env:PATH = $fakeBin + [IO.Path]::PathSeparator + $oldPath
     $resolvedAgy = & pwsh -NoProfile -Command '(Get-Command agy).Source'
     if ($resolvedAgy -ne (Join-Path $fakeBin 'agy.ps1')) { throw "test double not resolved: $resolvedAgy" }
@@ -81,7 +107,7 @@ try {
     # Capture the cited path by anchoring on the prompt phrase and matching NON-GREEDILY to
     # the filename. A character class that cannot cross a space (`[^ ]*`, or `\S+`) stops at
     # the first one, so on any host whose temp directory contains a space -- an ordinary
-    # `<user-profile>\AppData\Local\Temp\...` on a runner with a real user name -- the
+    # `<profile>\Jane Doe\AppData\Local\Temp\...` on a runner with a real user name -- the
     # match fails against a wrapper that is behaving correctly. Same class of false failure
     # as the host-specific assertion below, reached by a different route.
     if ($argsText -notmatch 'Read the brief at (?<brief>.+?brief\.txt)') {
@@ -104,27 +130,6 @@ try {
     $usageJson = Get-Content $usage -Raw | ConvertFrom-Json
     if ($usageJson.inputTokens -ne 0 -or $usageJson.outputTokens -ne 0 -or $usageJson.costUsd -ne 0) {
         throw 'agy usage sidecar must report unknown usage as zero'
-    }
-
-    # -Effort must drive --effort when the model name carries no effort suffix:
-    # the case above lets the -high suffix win, so it never exercises the mapping.
-    & pwsh -NoProfile -File $wrapper -InstructionPath $brief -DiffPath $diff `
-        -ContextPath "$context1;$context2" -Model 'gemini-3.1-pro' -Effort low `
-        -OutPath $out
-    if ($LASTEXITCODE -ne 0) { throw "wrapper exited $LASTEXITCODE on the unsuffixed-model run" }
-    $argsText = Get-Content $capture -Raw
-    if ($argsText -notlike '*--effort low*') { throw "-Effort low was not passed through for an unsuffixed model: $argsText" }
-
-    # The panel-contract values xhigh/max must FOLD to --effort high (the agy CLI
-    # accepts only low/medium/high); passing them through would die at the CLI.
-    foreach ($folded in @('xhigh', 'max')) {
-        & pwsh -NoProfile -File $wrapper -InstructionPath $brief -DiffPath $diff `
-            -ContextPath "$context1;$context2" -Model 'gemini-3.1-pro' -Effort $folded `
-            -OutPath $out
-        if ($LASTEXITCODE -ne 0) { throw "wrapper exited $LASTEXITCODE on -Effort $folded" }
-        $argsText = Get-Content $capture -Raw
-        if ($argsText -notlike '*--effort high*') { throw "-Effort $folded must fold to '--effort high': $argsText" }
-        if ($argsText -like "*--effort $folded*") { throw "-Effort $folded leaked through to the CLI unchanged: $argsText" }
     }
 
     'agy-review.ps1 OK'

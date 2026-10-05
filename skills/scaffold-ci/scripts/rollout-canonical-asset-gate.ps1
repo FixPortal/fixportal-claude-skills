@@ -35,10 +35,10 @@ writing. This script never touches git state: no branch, commit, push, or PR -- 
 caller drives those, one repo at a time.
 
 .EXAMPLE
-pwsh -File scaffold-ci/scripts/rollout-canonical-asset-gate.ps1 -RepoRoot <workdir>\your-repo
+pwsh -File scaffold-ci/scripts/rollout-canonical-asset-gate.ps1 -RepoRoot "<repo>"
 
 .EXAMPLE
-pwsh -File scaffold-ci/scripts/rollout-canonical-asset-gate.ps1 -RepoRoot <workdir>\your-mirror -CanonicalRepository YourOrg/your-mirror
+pwsh -File scaffold-ci/scripts/rollout-canonical-asset-gate.ps1 -RepoRoot "<repo>" -CanonicalRepository YourOrg/your-mirror
 #>
 [CmdletBinding()]
 param(

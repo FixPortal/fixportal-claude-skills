@@ -1,5 +1,23 @@
 # Document templates
 
+## Contents
+
+- [Doc-type sub-templates](#doc-type-sub-templates)
+- [README (repo root or NuGet package)](#readme-repo-root-or-nuget-package)
+- [Quick start          ← install + minimal working example, copy-pasteable](#quick-start-----------install--minimal-working-example-copy-pasteable)
+- [Configuration        ← all keys / options in a table](#configuration---------all-keys--options-in-a-table)
+- [API reference        ← if a library; skip for apps](#api-reference---------if-a-library-skip-for-apps)
+- [Compatibility        ← TFM / runtime version matrix (NuGet packages always)](#compatibility---------tfm--runtime-version-matrix-nuget-packages-always)
+- [Troubleshooting      ← symptom → cause table (§4 shape)](#troubleshooting-------symptom--cause-table-4-shape)
+- [Contributing         ← PR conventions, test command, branch policy](#contributing----------pr-conventions-test-command-branch-policy)
+- [Appendix             ← install commands, package IDs, feed URLs (untruncated)](#appendix--------------install-commands-package-ids-feed-urls-untruncated)
+- [ADR (Architecture Decision Record)](#adr-architecture-decision-record)
+- [Context](#context)
+- [Decision](#decision)
+- [Consequences](#consequences)
+- [Dual-destination handling (repo + vault)](#dual-destination-handling-repo--vault)
+
+
 Read the destination-specific template before authoring a README, ADR, or dual repo/vault document.
 
 ## Doc-type sub-templates

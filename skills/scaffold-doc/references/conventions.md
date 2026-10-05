@@ -1,8 +1,20 @@
 # Markdown house conventions
 
+## Contents
+
+- [The house conventions](#the-house-conventions)
+- [1. YAML frontmatter — not a bold header block](#1-yaml-frontmatter--not-a-bold-header-block)
+- [2. Orientation blockquote and Obsidian callouts](#2-orientation-blockquote-and-obsidian-callouts)
+- [3. Load-bearing mermaid — diagrams that carry information tables can't](#3-load-bearing-mermaid--diagrams-that-carry-information-tables-cant)
+- [4. Symptom→cause section — name the confusion, then explain it](#4-symptomcause-section--name-the-confusion-then-explain-it)
+- [5. Appendix of raw references — reproducible, untruncated](#5-appendix-of-raw-references--reproducible-untruncated)
+- [6. Source line wrapping — set by destination, not by habit](#6-source-line-wrapping--set-by-destination-not-by-habit)
+- [Documentation page width](#documentation-page-width)
+
+
 Read this for frontmatter, orientation, callouts, diagrams, symptom/cause teaching, and reproducible appendices.
 
-## The five non-obvious conventions
+## The house conventions
 
 These are the patterns baseline drafts consistently miss. Get these right and the rest follows.
 
@@ -20,7 +32,7 @@ date: 2026-05-30
 author: <actual human and/or runtime>
 status: living document
 last-updated: 2026-06-20
-tags: [audit, azure, acme]
+tags: [audit, azure, example-corp]
 ---
 ```
 
@@ -81,3 +93,33 @@ When the document exists because something is surprising or wrong, give that con
 ### 5. Appendix of raw references — reproducible, untruncated
 
 Close with an appendix carrying the full, copy-pasteable identifiers and exact commands or API endpoints used. Never truncate an ID (`1234abcd-…` is useless to the next person). For READMEs the appendix carries install commands and package IDs instead of internal infra IDs.
+
+### 6. Source line wrapping — set by destination, not by habit
+
+Obsidian vault documents are never hard-wrapped: write one paragraph per line
+and let Obsidian soft-wrap to the pane width. Its source and live-preview modes
+do not reflow hard-wrapped prose, so a wrapped note renders as a narrow ragged
+column with the rest of the pane left empty, which is where the author reads and
+edits it.
+
+Markdown committed to a repository — README, ADR, contributor notes, these
+reference files — stays hard-wrapped at roughly 78 columns, because it is read
+in editors and reviewed as diffs, where a one-line paragraph turns every small
+edit into a whole-paragraph change.
+
+This governs the bytes in the file. *Documentation page width* below governs a
+rendered layout; the two are independent, and neither implies the other.
+
+## Documentation page width
+
+When the deliverable includes a rendered documentation layout, let the article,
+index, tables and examples use the available main-column width. Do not constrain
+the whole document to a narrow vertical strip with `65ch`, `70ch`,
+`max-w-prose`, `max-w-3xl`, or another nested article cap. A renderer whose
+layout you do not control, such as GitHub, needs no CSS workaround.
+
+Keep navigation rails compact. Collapse or move the contents rail before it
+squeezes the article on smaller screens. On phones, keep navigation accessible,
+wrap prose, and scroll wide tables and code inside their own containers rather
+than the whole page. Check the rendered result at phone, laptop and wide desktop
+widths. An explicit request for a narrow editorial layout can override this default.

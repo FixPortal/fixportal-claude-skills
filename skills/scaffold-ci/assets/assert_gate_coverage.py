@@ -1949,7 +1949,8 @@ def run_payload_indexes(lines):
     the workflow never executes as a step. That is a false RED on a correct workflow --
     the direction that gets a working control deleted to make CI green.
 
-    Only BLOCK-SCALAR payloads are indexed. A single-line `run: foo` carries its command
+    Block-scalar and plain multiline STEP payloads are indexed. A defaults.run mapping
+    remains YAML metadata. A single-line `run: foo` carries its command
     on the `run:` line itself, which starts with the key and so cannot match LOCAL_USES.
     The value test reads the COMMENT-STRIPPED value, exactly as the run-body loops in
     delegated_run_bodies and gated_run_bodies do -- `run: | # build log` is a real
@@ -2756,7 +2757,7 @@ def changes_directory(body):
     Which shell runs a body is not reliably known here -- a step with no `shell:` key
     runs bash off Windows and pwsh on it -- and the disciplines differ exactly where it
     matters: pwsh does not treat `\"` as an escape, so bash masking never closes
-    `Write-Host "cache: C:\" ; Set-Location sub` and the real directory change after the
+    `Write-Host "cache: scratch\" ; Set-Location sub` and the real directory change after the
     string stays masked. Testing both can only ADD a detection; a wrong positive costs a
     refused workflow while a wrong negative costs an untiered gate script, and those are
     not symmetric.

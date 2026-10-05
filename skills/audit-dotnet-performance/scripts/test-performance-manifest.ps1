@@ -7,7 +7,9 @@ param(
     [ValidateSet('Publication', 'Finding')]
     [string] $Mode = 'Publication',
 
-    [string] $FindingId
+    [string] $FindingId,
+
+    [string] $ReportPath
 )
 
 Set-StrictMode -Version Latest
@@ -63,6 +65,43 @@ function Require-IsoTimestamp([System.Text.Json.JsonElement] $Audit, [string] $N
     $parsed
 }
 
+function Test-Report {
+    param([string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { Fail "Report '$Path' does not exist." }
+    $text = Get-Content -LiteralPath $Path -Raw
+    $expectedHeadings = @(
+        '## 1. Orientation and executive summary',
+        '## 2. Repository, scope, and authority boundaries',
+        '## 3. Workload contracts',
+        '## 4. Environment and reproducibility ledger',
+        '## 5. Tool and source ledger',
+        '## 6. Baseline results',
+        '## 7. Attributed hotspot map',
+        '## 8. Costed findings',
+        '## 9. Rejected and inconclusive experiments',
+        '## 10. Recommended experiment order',
+        '## 11. Unassessed dimensions and fidelity gaps',
+        '## 12. Repository-state preservation evidence',
+        '## 13. Artifact ledger',
+        '## 14. Remediation manifest'
+    )
+    $actualHeadings = @([regex]::Matches($text, '(?m)^## [^\r\n]+') | ForEach-Object Value)
+    if ($actualHeadings.Count -ne 14 -or ($actualHeadings -join "`n") -cne ($expectedHeadings -join "`n")) {
+        Fail "Report must contain the 14 required headings exactly once and in order."
+    }
+
+    $skillRoot = Split-Path $PSScriptRoot -Parent
+    $references = [regex]::Matches($text, '`(?<path>(?:audit-dotnet-performance[\\/])?(?:scripts|references)[\\/][^`\s]+\.(?:ps1|md))`')
+    foreach ($reference in $references) {
+        $relative = $reference.Groups['path'].Value -replace '^audit-dotnet-performance[\\/]', ''
+        $resolvedReference = Join-Path $skillRoot ($relative -replace '[\\/]', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $resolvedReference -PathType Leaf)) {
+            Fail "Referenced skill path '$relative' does not exist."
+        }
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     Fail "Manifest '$Path' does not exist."
 }
@@ -79,7 +118,7 @@ catch {
 function Invoke-ManifestValidation {
 if ($null -eq $manifest -or $manifest -is [array]) { Fail 'Manifest must be a JSON object.' }
 $schemaVersion = Require-Property $manifest 'schemaVersion' 'manifest'
-if ($schemaVersion -isnot [long] -or $schemaVersion -ne 1) { Fail 'schemaVersion must be the number 1.' }
+if ($schemaVersion -isnot [long] -or $schemaVersion -notin 1, 2) { Fail 'schemaVersion must be the number 1 or 2.' }
 
 $repository = Require-Property $manifest 'repository' 'manifest'
 if ($repository -isnot [pscustomobject]) { Fail 'repository must be an object.' }
@@ -94,8 +133,90 @@ if ($auditElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) { Fail
 $startedUtc = Require-IsoTimestamp $auditElement 'startedUtc'
 $completedUtc = Require-IsoTimestamp $auditElement 'completedUtc'
 if ($completedUtc -lt $startedUtc) { Fail 'audit.completedUtc must be greater than or equal to audit.startedUtc.' }
-if ((Require-Property $audit 'targetStateUnchanged' 'audit') -isnot [bool] -or -not $audit.targetStateUnchanged) {
-    Fail 'audit.targetStateUnchanged must be true.'
+# `targetStateUnchanged` is a REPOSITORY-mode assertion and cannot exist in artifact mode:
+# step 1's captures are repository-mode only, so there is no baseline to compare against
+# and SKILL.md tells an artifact-mode run not to assert it. Requiring it unconditionally
+# made that instruction unpublishable - the operator either improvised a baseline or
+# published a preservation proof that was never constructed. `audit.mode` is what tells
+# the two apart, and it is required precisely so absence cannot be read as either one.
+# (CodeRabbit, PR #135.)
+$auditMode = if ($audit.PSObject.Properties.Name -contains 'mode') { [string]$audit.mode } else { 'repository' }
+if (@('repository', 'artifact') -cnotcontains $auditMode) {
+    Fail "audit.mode '$auditMode' is invalid; expected 'repository' or 'artifact'."
+}
+if ($auditMode -eq 'repository') {
+    $unchanged = Require-Property $audit 'targetStateUnchanged' 'audit'
+    if ($unchanged -isnot [bool]) { Fail 'audit.targetStateUnchanged must be boolean.' }
+    if (-not $unchanged) {
+        $blocked = [string]$audit.depth -eq 'Blocked'
+        $failure = $audit.preservationFailure
+        Require-Text $failure 'audit.preservationFailure'
+        $findingList = $manifest.findings
+        if (-not $blocked -or [string]::IsNullOrWhiteSpace($failure) -or $findingList -isnot [array] -or $findingList.Count -ne 0) {
+            Fail 'A failed preservation proof requires depth Blocked, a non-empty preservationFailure, and no findings.'
+        }
+    }
+}
+elseif ($audit.PSObject.Properties.Name -contains 'targetStateUnchanged') {
+    Fail 'audit.targetStateUnchanged must be absent in artifact mode: there is no captured baseline to compare against, so any value asserts a proof that was never constructed.'
+}
+
+if ($schemaVersion -eq 2) {
+    $depth = Require-Property $audit 'depth' 'audit'
+    Require-Text $depth 'audit.depth'
+    if (@('Measured', 'Characterized', 'Surveyed', 'Blocked') -cnotcontains $depth) { Fail "audit.depth '$depth' is invalid." }
+
+    $workloads = Require-Property $manifest 'workloads' 'manifest'
+    if ($workloads -isnot [array] -or $workloads.Count -eq 0) { Fail 'workloads must be a non-empty array.' }
+    foreach ($workloadOutcome in $workloads) {
+        if ($workloadOutcome -isnot [pscustomobject]) { Fail 'Each workload outcome must be an object.' }
+        Require-Text (Require-Property $workloadOutcome 'id' 'workload') 'workload.id'
+        $status = Require-Property $workloadOutcome 'status' 'workload'
+        Require-Text $status 'workload.status'
+        if (@('Completed', 'Unstable', 'Unavailable', 'Blocked', 'Not run', 'Not required') -cnotcontains $status) { Fail "workload.status '$status' is invalid." }
+        $metrics = Require-TextArray (Require-Property $workloadOutcome 'representativeMetrics' 'workload') 'workload.representativeMetrics' $true
+        if ($status -eq 'Completed' -and $metrics.Count -eq 0) { Fail 'workload.representativeMetrics must be non-empty when workload.status is Completed.' }
+        $stability = Require-Property $workloadOutcome 'stability' 'workload'
+        Require-Text $stability 'workload.stability'
+        if (@('Stable', 'Unstable', 'Mixed', 'Not assessed', 'Not required') -cnotcontains $stability) { Fail "workload.stability '$stability' is invalid." }
+        $disposition = Require-Property $workloadOutcome 'harnessDisposition' 'workload'
+        Require-Text $disposition 'workload.harnessDisposition'
+        if (@('Existing', 'Promote', 'Retained external', 'Not needed', 'Rejected') -cnotcontains $disposition) { Fail "workload.harnessDisposition '$disposition' is invalid." }
+        if ($disposition -eq 'Promote') {
+            $promotion = Require-Object (Require-Property $workloadOutcome 'harnessPromotion' 'workload') 'workload.harnessPromotion'
+            Require-Text (Require-Property $promotion 'retainedSource' 'workload.harnessPromotion') 'workload.harnessPromotion.retainedSource'
+            Require-TextArray (Require-Property $promotion 'cases' 'workload.harnessPromotion') 'workload.harnessPromotion.cases' | Out-Null
+            Require-TextArray (Require-Property $promotion 'fixtureDependencies' 'workload.harnessPromotion') 'workload.harnessPromotion.fixtureDependencies' $true | Out-Null
+            Require-TextArray (Require-Property $promotion 'stabilityCaveats' 'workload.harnessPromotion') 'workload.harnessPromotion.stabilityCaveats' $true | Out-Null
+            Require-Text (Require-Property $promotion 'proposedDestination' 'workload.harnessPromotion') 'workload.harnessPromotion.proposedDestination'
+            Require-Text (Require-Property $promotion 'sourceChangeWorkflow' 'workload.harnessPromotion') 'workload.harnessPromotion.sourceChangeWorkflow'
+        }
+        else {
+            # Every disposition OTHER than Promote states its basis, and until now there
+            # was nowhere in the schema to put one: `Promote` was the only answer carrying
+            # a mandatory object, which made the three cheap exits - `Not needed`,
+            # `Existing`, `Retained external` - the way to avoid filling anything in while
+            # still asserting something about the world. report-contract.md says what each
+            # must say. (CodeRabbit, PR #135.)
+            Require-Text (Require-Property $workloadOutcome 'harnessDispositionBasis' 'workload') 'workload.harnessDispositionBasis'
+        }
+        # Outside the disposition branch on purpose: nested under the non-Promote arm, a
+        # Promote workload skipped both checks, so status Completed with stability
+        # Not required - and status Not required with a Promote disposition - validated.
+        # (Gitar, PR #281.)
+        if ($status -ceq 'Not required') {
+            if ($metrics.Count -ne 0 -or $stability -cne 'Not required' -or $disposition -cne 'Not needed' -or
+                [string]$workloadOutcome.harnessDispositionBasis -cnotmatch '^No benchmark required: .+') {
+                Fail 'A Not required workload must have no metrics, Not required stability, Not needed harness disposition, and a No benchmark required basis.'
+            }
+            if ($workloadOutcome.PSObject.Properties.Name -contains 'harnessPromotion') {
+                Fail 'A Not required workload cannot request harness promotion.'
+            }
+        }
+        elseif ($stability -ceq 'Not required') {
+            Fail 'workload.stability may be Not required only when workload.status is Not required.'
+        }
+    }
 }
 
 $findings = Require-Property $manifest 'findings' 'manifest'
@@ -160,6 +281,8 @@ if ($Mode -eq 'Finding') {
     [pscustomobject]@{ repository = $repository; finding = $finding[0] } | ConvertTo-Json -Depth 8 -Compress
     exit 0
 }
+
+if ($ReportPath) { Test-Report -Path $ReportPath }
 
 [pscustomobject]@{ valid = $true } | ConvertTo-Json -Compress
 }

@@ -30,19 +30,26 @@ if ($firstRunBranch -match '(?is)missing vault log IS a stop') {
     throw 'azure-cost-sweep must not stop a first run merely because no prior vault log exists'
 }
 
-$subscriptionCommand = 'az account list --all --query "[?state==''Enabled'' && id!=null && id!=''''].id" -o tsv'
+$subscriptionCommand = 'az account list --all --query "[?state==''Enabled'' && id!=null && id!='''' && name!=''N/A(tenant level account)''].id" -o tsv'
 if ($runbook -notmatch [regex]::Escape($subscriptionCommand)) {
-    throw 'azure-cost-sweep must explicitly select only enabled subscriptions with non-empty IDs'
+    throw 'azure-cost-sweep must select enabled subscriptions by non-empty ID AND by name, not by ID alone'
 }
 
+# The pseudo-account fixture is deliberately built BOTH WAYS. Hard-coding `id = $null`
+# alone proved the filter works on the ASSUMED shape and was no evidence the shape is real
+# - the circularity the finding names. The name test is correct under both shapes, so the
+# second fixture is the one that would have caught a tenant entry carrying an id.
 $accounts = @(
-    [pscustomobject]@{ id = 'enabled-subscription'; state = 'Enabled' },
-    [pscustomobject]@{ id = $null; state = 'Enabled'; tenantId = 'tenant-pseudo-account' },
-    [pscustomobject]@{ id = 'disabled-subscription'; state = 'Disabled' }
+    [pscustomobject]@{ id = 'enabled-subscription'; name = 'Real Subscription'; state = 'Enabled' },
+    [pscustomobject]@{ id = $null; name = 'N/A(tenant level account)'; state = 'Enabled'; tenantId = 'tenant-pseudo-account' },
+    [pscustomobject]@{ id = 'tenant-guid'; name = 'N/A(tenant level account)'; state = 'Enabled'; tenantId = 'tenant-guid' },
+    [pscustomobject]@{ id = 'disabled-subscription'; name = 'Disabled Subscription'; state = 'Disabled' }
 )
-$selectedIds = @($accounts | Where-Object { $_.state -eq 'Enabled' -and $null -ne $_.id -and $_.id -ne '' } | ForEach-Object id)
+$selectedIds = @($accounts | Where-Object {
+    $_.state -eq 'Enabled' -and $null -ne $_.id -and $_.id -ne '' -and $_.name -ne 'N/A(tenant level account)'
+} | ForEach-Object id)
 if (@($selectedIds).Count -ne 1 -or $selectedIds[0] -ne 'enabled-subscription') {
-    throw 'tenant pseudo-account or disabled subscription passed the enabled-subscription filter'
+    throw "tenant pseudo-account or disabled subscription passed the enabled-subscription filter: $($selectedIds -join ', ')"
 }
 
 $timestampedOutput = '<YYYY-MM-DDTHH-mm-ss.fffffffZ>.md'

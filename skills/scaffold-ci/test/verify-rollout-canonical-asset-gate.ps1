@@ -233,7 +233,7 @@ try {
     # The coverage probe read the WHOLE policy text, so a `.github/scripts/**` glob sitting
     # in `low` counted as covering the verifier and the rollout omitted the named entry
     # from `high` -- then failed its own conformance proof with all four artefacts already
-    # written. Coverage is decided inside the high array. (CodeRabbit, public mirror PR #124.)
+    # written. Coverage is decided inside the high array.
     $lowGlob = New-FixtureRepo 'low-glob' -PolicyOverride ('{' + "`n" + '  "version": 1,' + "`n" + '  "high": [' + "`n" + '    ".claude/review-policy.json",' + "`n" + '    ".github/workflows/ci.yml",' + "`n" + '    ".github/scripts/assert_gate_coverage.py"' + "`n" + '  ],' + "`n" + '  "low": [' + "`n" + '    ".github/scripts/**"' + "`n" + '  ]' + "`n" + '}' + "`n")
     $r = Invoke-Rollout $lowGlob
     if ($r.Code -ne 0) { throw "a glob only in low must not count as high coverage; got $($r.Code)`n$($r.Output)" }

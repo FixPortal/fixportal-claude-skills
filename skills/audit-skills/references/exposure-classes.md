@@ -10,12 +10,12 @@ Grade exposure on the defect scale, from what the skill body actually contains:
 
 | Grade | Class | Examples |
 |---|---|---|
-| 🟥 | Credential material | API key, PAT, connection string, private key, `AccountKey=` |
-| 🟧 | Identity and topology | personal email, machine-local absolute paths, private repo slugs, deployment hostnames, vault paths |
-| 🟨 | Attribution | org or product name, bare drive letters, generic internal vocabulary |
-| 🟩 | Generic | nothing beyond public technical content |
+| Broken | Credential material | API key, PAT, connection string, private key, `AccountKey=` |
+| Reliability | Identity and topology | personal email, machine-local absolute paths, private repo slugs, deployment hostnames, vault paths |
+| Polish | Attribution | org or product name, bare drive letters, generic internal vocabulary |
+| Good | Generic | nothing beyond public technical content |
 
-A 🟨 is not automatically a defect. Deliberate attribution (a CV-linked author
+A Polish is not automatically a defect. Deliberate attribution (a CV-linked author
 name, the `owner:` ownership marker) is a decision, not rot — record it as a
 finding only when the mounting runtime is third-party and the user has not
 accepted it.
@@ -57,7 +57,7 @@ When the audit itself runs through a third-party vendor, fetching the sample IS
 the exposure the finding describes: grade from the store's documented contents
 instead and record `sample not taken (third-party runtime)` in the evidence.
 
-`generic` is a grade, not a class: a clean skill produces a 🟩 and no finding, so
+`generic` is a grade, not a class: a clean skill produces a Good and no finding, so
 it never appears in the enum.
 
 ## Accepted disclosures
@@ -72,12 +72,12 @@ Typical entries:
 - **Skills kept first-party only**, because they need real identifiers to work. Keep them out
   of third-party homes, and back the decision with a CI gate over the skill tree whose
   per-file allowlist names those skills (for example a `verify-private-identifiers.ps1`). One
-  of them reappearing in a third-party home is a 🟧 reliability finding, not an exposure grade.
-- **The ownership marker** (`owner: <your-org>`). A skill whose only hit is the marker grades 🟩.
+  of them reappearing in a third-party home is a Reliability finding, not an exposure grade.
+- **The ownership marker** (`owner: <your-org>`). A skill whose only hit is the marker grades Good.
 
 ## Scope gate
 
 Exposure only bites where a skill is actually mounted. Grade it against the
 `homes` the worker found, and say which of those homes is third-party. A skill
-mounted only in first-party runtimes is 🟩 for exposure regardless of content,
+mounted only in first-party runtimes is Good for exposure regardless of content,
 recorded with that reason.

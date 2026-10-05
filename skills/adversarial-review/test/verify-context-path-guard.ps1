@@ -4,7 +4,7 @@
     run-review.ps1 must normalize and validate -ContextPath BEFORE spawning reviewers.
 
 .DESCRIPTION
-    Two hazards, both observed in the field (your-repo SPA review,
+    Two hazards, both observed in the field (example-repo SPA review,
     run 20260816T153354Z), both of which cost a full parallel round:
 
       1. `pwsh -File` passes arguments as strings, so an inline multi-element array
@@ -53,13 +53,32 @@ try {
     Set-Content -LiteralPath $ctxB -Value '# context b' -Encoding utf8
     $missing = Join-Path $sandbox 'ctx-nope.md'
 
+    # A PINNED manifest, not the live reviewers.json: every live seat resolves through
+    # resolve.py against the live registry, so a drifted tier or a missing python killed
+    # the run BEFORE this guard and every negative assertion below passed vacuously.
+    $manifest = Join-Path $PSScriptRoot 'fixtures' 'pinned-reviewers.json'
+
     function Invoke-Spine([string] $contextArg) {
         $work = Join-Path $sandbox ("wd-" + [Guid]::NewGuid().ToString('N'))
         # -Target with an explicit range keeps this tree-to-tree; the sandbox is clean anyway.
         $out = & pwsh -NoProfile -File $spine `
-            -Target 'HEAD~1..HEAD' -RepoPath $sandbox -WorkDir $work -ContextPath $contextArg 2>&1 |
+            -Target 'HEAD~1..HEAD' -RepoPath $sandbox -ManifestPath $manifest -WorkDir $work `
+            -ContextPath $contextArg 2>&1 |
             Out-String
         return $out
+    }
+
+    # "The guard did not fire" is not the same as "the guard passed" - a run that died
+    # before reaching it satisfies the first and proves nothing. No WorkDir here carries
+    # preflight.json, so a run that gets PAST the ContextPath guard always dies at the
+    # pre-flight gate, several hundred lines later. That message is the positive cases'
+    # proof of arrival.
+    $reachedMarker = 'No preflight.json found in the run root'
+    function Check-ReachedGuard([string] $name, [string] $out) {
+        Check "$name (reached the guard at all)" `
+            ($out -match [regex]::Escape($reachedMarker)) `
+            ("run never reached the pre-flight gate, so the ContextPath guard was never " +
+             "exercised: $($out.Substring(0, [Math]::Min(300, $out.Length)))")
     }
 
     # 1. Absent context file: the guard must name it and stop.
@@ -77,27 +96,30 @@ try {
     Check 'comma-joined context paths are recovered, not propagated' `
         ($out -notmatch 'Context file not found') `
         "the guard rejected a comma-joined pair whose members both exist: $($out.Substring(0, [Math]::Min(300, $out.Length)))"
+    Check-ReachedGuard 'comma-joined context paths' $out
 
     # 3. The documented ';' convention between batch-review -> spine -> wrappers.
     $out = Invoke-Spine "$ctxA;$ctxB"
     Check 'semicolon-joined context paths still work' `
         ($out -notmatch 'Context file not found') `
         "the established ';' join regressed: $($out.Substring(0, [Math]::Min(300, $out.Length)))"
+    Check-ReachedGuard 'semicolon-joined context paths' $out
+
+    # 5. A path that legally CONTAINS a comma. The separator interpretation is a recovery
+    #    for an operator error, so it must not outrank a file that is really there.
+    $comma = Join-Path $sandbox 'ctx,with,commas.md'
+    Set-Content -LiteralPath $comma -Value '# comma' -Encoding utf8
+    $out = Invoke-Spine $comma
+    Check 'a real path containing commas is not split' `
+        ($out -notmatch 'Context file not found') `
+        "a file that exists was split on its own commas and rejected: $($out.Substring(0, [Math]::Min(300, $out.Length)))"
+    Check-ReachedGuard 'comma-containing real path' $out
 
     # 4. A real absence hiding inside an otherwise-valid joined token must still fire.
     $out = Invoke-Spine "$ctxA;$missing"
     Check 'one absent member of a joined token is still caught' `
         ($out -match 'Context file not found') `
         'a joined token with one missing member was accepted'
-
-    # 5. A path that legitimately CONTAINS a comma must survive as one path: the guard
-    #    tests the whole token as a path before falling back to splitting on ','.
-    $ctxComma = Join-Path $sandbox 'ctx,with-comma.md'
-    Set-Content -LiteralPath $ctxComma -Value '# comma path' -Encoding utf8
-    $out = Invoke-Spine $ctxComma
-    Check 'a context path containing a comma is not shredded' `
-        ($out -notmatch 'Context file not found') `
-        "a real path containing a comma was split: $($out.Substring(0, [Math]::Min(300, $out.Length)))"
 }
 finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
@@ -108,7 +130,4 @@ if ($failures) {
     Write-Host "verify-context-path-guard: FAILED ($($failures.Count))" -ForegroundColor Red
     exit 1
 }
-# The Invoke-Spine calls above deliberately run failing child processes; do not leak
-# their non-zero exit code as this script's own on a genuine pass.
-$global:LASTEXITCODE = 0
 Write-Host 'verify-context-path-guard: OK' -ForegroundColor Green

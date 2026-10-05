@@ -1,5 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $text = Get-Content (Join-Path $PSScriptRoot '..' 'SKILL.md') -Raw
+foreach ($name in 'inventory.md', 'evaluation.md') {
+    $text += "`n" + (Get-Content -Raw (Join-Path $PSScriptRoot '..' 'references' $name))
+}
 $root = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
 $scaffoldRoot = Join-Path $root 'scaffold-ci'
 $scaffoldSkill = Get-Content (Join-Path $scaffoldRoot 'SKILL.md') -Raw

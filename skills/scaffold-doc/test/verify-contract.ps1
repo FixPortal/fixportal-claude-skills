@@ -48,6 +48,22 @@ if ($conventions -notmatch '(?is)ordinary GitHub README .* do not' -or
     $conventions -notmatch '(?is)omit it there') {
     throw 'conventions must scope frontmatter to destinations that consume it'
 }
+
+# The vault destination has its own SOURCE wrapping rule, distinct from the rendered
+# page width that follows it in conventions.md. Set 2026-08-15 (292 notes reflowed),
+# re-broken 2026-09-13 by a vault document written straight past it - so it belongs in
+# the skill that writes vault documents, not only in a memory line.
+if ($conventions -notmatch '(?is)vault documents are never hard-wrapped' -or
+    $conventions -notmatch '(?is)one paragraph per line') {
+    throw 'conventions must forbid hard-wrapping Obsidian vault documents'
+}
+if ($conventions -notmatch '(?is)stays hard-wrapped at roughly 78 columns') {
+    throw 'conventions must keep repo-committed Markdown hard-wrapped'
+}
+if ($mistakes -notmatch '(?is)Hard-wrapped prose in an Obsidian vault document') {
+    throw 'common mistakes must list hard-wrapped vault prose'
+}
+
 foreach ($guide in $conventions, $mistakes) {
     foreach ($needle in 'tags alone do not decide visibility', 'Graph Search', 'tag filter', 'Orphans toggle', 'excluded-file patterns') {
         if ($guide -notmatch "(?is)$([regex]::Escape($needle))") {

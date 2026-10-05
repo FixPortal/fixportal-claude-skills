@@ -40,15 +40,16 @@
     Inlined into the prompt, clearly labelled as not-under-review.
 
 .PARAMETER Model
-    Gemini model id. Defaults to the CLI's current top model. Override to pin a
-    different Gemini model. Must remain a Google model -- the point of this
-    wrapper is cross-vendor diversity in the panel.
+    Gemini model id. Mandatory, no default -- resolve one through model-registry
+    (resolve.py --tier <tier> --vendor google) rather than leaning on a pinned
+    id here. Must remain a Google model -- the point of this wrapper is
+    cross-vendor diversity in the panel.
 
 .OUTPUTS
     The model's review text on stdout. Non-zero exit code on failure.
 
 .EXAMPLE
-    pwsh -NoProfile -File gemini-review.ps1 -InstructionPath brief.txt -DiffPath review-diff.txt
+    pwsh -NoProfile -File gemini-review.ps1 -InstructionPath brief.txt -DiffPath review-diff.txt -Model gemini-2.5-pro
 #>
 [CmdletBinding()]
 param(
@@ -68,7 +69,9 @@ param(
 
     [string[]] $ContextPath,
 
-    [string] $Model = 'gemini-2.5-pro',
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $Model,
 
     # Optional. When set, the review text is written here instead of stdout, so
     # the calling command needs no '> file' redirect (redirects, like inline
@@ -133,7 +136,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine()
 if (-not $FindingsPath) {
     # Phase-1 style directive only: in Phase 2 (-FindingsPath) the brief owns the
-    # verdict format, and an appended per-finding directive AFTER it conflicts.
+    # verdict format, and a per-finding directive appended AFTER it contradicts it.
     [void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate from the diff.')
     [void]$sb.AppendLine()
 }
@@ -188,80 +191,48 @@ $geminiArgs = @(
 # When both exist the CLI prefers OAuth, which hits the free-tier daily quota rather
 # than the PAYG API key. Rename-and-restore is safe: the CLI reads the file at startup,
 # so concurrent interactive sessions are unaffected once already running.
-$oauthCreds  = Join-Path $HOME '.gemini\oauth_creds.json'
+$oauthCreds  = Join-Path $HOME '.gemini' 'oauth_creds.json'
 $hiddenCreds = "$oauthCreds.paused.$PID.$([Guid]::NewGuid().ToString('N'))"
 $movedOAuth  = $false
-# The credential path is a single global per user, and reviewers run concurrently
-# (ForEach-Object -Parallel upstream), so the check-move-run-restore sequence must
-# be serialised process-wide. A named mutex keyed on the credential path does that;
-# a check-then-act without it races two wrappers into the same shadow/restore.
-$mutexName = 'Local\gemini-oauth-shadow-' +
-    [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
-        [System.Text.Encoding]::UTF8.GetBytes($oauthCreds.ToLowerInvariant())))
-$oauthMutex = [System.Threading.Mutex]::new($false, $mutexName)
-$oauthMutexHeld = $false
 $oauthRestoreNote = $null
+if ($env:GEMINI_API_KEY -and (Test-Path $oauthCreds)) {
+    if (Test-Path -LiteralPath $hiddenCreds) {
+        throw "Refusing to shadow Gemini OAuth credentials: backup already exists at $hiddenCreds"
+    }
+    Move-Item -LiteralPath $oauthCreds -Destination $hiddenCreds -ErrorAction Stop
+    $movedOAuth = $true
+}
 
-# The try opens immediately after New-Item so a throw during the OAuth shadow
-# still reaches the finally that removes the scratch dir.
+Push-Location -LiteralPath $scratch
 try {
-    if ($env:GEMINI_API_KEY) {
-        # An abandoned mutex (a prior wrapper killed mid-run) still acquires; it
-        # throws AbandonedMutexException as it does so, which must not fail the run.
-        try { [void]$oauthMutex.WaitOne() } catch [System.Threading.AbandonedMutexException] { }
-        $oauthMutexHeld = $true
-        if (Test-Path -LiteralPath $oauthCreds) {
-            if (Test-Path -LiteralPath $hiddenCreds) {
-                throw "Refusing to shadow Gemini OAuth credentials: backup already exists at $hiddenCreds"
-            }
-            Move-Item -LiteralPath $oauthCreds -Destination $hiddenCreds -ErrorAction Stop
-            $movedOAuth = $true
-        }
-    }
-
-    Push-Location -LiteralPath $scratch
-    try {
-        $stdout = ($stdin | & gemini @geminiArgs 2>$errFile) | Out-String
-        $exitCode = $LASTEXITCODE
-        $stderr = (Test-Path $errFile) ? (Get-Content -LiteralPath $errFile -Raw) : ''
-    }
-    finally {
-        Pop-Location
-    }
+    $stdout = ($stdin | & gemini @geminiArgs 2>$errFile) | Out-String
+    $exitCode = $LASTEXITCODE
+    $stderr = (Test-Path $errFile) ? (Get-Content -LiteralPath $errFile -Raw) : ''
 }
 finally {
+    Pop-Location
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
-    try {
-        if ($movedOAuth) {
-            # Never throw here: a throw in finally would discard a completed, paid-for
-            # review captured above. If the creds file reappeared during the run, move
-            # the interloper aside, restore the backup, and warn after the review text
-            # has been written. A FAILED restore (locked file, AV scan) must degrade to
-            # the same warning, leaving the uniquely-named backup in place for a manual
-            # restore — the review is already paid for and is never discarded.
-            try {
-                if (Test-Path -LiteralPath $oauthCreds) {
-                    $aside = "$oauthCreds.reappeared.$([Guid]::NewGuid().ToString('N'))"
-                    Move-Item -LiteralPath $oauthCreds -Destination $aside -ErrorAction Stop
-                    $oauthRestoreNote = "Gemini OAuth credentials reappeared during the run; the new file was moved aside to $aside and the pre-run credentials were restored."
-                }
-                Move-Item -LiteralPath $hiddenCreds -Destination $oauthCreds -ErrorAction Stop
+    if ($movedOAuth) {
+        # Never throw here: a throw in finally discards a completed, paid-for review. A
+        # creds file that reappeared mid-run is moved aside (kept, not deleted) and the
+        # pre-run one put back; a failed move degrades to a warning that names the
+        # uniquely-named backup for a manual put-back. Warned AFTER the review is written.
+        try {
+            if (Test-Path -LiteralPath $oauthCreds) {
+                $aside = "$oauthCreds.reappeared.$([Guid]::NewGuid().ToString('N'))"
+                Move-Item -LiteralPath $oauthCreds -Destination $aside -ErrorAction Stop
+                $oauthRestoreNote = "Gemini OAuth credentials reappeared during the run; the new file was moved aside to $aside and the pre-run credentials were put back."
             }
-            catch {
-                $oauthRestoreNote = ("Failed to restore the pre-run Gemini OAuth credentials ($($_.Exception.Message)); " +
-                    "the backup remains at $hiddenCreds — restore it to $oauthCreds by hand.")
-            }
+            Move-Item -LiteralPath $hiddenCreds -Destination $oauthCreds -ErrorAction Stop
         }
-    }
-    finally {
-        # Mutex release/dispose live in their own finally so a failed restore above
-        # cannot strand the named mutex for the other in-flight reviewers.
-        if ($oauthMutexHeld) { $oauthMutex.ReleaseMutex() }
-        $oauthMutex.Dispose()
+        catch {
+            $oauthRestoreNote = "Could not put back the pre-run Gemini OAuth credentials ($($_.Exception.Message)); the backup remains at $hiddenCreds -- move it to $oauthCreds by hand."
+        }
     }
 }
 
 if ($exitCode -ne 0) {
+    if ($oauthRestoreNote) { Write-Warning $oauthRestoreNote }
     Write-Error ("gemini exited with code {0}.`n{1}" -f $exitCode, $stderr)
     exit $exitCode
 }
@@ -299,8 +270,6 @@ if ($json.stats?.models) {
         'gemini-2.5-flash-lite'  = @( 0.10,  0.40, 0.00)
         'gemini-2.5-flash'       = @( 0.30,  2.50, 3.50)
     }
-    # No default endpoint: the destination is deployment-specific and belongs in the
-    # environment, not in a published script. Unset means telemetry is simply not posted.
     $observatoryUrl = $env:OBSERVATORY_URL
     $sessionId = $json.session_id ?? [Guid]::NewGuid().ToString()
     # Accumulate this call's usage so it can be written to the sidecar (host reads
@@ -318,8 +287,8 @@ if ($json.stats?.models) {
             $thoughts = [long]($tokens.thoughts ?? 0)
             if ($inTok -eq 0 -and $outTok -eq 0) { continue }
 
-            # Prefix-match longest key first: hashtable enumeration is bucket-ordered,
-            # so an unsorted match could price gemini-2.5-flash-lite as gemini-2.5-flash.
+            # LONGEST prefix first: hashtable enumeration is bucket-ordered, so an
+            # unsorted match could price gemini-2.5-flash-lite as gemini-2.5-flash.
             $rateKey = ($gemPricing.Keys |
                 Where-Object { $mProp.Name.StartsWith($_) } |
                 Sort-Object { $_.Length } -Descending |
@@ -330,8 +299,7 @@ if ($json.stats?.models) {
                     ($inTok * $rates[0]) + ($outTok * $rates[1]) + ($thoughts * $rates[2])
                 ) / 1000000.0, 8)
             } else {
-                # No fabricated fallback price: an unpriced model is cost-unknown,
-                # not a guess reported as known (the OpenAI wrappers' contract).
+                # No fabricated fallback price: an unpriced model is cost-UNKNOWN.
                 $costUnknown = $true
                 $costUsd = 0.0
             }
@@ -340,7 +308,7 @@ if ($json.stats?.models) {
 
             # Post to the general usage pipeline (Overview) only when configured;
             # the sidecar below is written independently for the adv-review event.
-            if ($env:OBSERVATORY_API_KEY -and $observatoryUrl) {
+            if ($env:OBSERVATORY_API_KEY -and $env:OBSERVATORY_URL) {
                 # cacheWriteTokens carries thinking tokens (observatory hook convention).
                 $obsBody = @{
                     provider         = 'Google'
@@ -393,7 +361,5 @@ else {
     $response.TrimEnd()
 }
 
-# Warn only now: the restore in the finally above must never throw away a
-# completed review, so a reappeared-credentials note surfaces after the review
-# text has been written.
+# Only now: the put-back above must never throw away a completed review.
 if ($oauthRestoreNote) { Write-Warning $oauthRestoreNote }

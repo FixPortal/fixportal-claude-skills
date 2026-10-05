@@ -1,5 +1,12 @@
 # Mutation workflow contract
 
+## Contents
+
+- [`mutation.yml` (Stryker.NET) — a SEPARATE workflow](#mutationyml-strykernet--a-separate-workflow)
+- [Weekly cadence policy](#weekly-cadence-policy)
+- [Scope MTP mutation lanes structurally](#scope-mtp-mutation-lanes-structurally)
+
+
 Read this reference whenever Stryker.NET or `mutation.yml` is in scope.
 
 ## `mutation.yml` (Stryker.NET) — a SEPARATE workflow

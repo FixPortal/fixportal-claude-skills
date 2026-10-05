@@ -8,7 +8,7 @@ subset. This reference illustrates their rendering; it does not add requirements
 ```markdown
 | Skill | Reach | Impl | Correctness | Utility | Top issue |
 |---|---|---|---|---|---|
-| example | 🟩 | 🟨 | 🟥 | 🟧 | Missing executable |
+| example | Good | Polish | Broken | Reliability | Missing executable |
 
 1. **example: replace the missing executable** — impact h · effort l
 ```

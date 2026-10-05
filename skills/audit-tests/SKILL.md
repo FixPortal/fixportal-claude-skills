@@ -22,10 +22,21 @@ Run a read-only, risk-based assessment of whether tests would catch material reg
 
 ## Procedure
 
+   <!-- routing: recon -->
+
 1. Read [the orchestration runbook](references/orchestration.md). A missing/ambiguous/unverified Delta baseline, non-ancestor, or unbounded impacted surface means Full or stop—never a relabelled partial audit.
+   <!-- routing: evidence-axes -->
+
 2. Dispatch every applicable evidence axis with `axis-brief.md` verbatim plus its documented run context. Only worker H receives coverage/mutation artefact paths.
+   <!-- routing: synthesis -->
+
 3. Re-key findings by axis, verify file/line evidence, route `behaviour`, `suite-hygiene`, `measurement`, and `n-a` separately, apply exclusions, and build the seven-section report contract.
+   <!-- routing: verify-refute -->
+
 4. Independently verify every Critical/High backlog item and claimed Critical/High resolution/downgrade. Unusable verification retries once, then remains explicitly unverified.
+   <!-- routing: report -->
+   <!-- routing: approved-fix-slice -->
+
 5. Write the additive report and stop in report-only mode. A fix pass begins only when requested and each slice is approved; use `review-worktree-pass`, demonstrate the new test can fail, run the full local gate, and let the orchestrator own git.
 
 ## Load-bearing rules
@@ -37,3 +48,5 @@ Run a read-only, risk-based assessment of whether tests would catch material reg
 - Timing evidence follows `scaffold-tests/references/async-and-timing.md`: prefer real signals and one generous diagnostic ceiling. `WaitAsync`/`CancelAfter` are valid under Aggressive or unknown xUnit scheduling. Static-now expiry/settlement data is not a timing defect, but is a separate hygiene finding when injected-clock/NodaTime rules are violated.
 - CI eligibility follows `scaffold-tests/references/ci-test-budgets.md`: worker H inspects recent run and TRX durations, reports misplaced slow tests as suite-hygiene, and reports missing job caps or excessive matrix fan-out as measurement findings.
 - Vault reports are additive and identify mode, audited HEAD, and Delta baseline/range.
+
+Supporting files: Report validator `scripts/test-audit-report.ps1`; contract tests `test/verify-package-ids.ps1`, `test/verify-policy.ps1`, `test/verify-report-contract.ps1`.

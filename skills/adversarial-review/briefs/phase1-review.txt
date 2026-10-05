@@ -37,10 +37,15 @@ For each defect, output one finding block in exactly this format:
 - **Suggested fix:** <a concrete direction, one or two sentences>
 
 Cite concrete locations. Prefer a few well-evidenced findings over a long
-speculative list. If you find no substantive defect, your ENTIRE reply is the
-one heading `### No substantive defects` — that exact token, nothing else; it
-is the canonical clean sentinel the driver counts as participation.
-Output only the findings — no preamble, no narration.
+speculative list. Output only the findings — no preamble, no narration.
+
+If you find no substantive defect, say so as a HEADING, exactly:
+
+### NO FINDINGS
+
+then one or two sentences on what you examined. The heading form is required
+because the driver counts participation by heading: a bare prose sentence reads
+as an off-contract reply and your review is dropped from the panel.
 
 Line numbers must be SOURCE-FILE lines, never offsets into the diff you were
 given. If you cannot read the repository, derive them from the diff's own

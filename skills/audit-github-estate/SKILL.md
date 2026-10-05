@@ -18,7 +18,7 @@ API or UI dispositions; an unconditional "exactly one PR per repository" would f
 empty PR for those. Stop at a green PR unless the user separately authorizes merge.
 
 Before auditing or changing GitHub Actions or CI configuration, read the canonical
-`~/.agents/notes/deploy-and-ci-traps.md`; use its current guidance instead of memory.
+`~/.agents/notes/deploy-and-ci-traps.md` (if that note is not present, proceed and record the assumption); use its current guidance instead of memory.
 Read and follow [the GitHub evidence contract](references/github-evidence.md) for endpoint,
 visibility, field-name, exit-status, and capability-probe rules.
 
@@ -146,7 +146,7 @@ Inventory each repository before changing anything:
   younger unmatched alerts behind the standalone audit's grace period.
 
   **Pass the scope explicitly.** Given neither `-Repo` nor `-Org`, that script enumerates
-  the entire `<your-org>` organization, so an audit of three named repositories silently queried
+  the entire `<your-org>` org, so an audit of three named repositories silently queried
   every repository in it: API calls and rate-limit pressure the operator did not ask for,
   and rows for repositories outside the declared estate landing in its output. Where the
   subject genuinely is the whole org, pass `-Org <org>` — so the breadth is stated

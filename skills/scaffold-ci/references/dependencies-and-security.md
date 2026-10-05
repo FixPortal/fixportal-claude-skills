@@ -1,5 +1,19 @@
 # Dependencies and GitHub security contract
 
+## Contents
+
+- [`dependabot.yml`](#dependabotyml)
+- [GitHub security surfaces — visibility policy](#github-security-surfaces--visibility-policy)
+- [Secret scanning in CI](#secret-scanning-in-ci)
+- [Use the release binary, not the action](#use-the-release-binary-not-the-action)
+- [The gate](#the-gate)
+- [Pre-existing findings](#pre-existing-findings)
+- [The sweep](#the-sweep)
+- [Dependabot security settings](#dependabot-security-settings)
+- [Public CodeQL gating and triage policy](#public-codeql-gating-and-triage-policy)
+- [Reading public alert state needs the `security_events` scope](#reading-public-alert-state-needs-the-security_events-scope)
+
+
 Read this reference for Dependabot or repository security-surface work.
 
 ## `dependabot.yml`
@@ -172,8 +186,8 @@ gh api -X PATCH "repos/$repo/code-scanning/default-setup" -f state=configured
 Code Quality is free on PUBLIC repositories and paid on private/internal ones, so
 visibility is the policy input, not an approval record.
 
-UNVERIFIED: that public Code Quality is free. The maintainer verified it against the
-organization's own billing and UI on 2026-09-09, and the estate has run it on all eight public
+UNVERIFIED: that public Code Quality is free. The maintainer verified it against the organization's
+own billing and UI on 2026-09-09, and the estate has run it on all eight public
 repositories since 2026-08-14 with `ai_findings_option: disabled`. GitHub's published docs
 do NOT state a public exemption — its changelog calls Code Quality a purchasable product
 from GA on 2026-07-20, billed as a base subscription plus metered per-committer usage, and
@@ -380,7 +394,7 @@ an oversight; the range scans are what close it on the paths that have a range.
 
 `gitleaks dir` is the current spelling of what older versions called `detect --no-git`.
 It exists in 8.30.1; on an older pin, check before copying. Observed running clean on
-the PR path in `your-repo` PR #27
+the PR path in `your-repo`
 (`Scan the checked-out tree for secrets -> success`), which is also the reason the step
 is worth having: that repo's `Secrets` job is `if: github.event_name == 'pull_request'`,
 so a green push build says nothing about whether either scan works.

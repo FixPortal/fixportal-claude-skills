@@ -24,7 +24,7 @@ foreach ($needle in @(
     }
 }
 
-if ($brief -notmatch '(?s)🟩 exposure grade with no stated scope') {
+if ($brief -notmatch '(?s)Good exposure grade with no stated scope') {
     throw 'The brief must forbid an unscoped clean exposure grade.'
 }
 
@@ -44,7 +44,8 @@ foreach ($needle in @('~/.pi/skills', '~/.pi/agent/skills')) {
     }
 }
 
-if ($skill -notmatch [regex]::Escape('all six runtime surfaces')) {
+if ($skill -notmatch [regex]::Escape('all seven runtime roots') -or
+    $skill -notmatch [regex]::Escape('six surface groups')) {
     throw 'Surface count in the controller must match the enumerated list.'
 }
 if ($brief -notmatch [regex]::Escape('six runtime surfaces')) {
@@ -87,13 +88,16 @@ if ($classes -notmatch [regex]::Escape('sample not taken (third-party runtime)')
 }
 
 # Decisions the user has already made must be written where the grader reads them, or
-# every run re-raises them as findings (the 2026-09-25 audit graded thirteen skills 🟧 for
+# every run re-raises them as findings (the 2026-09-25 audit graded thirteen skills Reliability for
 # pointing at the shared traps notes, which the user then accepted as deliberate).
 foreach ($needle in '## Accepted disclosures', '~/.agents/notes', 'verify-private-identifiers.ps1') {
     if ($classes -notmatch [regex]::Escape($needle)) {
         throw "exposure-classes.md must record the accepted-disclosure decisions: $needle"
     }
 }
+
+# Private-specific accepted-disclosure entries (a named Dependabot default, the first-party-only skill list)
+# are omitted from the published copy; their assertions guard private content this mirror does not carry.
 
 # The JSON enum and the reference must not drift apart into two taxonomies.
 if ($brief -notmatch [regex]::Escape('"credential|identity-topology|attribution|runtime-fetch"')) {

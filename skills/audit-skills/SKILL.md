@@ -5,11 +5,28 @@ description: Use when the user wants their authored agent skills audited across 
 
 # Audit Skills
 
+## Red Flags — STOP
+
+- You're about to write "verify/confirm/check that … exists" as a *finding*.
+- You graded a skill without running a filesystem or package check.
+- You never opened the active runtime instruction files this run.
+- You conflated Antigravity IDE with Antigravity CLI or ignored Kimi-native overlays.
+- You are about to synthesize without diffing the returned worker set against the
+  dispatched owned set. A silently capped subagent leaves no error in your context.
+- You graded exposure Good without naming the scope it was clean over, or reasoned
+  that a workspace sandbox contains it (it does not — skills load from the
+  runtime home, not the working directory).
+- Two subagents' findings use different severity words.
+- You graded Axes 1 and 2 without running `guidance_drift.py`, or graded them
+  from a page that drifted from its snapshot.
+
+**All of these mean: you skipped the work. Go verify.**
+
 ## Overview
 
 Sweep the skills the user **authors and can edit**, and produce a candid,
 trend-aware findings report across five axes: **reach** (trigger reliability),
-**implementation** (structure against the house skill-writing conventions),
+**implementation** (structure against the official skill guidance),
 **correctness of references** (every path/file/command/package/constant the
 skill names actually resolves today, plus adherence to the user's own active
 runtime instructions), **utility** (evidence that the skill still earns its
@@ -58,7 +75,31 @@ scope". You have the tools. Use them.
 
 <!-- routing: phase-0-assemble-rubric -->
 **Phase 0 — Assemble the rubric (main thread).**
-- Discover the owned-skill set across **all six runtime surfaces** — never
+- **First, check the guidance the rubric is built on.** The brief's Axis 1 and 2
+  rules come from three official pages snapshotted in `assets/guidance/` (the
+  snapshot is optional; without it the script compares live only). Run:
+
+  ```bash
+  python ~/.agents/skills/audit-skills/guidance_drift.py --out <run working dir>
+  ```
+
+  It fetches each page uncached through firecrawl, strips site chrome, diffs it
+  against the snapshot, and writes `guidance-drift.json`. Its `status` decides
+  the run:
+  - `current` — grade normally.
+  - `drift` — make the drift the report's first finding, quoting each page's
+    diff, and hand every worker `suspended_axes` (`reach`, `impl`). Do not grade
+    from the live page text: that makes two runs over unchanged skills disagree.
+    After the run, reconcile `audit-brief.md` with the diff, then re-run with
+    `--refresh` to store the new snapshot in the same change.
+  - `fetch-failed` — grade from the snapshot and say so in the method line.
+  - `no-snapshot` — no snapshot to diff against; grade normally and say
+    "no snapshot; compared live only" in the method line.
+- Record which owned skills the Claude Code skill listing in this session shows
+  by name only, without a description. The listing has a size budget and drops
+  descriptions on overflow, so those skills cannot trigger from context however
+  well they are written. Hand that fact to each affected worker.
+- Discover the owned-skill set across **all seven runtime roots** — never
   hardcode the list:
   - `~/.claude/skills/*/SKILL.md` (Claude Code home)
   - `~/.agents/skills/*/SKILL.md` (Codex and Kimi shared home)
@@ -73,7 +114,7 @@ scope". You have the tools. Use them.
   runtime. Axis 5 needs to know which homes are third-party, and a runtime
   repointed at a new vendor changes the exposure verdict without changing a
   single skill body.
-- The five runtime homes span six surfaces, because PI has two roots. The Antigravity CLI root is **not** flat
+- The six surface groups above span seven roots, because PI has two roots. The Antigravity CLI root is **not** flat
   Markdown — globbing `*.md` there returns only its CLI-native router skill and
   hides every canonical skill junctioned into it, so the audit reports false
   absences. Most entries in the Claude Code and both Antigravity roots are
@@ -118,6 +159,8 @@ scope". You have the tools. Use them.
   real drift as a reliability finding under `audit-skills` itself.
 - Read the previous report (latest `SkillAudit-*.md` in the Report path below)
   for the trend diff.
+- **Reach probe: not run.** This skill ships no decision-model reach probe, so
+  grade Axis 1 from the description prose alone and say so in the method section.
 - Collect available utility evidence for each owned skill and record the source
   and observation window: explicit skill invocations or mentions in local
   session histories, recorded outcomes, prior reports, and git history showing
@@ -163,7 +206,8 @@ scope". You have the tools. Use them.
 Use the runtime's native parallel-agent capability when available. Give each worker the
 contents of `audit-brief.md` (in this skill's directory), the path(s) to its one
 skill (across every surface where it exists), the full description inventory,
-that skill's utility evidence, and the per-surface vendor map from Phase 0. Each
+that skill's utility evidence, the per-surface vendor map, the guidance
+`suspended_axes`, and whether its listing description is dropped. Each
 subagent reads only its skill, verifies every reference, scores the five axes,
 runs its own exposure sweep, detects its own cross-home drift, and returns the
 structured JSON the brief specifies. Run the same contract sequentially if
@@ -171,12 +215,8 @@ delegation is unavailable.
 
 Resolve the model for this phase before dispatching:
 
-```bash
-python ~/.agents/skills/model-registry/route.py \
-  --routing ~/.agents/skills/audit-skills/routing.json \
-  --phase phase-1-per-skill-audit \
-  --facts '{"fanout": <owned skill count>, "priorUnresolvedHigh": <open Critical+High in the previous report, omitted entirely when there is no previous report>}' \
-  --manifest <run working dir>/routing-manifest.json
+```text
+python ~/.agents/skills/model-registry/route.py  --routing ~/.agents/skills/audit-skills/routing.json  --phase phase-1-per-skill-audit  --facts '{"fanout": <owned skill count>, "priorUnresolvedHigh": <open Critical+High in the previous report, omitted entirely when there is no previous report>}'  --manifest <run working dir>/routing-manifest.json
 ```
 
 If the `model-registry` skill is not installed, skip resolution and dispatch at your
@@ -248,12 +288,13 @@ routed phase.
 
 ## Grades and report
 
-Every worker result uses the closed grade vocabulary: 🟩, 🟨, 🟧, 🟥.
-Reach/Implementation/Correctness use the defect scale: 🟥 Broken, 🟧 Reliability,
-🟨 Polish, and 🟩 Good. Utility uses the lifecycle scale: 🟩 `keep`, 🟨
-`insufficient-evidence`, 🟧 `narrow`/`merge`/`archive`, and 🟥 `retire`. Never read
-a Utility glyph as defect severity. Exposure uses the disclosure scale: 🟥
-credential material, 🟧 identity and topology, 🟨 attribution, 🟩 generic —
+Every worker result uses the closed grade vocabulary: Good, Polish, Reliability, Broken.
+Use these plain names in worker JSON and reports; output does not require emoji.
+Reach/Implementation/Correctness use the defect scale: Broken, Reliability, Polish, and Good.
+Utility uses the lifecycle scale: Good `keep`, Polish
+`insufficient-evidence`, Reliability `narrow`/`merge`/`archive`, and Broken `retire`. Never read
+a Utility grade as defect severity. Exposure uses the disclosure scale: Broken
+credential material, Reliability identity and topology, Polish attribution, Good generic —
 defined in [references/exposure-classes.md](references/exposure-classes.md).
 
 Write the report as CRLF to
@@ -267,13 +308,17 @@ Use the title `# Skill Audit — YYYY-MM-DD`.
 The report must contain:
 
 - Verdict.
+- Method: one line `guidance: <status from guidance-drift.json>` naming any
+  drifted or unfetched page; which owned skills the listing showed without a
+  description; which runtimes and history roots were searched, and
+  `reach probe: not run` (Axis 1 graded from the description prose).
 - Scorecard with columns
   `Skill | Reach | Impl | Correctness | Utility | Exposure | Top issue`.
 - Findings grouped under Broken, Reliability, and Polish; each names the skill,
   exact evidence, and precise unapplied fix.
 - Exposure with columns `Skill | Class | Evidence | Exported by | Fix`, plus one
   line naming which surfaces were treated as third-party this run and on what
-  configuration evidence. Omit the table when every owned skill graded 🟩, but
+  configuration evidence. Omit the table when every owned skill graded Good, but
   never omit the scope line — a clean exposure result is only meaningful
   alongside the scope it was clean over.
 - Cross-skill findings for overlap, gaps, drift, and reinvention where present.
@@ -287,18 +332,3 @@ The report must contain:
 In chat return only the verdict, scorecard, top fixes, and report path. Consult
 [references/report-contract.md](references/report-contract.md) only for
 illustrative formatting and presentation traps; it does not own execution rules.
-
-## Red Flags — STOP
-
-- You're about to write "verify/confirm/check that … exists" as a *finding*.
-- You graded a skill without running a filesystem or package check.
-- You never opened the active runtime instruction files this run.
-- You conflated Antigravity IDE with Antigravity CLI or ignored Kimi-native overlays.
-- You are about to synthesize without diffing the returned worker set against the
-  dispatched owned set. A silently capped subagent leaves no error in your context.
-- You graded exposure 🟩 without naming the scope it was clean over, or reasoned
-  that a workspace sandbox contains it (it does not — skills load from the
-  runtime home, not the working directory).
-- Two subagents' findings use different severity words.
-
-**All of these mean: you skipped the work. Go verify.**

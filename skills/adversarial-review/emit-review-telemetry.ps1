@@ -10,9 +10,10 @@
     sidecars where the underlying CLI exposes them.
 
     Called by the host agent (Claude Code or any other host) at the end of Phase 4
-    in the adversarial-review skill procedure -- five calls in parallel, one per
-    participant (four vendor reviewers -- anthropic, google, openai, moonshot --
-    plus one judge).
+    in the adversarial-review skill procedure -- one call per participant: one per
+    VENDOR represented in the reviewer set, plus one judge. Read the vendors off
+    reviewers.json rather than from this comment; the roster is data and the
+    ValidateSet below is the only list here that must track it.
 
     Silently no-ops when OBSERVATORY_API_KEY or OBSERVATORY_URL is absent.
     When both vars are set, HTTP failures surface via Write-Error and exit 1 --
@@ -23,26 +24,49 @@
     e.g. "20260614T143022Z". Use the workdir's own timestamp.
 
 .PARAMETER Reviewer
-    Vendor id of the reviewer: anthropic | google | openai | moonshot.
+    Vendor id of the reviewer: anthropic | google | openai | moonshot | xai | zai.
 
-.PARAMETER Participant
-    Optional discriminator widening the server's (runId, reviewer, role) upsert key
-    to (runId, reviewer, role, participant). REQUIRED when one vendor fields two
-    participants in a single-diff run (e.g. two anthropic reviewers): the API
-    upserts on (runId, reviewer, role), so without it the second anthropic call
-    REPLACES the first and the run silently loses a participant. Use the manifest
-    reviewer id (B, F, G, X, K). Omit for aggregated batch runs —
-    aggregate-and-emit.ps1 already merges same-vendor participants into one row.
+    THIS SET MUST TRACK reviewers.json, and nothing fails loudly when it does not.
+    aggregate-and-emit.ps1 keys $byReviewer by vendor and passes the key straight
+    through as -Reviewer; a vendor missing here fails parameter binding in the
+    subprocess, and that caller only Write-Warnings on a non-zero exit, so the run
+    completes and that vendor's raised/accepted telemetry is lost permanently and
+    silently. Adding a seat of a new vendor to reviewers.json means adding it here
+    in the same change.
 
 .PARAMETER Role
     The participant's role in the panel: reviewer | judge. REQUIRED -- the API
     rejects (HTTP 400) any run without a valid role, so omitting it means the
-    event is silently dropped. Emit the five Phase-1 reviewers (B, F, G, X, K) as
-    'reviewer' and the Phase-3 adjudicator as 'judge'.
+    event is silently dropped. Emit every Phase-1 reviewer as 'reviewer' and the
+    Phase-3 adjudicator as 'judge'.
+
+    SAME-VENDOR SEATS MERGE INTO ONE ROW. The key is (runId, reviewer, role) --
+    three fields, not two -- so two seats of one vendor both emit as that vendor
+    plus 'reviewer' and the second upserts over the first. Emitting them as
+    separate calls does not create two rows; merge their counts before emitting.
+    The manifest currently seats ONE reviewer per vendor, so nothing merges today
+    and the run produces one reviewer row per seat plus one judge row. The rule
+    stays because the roster is data: a second same-vendor seat is one `enabled`
+    flag away, and it was the live shape until seat B was retired.
+
+    THE OTHER THREE PANEL ROLES ARE NOT EMITTED, and must not be squeezed into
+    these two. The manifest also defines judgeAudit (Phase 3.5), verifier (Phase 4)
+    and synthesis. Because `role` IS part of the key, the judge does not collide
+    with a reviewer of the same vendor -- but a Phase-4 verifier emitted AS
+    'reviewer' collides exactly: it upserts over that vendor's Phase-1 reviewer row
+    and destroys the reviewing evidence it was meant to sit beside. The verifier
+    pool is cross-vendor by design and overlaps the reviewer set, so that is the
+    common case, not an edge one.
+
+    UNVERIFIED: whether the API's role enum would accept 'verifier', 'judge-audit'
+    or 'synthesis'; refuted if a POST carrying one of those returns 2xx. Until that
+    is established the correct action for those phases is to emit NOTHING and leave
+    their cost in the run's own artefacts. A missing row is a known gap; a row that
+    silently replaced another is a wrong answer.
 
 .PARAMETER Repo
     Repository name under review (basename of the repo root, e.g.
-    your-repo). Optional; groups runs by repo in the dashboard.
+    my-service). Optional; groups runs by repo in the dashboard.
 
 .PARAMETER Summary
     Operator-assigned run name shown as the dashboard card title. Optional —
@@ -92,16 +116,12 @@ param(
     [string] $RunId,
 
     [Parameter(Mandatory)]
-    [ValidateSet('anthropic', 'google', 'openai', 'moonshot')]
+    [ValidateSet('anthropic', 'google', 'openai', 'moonshot', 'xai', 'zai')]
     [string] $Reviewer,
 
     [Parameter(Mandatory)]
     [ValidateSet('reviewer', 'judge')]
     [string] $Role,
-
-    # See .PARAMETER Participant: a same-vendor second participant collapses onto the
-    # first without this, because the API upserts on (runId, reviewer, role).
-    [string] $Participant = $null,
 
     [string] $Repo = $null,
 
@@ -151,7 +171,6 @@ $body = @{
     issuesAccepted   = $IssuesAccepted
     runId            = $RunId
     role             = $Role
-    participant      = $Participant
     repo             = $Repo
     summary          = $Summary
     # null for a single-diff run; a positive count flags an aggregated batch run.

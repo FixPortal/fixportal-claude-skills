@@ -51,12 +51,13 @@
       }
     Both keys optional. Missing `accepted` → zeros (warned). Missing `judge` → no
     judge row emitted (the run shows as "no judge"). Judge `costUsd` is honoured
-    only for an exact, registry-unpriced model id; registry pricing always wins
-    for a resolvable or moving-alias model, and an alias the registry cannot
-    resolve stays UNKNOWN rather than trusting a stale caller-side figure.
+    only for an exact model id the registry cannot price; registry pricing wins
+    whenever it resolves, and a moving alias nothing resolved stays UNKNOWN. The
+    model registry is optional: without it every cost the wrappers did not measure
+    is UNKNOWN, never a fabricated price.
 
 .EXAMPLE
-    pwsh -NoProfile -File aggregate-and-emit.ps1 -RunRoot <runRoot> -Repo host-app -Summary 'WidgetService Final Audit'
+    pwsh -NoProfile -File aggregate-and-emit.ps1 -RunRoot <runRoot> -Repo example-app -Summary 'Example final audit'
 #>
 [CmdletBinding()]
 param(
@@ -64,7 +65,8 @@ param(
     [string] $RunId,
     [string] $Repo,
     [string] $Summary,
-    [string] $VerdictPath
+    [string] $VerdictPath,
+    [switch] $AllowFailedChunks
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,7 +105,17 @@ function Resolve-ModelSelector([string] $vendor, [string] $selector) {
 function Get-RegistryCost([string] $model, [long] $inputTokens, [long] $outputTokens) {
     if (-not $modelPriceAvailable -or -not $modelRegistry -or -not $modelRegistry.models.ContainsKey($model)) { return $null }
     $facts = $modelRegistry.models[$model]
-    return Get-ModelRegistryCost -Facts $facts -InputTokens $inputTokens -OutputTokens $outputTokens -Channel api -On $modelPriceOn
+    # Get-ModelRegistryCost THROWS on overlapping api pricing records, and this script runs
+    # under $ErrorActionPreference = 'Stop' with no guard -- so a registry data error took
+    # down the whole aggregation after the review had been produced and paid for. A bad
+    # record degrades to UNKNOWN, which is what $null means here.
+    try {
+        return Get-ModelRegistryCost -Facts $facts -InputTokens $inputTokens -OutputTokens $outputTokens -Channel api -On $modelPriceOn
+    }
+    catch {
+        Write-Warning "Registry pricing for '$model' is unusable ($($_.Exception.Message)); recording cost as UNKNOWN."
+        return $null
+    }
 }
 # -ErrorAction Continue on every fatal Write-Error below: $ErrorActionPreference is
 # 'Stop', under which Write-Error throws a terminating ActionPreferenceStopException
@@ -123,6 +135,7 @@ if (-not $VerdictPath) { $VerdictPath = Join-Path $RunRoot 'aggregate-verdict.js
 # the totals while ChunkCount came from the newer summary. Fall back to the
 # recursive scan only for an ad-hoc batch that did not go through batch-review.ps1.
 $batchSummary = Join-Path $RunRoot 'batch-summary.json'
+$failedChunkIds = @()
 if (Test-Path -LiteralPath $batchSummary) {
     $summaryRows = @(Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json)
 
@@ -199,6 +212,10 @@ if (Test-Path -LiteralPath $batchSummary) {
     }
 
     $chunkCount  = $summaryIds.Count
+    $failedChunkIds = @($summaryRows | Where-Object {
+        $_.exitCode -ne 0 -or $_.hasMetrics -eq $false -or
+        -not (Test-Path -LiteralPath (Join-Path (Join-Path $RunRoot ([string]$_.chunkId)) 'metrics.json'))
+    } | ForEach-Object { [string]$_.chunkId })
     $metricFiles = @($summaryIds |
         ForEach-Object { Join-Path (Join-Path $RunRoot $_) 'metrics.json' } |
         Where-Object { Test-Path -LiteralPath $_ } |
@@ -255,6 +272,13 @@ The summary is not describing this run, so ChunkCount and every per-vendor total
 "@ -ErrorAction Continue
         exit 4
     }
+    if ($failedChunkIds.Count -gt 0 -and -not $AllowFailedChunks) {
+        Write-Error "Chunks failed or lack metrics: $($failedChunkIds -join ', '). Refusing partial totals. Re-run them or explicitly pass -AllowFailedChunks to emit with unknown costs." -ErrorAction Continue
+        exit 8
+    }
+    if ($failedChunkIds.Count -gt 0) {
+        Write-Warning "Emitting partial batch with failed chunk(s): $($failedChunkIds -join ', '); every participant cost is UNKNOWN."
+    }
 } else {
     $metricFiles = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Filter 'metrics.json' -File -ErrorAction SilentlyContinue)
     $chunkCount  = $metricFiles.Count
@@ -275,14 +299,12 @@ foreach ($mf in $metricFiles) {
                 reviewer = $key; model = $p.model
                 inputTokens = 0L; outputTokens = 0L; costUsd = 0.0
                 reviewDurationMs = 0L; issuesRaised = 0; estimated = $false
-                costUnknown = $false
+                costUnknown = $false; failedPhases = 0
             }
         }
         $acc = $byReviewer[$key]
-        # Two participants can share a vendor key while running DIFFERENT models
-        # (Sonnet + Fable both roll up to one 'anthropic' row). Keeping whichever
-        # model appeared first silently misattributes the summed figures; join the
-        # distinct ids instead so the row says exactly what it sums.
+        # Two seats can share a vendor key while running DIFFERENT models; keeping the
+        # first silently misattributes the summed figures, so the row names every id it sums.
         if (-not $acc.model -and $p.model) { $acc.model = $p.model }
         elseif ($p.model -and $acc.model -cne $p.model) {
             $acc.model = (@($acc.model -split '\+') + $p.model | Sort-Object -Unique) -join '+'
@@ -292,10 +314,11 @@ foreach ($mf in $metricFiles) {
         $acc.costUsd          += [double]($p.costUsd         ?? 0)
         $acc.reviewDurationMs += [long]($p.reviewDurationMs ?? 0)
         $acc.issuesRaised     += [int]($p.issuesRaised       ?? 0)
+        $acc.failedPhases     += [int]($p.failedPhases       ?? 0)
         if ($p.costEstimated)  { $acc.estimated = $true }
         # Unknown is contagious across a summed row: if any chunk's cost could not be
         # determined, the total is a floor, not a figure.
-        if ($p.costUnknown)    { $acc.costUnknown = $true }
+        if ($p.costUnknown -or $failedChunkIds.Count -gt 0) { $acc.costUnknown = $true }
     }
 }
 
@@ -355,39 +378,63 @@ foreach ($key in $byReviewer.Keys) {
     if ($Summary) { $named.Summary = $Summary }
     Invoke-Emit $named
     $displayCost = $r.costUnknown ? 'UNKNOWN' : [string]([Math]::Round($r.costUsd,4))
-    $rows += [pscustomobject]@{ Participant = "$key (reviewer)"; Model = $r.model; Raised = $r.issuesRaised; Accepted = $acc; Cost = $displayCost; DurationMs = $r.reviewDurationMs; CostEst = $r.estimated }
+    $rows += [pscustomobject]@{ Participant = "$key (reviewer)"; Model = $r.model; Raised = $r.issuesRaised; Accepted = $acc; FailedPhases = $r.failedPhases; Cost = $displayCost; DurationMs = $r.reviewDurationMs; CostEst = $r.estimated }
 }
 
 if ($judge) {
     $judgeInput = [long]($judge.inputTokens ?? 0)
     $judgeOutput = [long]($judge.outputTokens ?? 0)
     $judgeModel = Resolve-ModelSelector ([string]$judge.reviewer) ([string]$judge.model)
-    $judgeCostEstimated = $true
+    $judgeCost = [double]($judge.costUsd ?? 0)
+    $judgeCostEstimated = $false
     # Incoming unknown is contagious; an absent registry price must not turn the
     # transport zero into "free".
     $judgeCostUnknown = [bool]($judge.costUnknown ?? $false)
-    $resolvedCost = Get-RegistryCost $judgeModel $judgeInput $judgeOutput
-    if ($null -ne $resolvedCost) {
-        # Registry pricing owns exact ids and resolved aliases alike: for a MOVING
-        # alias a caller-supplied costUsd was computed against whatever the alias
-        # resolved to at the time, so the fresh registry figure wins. The success
-        # branch must also CLEAR the unknown flag — it was previously seeded from
-        # the verdict and only ever set to $true, so a priced judge whose verdict
-        # said costUnknown stayed UNKNOWN forever.
-        $judgeCost = [double]$resolvedCost
-        $judgeCostUnknown = $false
+    if ($failedChunkIds.Count -gt 0) { $judgeCostUnknown = $true }
+    # Still a bare CLI alias after Resolve-ModelSelector means nothing resolved it (no
+    # registry, or no match). A caller-side cost for a MOVING alias was priced against
+    # whatever it pointed at then, so it is untrusted; an EXACT id's cost is attributable.
+    $judgeAliasUnresolved = $judgeModel -in @('opus', 'sonnet', 'haiku', 'fable')
+    # Recompute ONLY when there are tokens to price. Both counts default to 0 and the
+    # lookup was unconditional, so for a priced model it returned 0.0 -- not $null -- the
+    # UNKNOWN branch never ran, and the transported costUsd was discarded in favour of a
+    # confident zero. That is exactly the UNKNOWN-versus-0.0 conflation the rest of this
+    # emitter exists to prevent. SKILL.md does not document the judge row's token fields,
+    # so an absent count is the expected shape, not an exotic one.
+    if ($judgeInput -gt 0 -or $judgeOutput -gt 0) {
+        $resolvedCost = Get-RegistryCost $judgeModel $judgeInput $judgeOutput
+        if ($null -ne $resolvedCost) {
+            # Registry pricing owns exact ids and resolved aliases alike, and a fresh
+            # price CLEARS a verdict-seeded unknown -- only a failed chunk keeps it.
+            $judgeCost = [double]$resolvedCost
+            $judgeCostEstimated = $true
+            $judgeCostUnknown = $failedChunkIds.Count -gt 0
+        }
+        elseif (-not $judgeAliasUnresolved -and $null -ne $judge.costUsd -and [double]$judge.costUsd -gt 0) {
+            # An exact id the registry cannot price (or no registry at all): the verdict
+            # documents costUsd as an input, so honour it rather than discard a real figure.
+            $judgeCost = [double]$judge.costUsd
+        }
+        else {
+            Write-Warning "Judge model '$judgeModel' is absent or unpriced in $modelRegistryPath; recording cost as UNKNOWN, not zero."
+            $judgeCost = 0.0
+            $judgeCostUnknown = $true
+        }
     }
-    elseif ($judge.model -notin @('opus', 'sonnet', 'haiku', 'fable') -and
-            $null -ne $judge.costUsd -and [double]$judge.costUsd -gt 0) {
-        # Honour a supplied costUsd for an EXACT model id the registry cannot price —
-        # the verdict file documents it as an input, and an exact id's cost is
-        # attributable to that model (unlike a moving alias, whose caller-side figure
-        # is untrusted precisely because we cannot resolve what it was priced against).
-        $judgeCost = [double]$judge.costUsd
-    }
-    else {
-        Write-Warning "Judge model '$judgeModel' is absent or unpriced in $modelRegistryPath; recording cost as UNKNOWN, not zero."
+    elseif ($judgeAliasUnresolved -and $null -ne $judge.costUsd -and [double]$judge.costUsd -gt 0) {
+        Write-Warning "Judge model '$judgeModel' is an unresolved moving alias; its transported costUsd is untrusted, recording cost as UNKNOWN."
         $judgeCost = 0.0
+        $judgeCostUnknown = $true
+    }
+    elseif (-not $judgeCostUnknown -and $null -eq $judge.costUsd) {
+        # ABSENT costUsd, not a zero VALUE. Testing `$judgeCost -eq 0` also caught an
+        # explicit `costUsd: 0.0` with `costUnknown: false` - a transported known zero,
+        # which a subscription-backed judge legitimately produces - and rewrote it as
+        # unknown. That is the same UNKNOWN-versus-0.0 conflation this emitter exists to
+        # prevent, running in the other direction. (CodeRabbit, PR #135.)
+        #
+        # No tokens and no transported cost is still not evidence that the judge was free.
+        Write-Warning 'aggregate-verdict.json carries no judge token counts and no costUsd; recording judge cost as UNKNOWN, not zero.'
         $judgeCostUnknown = $true
     }
     $named = @{

@@ -1,5 +1,15 @@
 # Controller-to-minimal conversion contract
 
+## Contents
+
+- [Conversion Rules](#conversion-rules)
+- [Behavior Inventory — Required Before Editing](#behavior-inventory--required-before-editing)
+- [Controller to Endpoints](#controller-to-endpoints)
+- [Program.cs Updates](#programcs-updates)
+- [Package Requirements](#package-requirements)
+- [Self-contained route example](#self-contained-route-example)
+
+
 Read this entire reference before converting any controller. Partial conversion is unsafe.
 
 ## Conversion Rules
@@ -111,9 +121,11 @@ When they ARE wanted:
   | ASP.NET Core 10 and earlier | `net10.0` or earlier | `2.x` (`<3.0.0`) |
   | ASP.NET Core 11 and later | `net11.0` or later | supported `3.x` |
 
+  Verified 2026-10-03: [Microsoft.AspNetCore.OpenApi 11.0.0-rc.1.26425.128](https://www.nuget.org/packages/Microsoft.AspNetCore.OpenApi/11.0.0-rc.1.26425.128) targets `net11.0` and declares `Microsoft.OpenApi >= 3.10.0 && < 4.0.0`. Use the resolved package's supported range; check it again when adopting a later prerelease or stable version.
+
   Preserve 2.x for ASP.NET Core 10 and earlier source-generation stacks because
-  `Microsoft.OpenApi 3.x` is incompatible there. For ASP.NET Core 11 and later,
-  follow the supported 3.x dependency line of the matching
+  `Microsoft.OpenApi 3.x` is incompatible there — that half IS observed. For ASP.NET Core
+  11 and later, follow the supported dependency line of the matching
   `Microsoft.AspNetCore.OpenApi` package; do not force a universal Microsoft.OpenApi ceiling.
   For a brand-new project, run `scaffold-dotnet` first, then add this
   minimal-API/OpenAPI delta.

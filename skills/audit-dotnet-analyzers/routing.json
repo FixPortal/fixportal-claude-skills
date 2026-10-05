@@ -1,0 +1,63 @@
+{
+  "_comment": "Per-phase model routing. Follows the skill's own eight-step workflow, collapsing Report and its mandatory STOP into one phase. Reproduce is the only frontier phase, because the skill names it the single likeliest way to reach a confident wrong verdict. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "scope",
+      "tier": "mechanical",
+      "ceiling": "workhorse",
+      "why": "Settles whether this is one repository, a workspace, or a single finding investigation. The mode table maps the request to a mode; nothing is judged about the analyzers yet.",
+      "adjust": []
+    },
+    {
+      "id": "inventory",
+      "tier": "mechanical",
+      "ceiling": "frontier",
+      "why": "Runs the deterministic inventory sweep for SDK, TFM, LangVersion, analyzer packages, config hierarchy and warning policy. The script produces the facts; this phase records them.",
+      "adjust": [
+        {
+          "when": "unreadablePaths > 0",
+          "step": 1,
+          "why": "A non-empty UnreadablePaths, UnreadableFiles or ParseErrors collection makes every dependent conclusion undeterminable. Telling that apart from genuinely absent configuration is the difference between a gap in the repository and a gap in the reading, and reporting the second as the first is silent."
+        }
+      ]
+    },
+    {
+      "id": "attribute",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "why": "Assigns every diagnostic to its owning analyzer. A rule prefix is a hint and not proof, and analyzers arrive bundled - a shared CodeStyle package may ship Sonar transitively - so attributing by prefix produces a confident wrong owner and, with it, a wrong remediation.",
+      "adjust": []
+    },
+    {
+      "id": "reproduce",
+      "tier": "frontier",
+      "floor": "workhorse",
+      "why": "Discharges both proof obligations: never inherit the caller's named culprit as a premise, and prove the real receiving overload rather than a proxy method. The skill records that this failure arrives wearing evidence - a genuine reproduction of the wrong method - which makes it far more dangerous than hand-waving and the likeliest route to a confident wrong verdict.",
+      "adjust": []
+    },
+    {
+      "id": "assess",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "ceiling": "frontier",
+      "why": "Weighs each reproduced rule against the repository's intent and its declared C# version, resolving a genuine conflict by upgrade, configuration, documented exception or code change. Judging technical merit without either chasing novelty or disabling correctness and security rules to reduce noise is the balance here.",
+      "adjust": []
+    },
+    {
+      "id": "report-and-stop",
+      "tier": "workhorse",
+      "ceiling": "workhorse",
+      "why": "Renders findings with facts, inferences and recommendations kept visibly distinct, each carrying rule id, analyzer, version, effective severity, config provenance, evidence and confidence - then stops for the user's resolution. The decisions were made upstream; the discipline is not collapsing recommendation into authorisation.",
+      "adjust": []
+    },
+    {
+      "id": "remediation-prompt",
+      "tier": "workhorse",
+      "floor": "workhorse",
+      "why": "Emits an agent-neutral, self-contained prompt containing only accepted, accepted-with-constraints or validation-authorised findings. The prompt is executed elsewhere by an agent with no access to this audit, so anything wrongly included becomes an unreviewed policy change in someone's repository.",
+      "adjust": []
+    }
+  ]
+}

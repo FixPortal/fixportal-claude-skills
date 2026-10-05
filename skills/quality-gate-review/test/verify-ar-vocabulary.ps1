@@ -35,7 +35,7 @@ foreach ($needle in 'Lean already. Ship.', 'net: -<N> lines possible.',
     }
 }
 
-foreach ($needle in 'classify supplied evidence', 'only new-review exception',
+foreach ($needle in 'classify supplied evidence', 'sole new-review exception',
                     '| Severity | Consensus | Phase 4 | Finding |') {
     if ($corpus -notmatch [regex]::Escape($needle)) {
         throw "Gate contract has an unclear evidence or output boundary: $needle"

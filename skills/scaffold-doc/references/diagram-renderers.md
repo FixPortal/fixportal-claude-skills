@@ -1,5 +1,13 @@
 # Choosing the diagram renderer
 
+## Contents
+
+- [Route by what the figure is FOR, not by where the file is stored](#route-by-what-the-figure-is-for-not-by-where-the-file-is-stored)
+- [Mixing them in one document](#mixing-them-in-one-document)
+- [Three constraints before choosing `diagram-design`](#three-constraints-before-choosing-diagram-design)
+- [Validating either one](#validating-either-one)
+
+
 Read this before drawing anything. Two renderers are available and they are not interchangeable.
 
 ## Route by what the figure is FOR, not by where the file is stored

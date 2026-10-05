@@ -1,17 +1,3 @@
-<#
-.SYNOPSIS
-  Read the active assignment of one .editorconfig key within matching sections.
-
-.PARAMETER SectionPattern
-  Regex matched against the WHOLE section glob (anchored at both ends). '\*\.cs'
-  matches [*.cs] only - never [*.csproj] or [*.csx]. Unanchored matching would lift a
-  value from an unrelated section and report it as the effective C# assignment.
-
-.NOTES
-  When several matching sections assign the same key, every assignment is emitted in
-  file order. .editorconfig precedence is last-wins, so the LAST emitted row is the
-  effective value.
-#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]

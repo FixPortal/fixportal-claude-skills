@@ -5,6 +5,19 @@ supporting files in its directory). Score the five axes below, **verify every
 reference on disk**, and return the JSON contract at the end. Report only —
 make no edits to any skill.
 
+## Contents
+
+- The Iron Law
+- The standard: official skill guidance
+- Axis 1 — Reach
+- Axis 2 — Implementation
+- Axis 3 — Correctness of references + conventions
+- Axis 5 — Exposure
+- Cross-home drift
+- Axis 4 — Utility
+- Severity
+- Return EXACTLY this JSON
+
 ## The Iron Law
 
 Every path, file, directory, command, package, and constant the skill names is
@@ -18,15 +31,46 @@ Use capabilities, not vendor tool names: filesystem glob/read/search, a shell
 existence test, and official web or registry lookup. Map those capabilities to
 the current runtime's native tools.
 
+## The standard: official skill guidance
+
+Axes 1 and 2 grade against three published pages, snapshotted in this skill's
+`assets/guidance/` directory: the Agent Skills specification (`specification.md`),
+Anthropic's skill authoring best practices (`best-practices.md`), and the Claude
+Code skills page (`claude-code-skills.md`). Read the snapshot section a rule comes
+from when a case is unclear. Superpowers' `writing-skills` is third-party and is
+used for one rule only, the workflow-summary rule below; where it disagrees with
+the official pages, the official pages win.
+
+If the main thread tells you the guidance has drifted (`suspended_axes` names
+`reach` and `impl`), do not grade those two axes: set their grades to Polish and give
+each a finding that cites the drift, so a stale rule is never applied as current.
+
 ## Axis 1 — Reach (trigger reliability)
 
-Grade the frontmatter `description` against `writing-skills` CSO rules:
-- State the intended capability and concrete use conditions without summarizing
-  the workflow. A process summary is a 🟧 finding because an agent can
-  follow it instead of reading the body.
-- Third person; starts with "Use when…"; concrete triggers/symptoms/keywords.
+Grade the frontmatter against the official pages:
+- The `description` says what the skill does **and** the conditions that trigger
+  it, in either order, in third person, with concrete keywords. A description may
+  begin "Use when"; nothing requires it. Missing capability or missing triggers
+  is Polish; both vague is Reliability.
+- State the capability and use conditions without summarizing the workflow. A
+  process summary is a Reliability finding because an agent can follow it instead of
+  reading the body (the one `writing-skills` rule kept: it has a recorded failure
+  behind it).
 - Technology scoping explicit if the skill is technology-specific.
-- `name`: letters/numbers/hyphens only. Frontmatter ≤ 1024 chars total.
+- `name`: 1–64 characters of `a-z`, `0-9` and hyphens, no leading or trailing
+  hyphen, no `--`, equal to the directory name, and no `anthropic` or `claude`.
+  A violation is Broken: the skill fails to load or upload.
+- `description`: 1–1024 characters, no XML tags (Broken over the limit).
+  `description` plus `when_to_use` over 1536 characters is truncated in the
+  Claude Code listing (Reliability); the key use case belongs in the first sentence.
+- Frontmatter keys: a key Claude Code does not recognise is silently ignored, so
+  a near-miss spelling (`whenToUse`, `disableModelInvocation`) is Reliability — its text
+  never takes effect. `owner: <your-org>` is outside the spec's six fields but is
+  the house ownership marker and an intended local exception: never a finding.
+  Other non-spec keys are context only, since no owned skill is uploaded to
+  claude.ai, where the upload rejects them.
+- If the main thread reports this skill's description as dropped from the Claude
+  Code listing, that outranks every wording finding: record it as Reliability.
 
 Note any trigger phrases that look likely to collide with another skill in the
 inventory you were given (the main thread confirms overlaps in synthesis — you
@@ -34,10 +78,38 @@ just flag candidates).
 
 ## Axis 2 — Implementation
 
-Against `writing-skills` structure conventions:
-- Required frontmatter present; sensible sections (overview/core principle,
-  when-to-use, quick reference, common mistakes as applicable to the type).
-- Token-efficient (no bloat; detail pushed to supporting files when heavy).
+Against the official pages. No section is required (the spec sets no format
+restrictions); check that the body gives steps, examples, and edge cases where
+the task needs them.
+
+Size and disclosure:
+- `SKILL.md` body under 500 lines (Polish over). Cut what the agent already knows.
+- Claude Code re-attaches only the first 5,000 tokens of a skill after
+  compaction. In a longer skill, a rule that must survive compaction sitting past
+  that point is Reliability. Estimate tokens as characters / 4 and say so.
+- Every supporting file is named from `SKILL.md`, with what it holds and when to
+  read it (Polish unnamed).
+- References one level deep from `SKILL.md`: a file reachable only through
+  another reference is Polish, because agents read nested files partially.
+- A reference file over 100 lines opens with a contents list (Polish without). Verbatim prompt payloads, such as `endgame-review/references/stage2-refute.md`, are exempt: inserting headings would change the prompt sent to reviewers.
+- Skill-relative paths use forward slashes (Polish).
+
+Workflows, scoped to skills whose task needs them:
+- Complex multistep task: numbered steps, and a copyable checklist where steps
+  are easy to skip (Polish).
+- Quality-critical output: a validate, fix, repeat loop with a stated pass
+  condition (Polish; Reliability when the skill's own record shows a skipped validation).
+- Batch, destructive or high-stakes work: plan, validate the plan, execute,
+  verify (Reliability when absent).
+- A rule that must hold every time, enforced only by prose where a hook exists
+  or is feasible (Polish).
+
+Content:
+- No time-conditional instruction (one that is correct only before or after a
+  date) (Polish). Dated evidence such as "measured 2026-09-19" is provenance, not
+  this.
+- One term per concept; a default with an escape hatch rather than a menu of
+  options (Polish).
 - Flowcharts only for non-obvious decisions — not for reference or linear steps.
 - One good example, not multi-language dilution.
 - Internally consistent (steps don't contradict the overview or each other).
@@ -52,6 +124,9 @@ Against `writing-skills` structure conventions:
 - Internal constants (hardcoded paths like a `VAULT_DIR`) → point at something
   real.
 - Cross-references / `[[memory]]` links → the named target exists.
+- Scripts the skill ships → the skill says whether to run or read each one,
+  lists what it needs installed, and explains its constants; MCP tools are named
+  `ServerName:tool_name`. Missing is Polish, a script that cannot run is Broken.
 
 **3b. Convention adherence — open active runtime instructions, cite the rule.**
 Read each applicable file that exists: `~/.claude/CLAUDE.md`,
@@ -84,7 +159,7 @@ Two steps, in order:
    runtime — a runtime configured to a model vendor other than the user's own
    first-party provider. `~/.pi/skills` and `~/.pi/agent/skills` are the current
    case: PI is routinely pointed at OpenRouter-hosted third-party models. If the
-   skill is mounted in no third-party home, grade 🟩 and record that as the
+   skill is mounted in no third-party home, grade Good and record that as the
    reason. Do not grade content you have established nobody exports.
 2. **Content.** Run the token sweep over the skill directory and read for the
    three unscannable classes. Grade to the worst class present.
@@ -111,7 +186,7 @@ gemini-home-only for a skill authored only in Antigravity).
 Report the cross-home result **only** in the `drift` field — do **not** record
 a sibling home as a `references_checked` entry, and never mark an absent
 home as a `broken` reference (a single-home skill is not broken). Diverged
-bodies are a 🟧 finding; a deliberately single-home skill is `drift` context,
+bodies are a Reliability finding; a deliberately single-home skill is `drift` context,
 not a finding unless the absence is clearly accidental.
 
 ## Axis 4 — Utility
@@ -146,14 +221,16 @@ that succeeded in a high-severity event can be `keep`.
 
 ## Severity
 
-- 🟥 **Broken** — a reference doesn't resolve / the skill can't work as written.
-- 🟧 **Reliability** — won't self-trigger, violates active runtime instructions, or
-  cross-home drift.
-- 🟨 **Polish** — bloat, missing section, weak example.
+- **Broken** — a reference doesn't resolve / the skill can't work as written.
+- **Reliability** — won't self-trigger (including a description dropped from
+  the Claude Code listing or a silently ignored frontmatter key), violates active
+  runtime instructions, or cross-home drift.
+- **Polish** — bloat, a disclosure or workflow gap above, weak example. A
+  missing named section is not a finding.
 
-Utility glyphs are grades, not defect severities. Use 🟩 for `keep`, 🟨 for
-`insufficient-evidence`, 🟧 for `narrow`/`merge`/`archive`, and 🟥 for `retire`.
-A utility 🟥 requires affirmative evidence of obsolete or net-negative behavior,
+Utility grades represent lifecycle decisions, not defect severities. Use Good for `keep`, Polish for
+`insufficient-evidence`, Reliability for `narrow`/`merge`/`archive`, and Broken for `retire`.
+A utility Broken requires affirmative evidence of obsolete or net-negative behavior,
 not merely no usage. Record lifecycle decisions in `lifecycle`, not `findings`;
 a sound but superseded skill is not technically broken.
 
@@ -163,15 +240,15 @@ a sound but superseded skill is not technically broken.
 {
   "skill": "<name>",
   "homes": ["<every runtime surface where the skill exists>"],
-  "grades": { "reach": "🟩|🟨|🟧|🟥", "impl": "🟩|🟨|🟧|🟥", "correctness": "🟩|🟨|🟧|🟥", "utility": "🟩|🟨|🟧|🟥", "exposure": "🟩|🟨|🟧|🟥" },
+  "grades": { "reach": "Good|Polish|Reliability|Broken", "impl": "Good|Polish|Reliability|Broken", "correctness": "Good|Polish|Reliability|Broken", "utility": "Good|Polish|Reliability|Broken", "exposure": "Good|Polish|Reliability|Broken" },
   "references_checked": [
     { "ref": "<path/command/package/constant>", "kind": "path|command|package|constant|crossref", "status": "resolved|broken", "evidence": "<what you ran / result>" }
   ],
   "findings": [
-    { "severity": "🟥|🟧|🟨", "axis": "reach|impl|correctness", "evidence": "<exact path/line/phrase>", "fix": "<precise fix, described not applied>" }
+    { "severity": "Broken|Reliability|Polish", "axis": "reach|impl|correctness", "evidence": "<exact path/line/phrase>", "fix": "<precise fix, described not applied>" }
   ],
   "exposure_findings": [
-    { "severity": "🟥|🟧|🟨", "class": "credential|identity-topology|attribution|runtime-fetch", "evidence": "<exact path:line and the disclosing text>", "third_party_homes": ["<home that exports it>"], "fix": "<precise fix, described not applied>" }
+    { "severity": "Broken|Reliability|Polish", "class": "credential|identity-topology|attribution|runtime-fetch", "evidence": "<exact path:line and the disclosing text>", "third_party_homes": ["<home that exports it>"], "fix": "<precise fix, described not applied>" }
   ],
   "exposure_scope": "<first-party-only: no third-party home | swept: <third-party homes>>",
   "utility_evidence": [
@@ -193,7 +270,7 @@ third-party home, recorded as `exposure_scope: first-party-only`, or the sweep o
 its third-party homes actually ran and found nothing, recorded as
 `exposure_scope: swept: <those homes>`. `exposure_scope` is where that decision
 lives; it is not an overload of `top_issue` or the grade rationale.
-A 🟩 exposure grade with no stated scope is the failure this axis exists to prevent:
+A Good exposure grade with no stated scope is the failure this axis exists to prevent:
 it reads identically whether the skill is clean or was never scanned.
 
 `utility_evidence` must also be non-empty. If no attributable evidence exists,

@@ -1,0 +1,69 @@
+{
+  "_comment": "Per-phase model routing. Mirrors the skill's own phase table - Recon, Evidence, Synthesis, Verify, Report - plus the approved fix pass. The evidence workers fan out across axes A-H against a verbatim brief; synthesis and verification are where a wrong answer is expensive. See model-registry/references/routing-schema.md.",
+  "schema": 1,
+  "vendorScope": "host",
+  "phases": [
+    {
+      "id": "recon",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Chooses Full or Delta and establishes stack, scope, baseline and artefacts. The load-bearing decision is whether a Delta baseline is present, unambiguous, verified and an ancestor - because the documented failure is a relabelled partial audit presented as a full one, which understates risk while looking complete.",
+      "adjust": [
+        {
+          "when": "deltaBaselineVerified == 0",
+          "step": 1,
+          "why": "An unverified or non-ancestor baseline forces the Full-or-stop judgement, which is the one call that decides whether the whole audit is honest."
+        }
+      ]
+    },
+    {
+      "id": "evidence-axes",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "Each worker takes one axis with axis-brief.md verbatim and its documented run context. Bounded input, a fixed brief, and no cross-axis reasoning - the worker reads assertions and anchors every claim to file:line.",
+      "adjust": [
+        {
+          "when": "axisCount > 6",
+          "step": -1,
+          "why": "A wide axis fan-out means each worker's slice is one axis against a fully specified brief, which is the shape a cheaper tier handles without losing the anchor discipline."
+        },
+        {
+          "when": "priorUnresolvedHigh > 0",
+          "step": 1,
+          "why": "Re-auditing against an open Critical/High backlog means judging whether a claimed fix holds, which is harder than reading the code for the first time."
+        }
+      ]
+    },
+    {
+      "id": "synthesis",
+      "tier": "frontier",
+      "floor": "workhorse",
+      "why": "Maps behaviours to effective tests across every axis at once and routes findings into behaviour, suite-hygiene, measurement and n-a. This is the pass the per-axis workers cannot do, and its characteristic error is false confidence - declaring a behaviour covered because a test names it.",
+      "adjust": []
+    },
+    {
+      "id": "verify-refute",
+      "tier": "frontier",
+      "floor": "workhorse",
+      "why": "Independently refutes every Critical/High gap and every claimed resolution or downgrade. It is an adversarial pass against the audit's own conclusions, so sharing a tier with synthesis is the point; unusable verification retries once and then stands explicitly unverified rather than quietly passing.",
+      "adjust": []
+    },
+    {
+      "id": "report",
+      "tier": "workhorse",
+      "ceiling": "workhorse",
+      "why": "Renders decided findings into the seven-section contract and stops. The judgements were made in synthesis and verification; this is faithful transcription that states mode, audited HEAD and any Delta range.",
+      "adjust": []
+    },
+    {
+      "id": "approved-fix-slice",
+      "tier": "workhorse",
+      "floor": "mechanical",
+      "ceiling": "frontier",
+      "why": "One approved slice at a time in a review worktree, demonstrating the new test can fail before it passes. The slice is already scoped and approved, but writing a test that genuinely fails for the right reason is not transcription.",
+      "adjust": []
+    }
+  ]
+}
