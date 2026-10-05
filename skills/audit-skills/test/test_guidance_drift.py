@@ -225,6 +225,25 @@ class FetchTimeoutTests(unittest.TestCase):
             self.assertEqual([p for p in drift.PAGES if (dest / p["file"]).exists()], [])
 
 
+class FetchNonzeroExitTests(unittest.TestCase):
+    def test_a_failed_scrape_leaves_no_partial_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "live"
+
+            def failing_run(cmd, **kwargs):
+                Path(cmd[-1]).write_text("partial", encoding="utf-8")
+                return drift.subprocess.CompletedProcess(cmd, 1)
+
+            real_which, real_run = drift.shutil.which, drift.subprocess.run
+            drift.shutil.which = lambda name: "firecrawl"
+            drift.subprocess.run = failing_run
+            try:
+                drift.fetch(dest)
+            finally:
+                drift.shutil.which, drift.subprocess.run = real_which, real_run
+            self.assertEqual([p for p in drift.PAGES if (dest / p["file"]).exists()], [])
+
+
 class FetchFailedWithoutSnapshotTests(unittest.TestCase):
     def test_failed_fetch_and_no_snapshot_is_fetch_failed_and_suspends_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
