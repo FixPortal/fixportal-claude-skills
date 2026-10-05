@@ -91,10 +91,15 @@ def fetch(dest: Path) -> None:
         if not exe:
             continue  # every page then reads as fetch-failed, which is reported, not hidden
         try:
-            subprocess.run([exe, "scrape", page["url"], "--only-main-content", "--max-age", "0",
-                            "-o", str(dest / page["file"])], check=False, timeout=SCRAPE_TIMEOUT_S)
+            done = subprocess.run([exe, "scrape", page["url"], "--only-main-content", "--max-age", "0",
+                                   "-o", str(dest / page["file"])], check=False, timeout=SCRAPE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             # A hung scrape must not stall the run; the page then reads as fetch-failed.
+            (dest / page["file"]).unlink(missing_ok=True)
+            continue
+        if done.returncode != 0:
+            # A failed scrape can leave a partial file; comparing or refreshing from it would
+            # treat truncated guidance as the real page. Drop it so the page reads fetch-failed.
             (dest / page["file"]).unlink(missing_ok=True)
 
 
