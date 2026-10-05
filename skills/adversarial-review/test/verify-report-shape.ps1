@@ -256,6 +256,19 @@ try {
     $partialPathResult = & pwsh -NoProfile -File $validator -Path $partialPathCoverage -RepoPath $repo 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0 -or $partialPathResult -notmatch 'reviewed-paths entry matches no tracked files') { throw "validator accepted a partially unmatched reviewed-paths list`n$partialPathResult" }
     Remove-Item -LiteralPath $partialPathCoverage -Recurse -Force
+    # A missing tip is already its own violation; the reviewed-paths probe diffs against
+    # that tip, so git fails with no stdout and must not add a false "matches no tracked
+    # files" for a path that does match.
+    $missingTip = 'deadbeef' * 5
+    $missingTipCoverage = New-CoverageRun 'missing-tip-coverage' @(
+        '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+        'scope-kind: subsystem', "target: $baseSha..$missingTip", 'reviewed-paths:', '  - src/**',
+        'disposition: reviewed', '---'
+    )
+    $missingTipResult = & pwsh -NoProfile -File $validator -Path $missingTipCoverage -RepoPath $repo 2>&1 | Out-String
+    if ($missingTipResult -notmatch "target commit does not exist in RepoPath: $missingTip") { throw "validator did not report the missing tip`n$missingTipResult" }
+    if ($missingTipResult -match 'reviewed-paths entry matches no tracked files') { throw "a missing tip must not also report its reviewed-paths as unmatched`n$missingTipResult" }
+    Remove-Item -LiteralPath $missingTipCoverage -Recurse -Force
     $futureDate = New-CoverageRun 'future-date' @(
         '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2099-01-01',
         'scope-kind: repository', "target: $baseSha..$tipSha", 'disposition: reviewed', '---'

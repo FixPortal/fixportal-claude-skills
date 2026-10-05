@@ -369,6 +369,12 @@ exit 7
         '## 13. Artifact ledger',
         '## 14. Remediation manifest'
     )
+    $reportContractText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\references\report-contract.md') -Raw
+    foreach ($heading in $reportHeadings) {
+        if (-not $reportContractText.Contains("`n$heading`n") -and -not $reportContractText.Contains("`n$heading`r`n")) {
+            throw "report-contract.md must state the exact validator heading '$heading'."
+        }
+    }
     $validReportPath = Join-Path $manifestDirectory 'valid.md'
     (@('# Performance audit') + $reportHeadings + @('Validated with `scripts/test-performance-manifest.ps1`.')) | Set-Content -LiteralPath $validReportPath
 

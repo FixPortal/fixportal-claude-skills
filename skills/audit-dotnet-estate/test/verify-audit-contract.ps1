@@ -79,7 +79,15 @@ Commands.
     Set-Content -LiteralPath $blankCoveragePath -Value ($validReport -replace 'Freshness: Current; Depth: Measured; Harness: Retained', '')
     Assert-Fails { & $reportValidator -Path $blankCoveragePath | Out-Null } 'Performance audit coverage.*Sample' 'A report with an empty performance coverage value must be rejected.'
 
-    $missingSectionPath = Join-Path $tempRoot 'missing-section.md'
+    $dashDepthCurrentPath = Join-Path $tempRoot 'dash-depth-current.md'
+    Set-Content -LiteralPath $dashDepthCurrentPath -Value ($validReport -replace 'Depth: Measured', 'Depth: —')
+    Assert-Fails { & $reportValidator -Path $dashDepthCurrentPath | Out-Null } 'Performance audit coverage.*Sample' 'A Current or Stale manifest must declare a depth, not an em dash.'
+
+    $notFoundCoveragePath = Join-Path $tempRoot 'not-found-coverage.md'
+    Set-Content -LiteralPath $notFoundCoveragePath -Value ($validReport -replace 'Freshness: Current; Depth: Measured', 'Freshness: Not found; Depth: —')
+    & $reportValidator -Path $notFoundCoveragePath | Out-Null
+
+    $missingSectionPath =Join-Path $tempRoot 'missing-section.md'
     Set-Content -LiteralPath $missingSectionPath -Value ($validReport -replace '(?ms)^## Appendix\r?\n.*\z', '')
     Assert-Fails { & $reportValidator -Path $missingSectionPath | Out-Null } 'Appendix' 'A report missing a declared section must be rejected.'
 

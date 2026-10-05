@@ -200,6 +200,17 @@ try {
     $splitStaleB = CommitAt $splitStale 'src/B.cs' 'reviewed B' '2026-01-03'
     RunIndex 'splitstale' '20260103T000000Z' @('date: 2026-01-03', 'scope-kind: subsystem', "target: $splitStaleBeforeB..$splitStaleB", 'reviewed-paths:', '  - src/B.cs')
 
+    # A source file no review owns, deleted after the newest boundary, is not new source: it is
+    # absent from HEAD, so a Reviewed-paths prompt naming it could never match a tracked file.
+    $newDel = Join-Path $repos 'newdel'
+    New-Item -ItemType Directory -Force -Path $newDel | Out-Null
+    $null = Invoke-FixtureGit $newDel @('init', '-q')
+    $newDelBase = Commit $newDel 'src/Keep.cs' 'unreviewed source'
+    $newDelTip = Commit $newDel 'docs/a.md' 'reviewed docs'
+    RunIndex 'newdel' '20260101T000000Z' @('date: 2026-01-01', 'scope-kind: subsystem', "target: $newDelBase..$newDelTip", 'reviewed-paths:', '  - docs/a.md')
+    $null = Invoke-FixtureGit $newDel @('rm', '-q', 'src/Keep.cs')
+    $null = Invoke-FixtureGit $newDel @('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'delete unreviewed source')
+
     $data = Join-Path $root 'data.json'
     # Scope comes from an estate file, so its paths, vault root and exemptions are all exercised.
     $estateFile = Join-Path $root 'estate.json'
@@ -207,7 +218,9 @@ try {
     & pwsh -NoProfile -File (Join-Path $skill 'collect.ps1') -EstateFile $estateFile -OutFile $data | Out-Null
     if ($LASTEXITCODE) { throw 'collector failed on fixture' }
     $rows = @(Get-Content -LiteralPath $data -Raw | ConvertFrom-Json)
-    Check ($rows.Count -eq 14) 'one row per scanned repository, including empty and rename-collision Git repositories'
+    Check ($rows.Count -eq 15) 'one row per scanned repository, including empty and rename-collision Git repositories'
+    $newDelRow = @($rows | Where-Object repo -EQ 'newdel')[0]
+    Check (@($newDelRow.newSource).Count -eq 0 -and $newDelRow.queue -ne 'new-source') "an unowned source file deleted after the newest boundary is not new source: queue $($newDelRow.queue), newSource $(@($newDelRow.newSource) -join ',')"
     $emptyVault = Join-Path $root 'empty-vault'
     New-Item -ItemType Directory -Force -Path $emptyVault | Out-Null
     & pwsh -NoProfile -File (Join-Path $skill 'collect.ps1') -Path $repos -VaultRoot $emptyVault -OutFile (Join-Path $root 'empty-data.json') 2>$null | Out-Null

@@ -153,6 +153,24 @@ try {
     if (Get-ChildItem -LiteralPath $handoffRoot -Force -Filter '*.tmp') {
         throw 'Handoff publication left a temporary file behind'
     }
+
+    # The failure path: a pre-existing destination makes File.Move throw, leaves the existing
+    # brief untouched, and leaves the .tmp sibling behind for the documented cleanup.
+    $briefFile = $firstBrief
+    $briefTemp = Join-Path $handoffRoot '.collision.md.tmp'
+    $brief = "# Handoff: collision`n"
+    $threw = $false
+    try { & $publicationBlock } catch { $threw = $true }
+    if (-not $threw) { throw 'Handoff File.Move did not refuse an existing destination' }
+    if ((Get-Content -Raw -LiteralPath $firstBrief) -notmatch 'first') {
+        throw 'Handoff collision overwrote the existing brief'
+    }
+    if (-not (Test-Path -LiteralPath $briefTemp)) { throw 'Handoff collision did not leave the .tmp sibling to clean up' }
+    # The cleanup targets $briefTemp, which regenerating the token repoints, so the doc must
+    # order the cleanup first.
+    if ($publication -notmatch 'clean up the current `\$briefTemp`\s+\(below\), then regenerate') {
+        throw 'Handoff failure path does not say to clean up the failed temp file before regenerating the token'
+    }
 }
 finally {
     if (Test-Path -LiteralPath $handoffRoot) { Remove-Item -LiteralPath $handoffRoot -Recurse -Force }

@@ -17,26 +17,29 @@ Draft exactly `report.md` and `report.manifest.json` in a unique `.staging-*` ch
 
 ## Report order
 
-**These fourteen strings are the report's level-2 headings, verbatim.** Each appears once,
-in this order, and the report carries no other `##` heading — the numbering here is the
-order, not a prefix to write. Stated because "report order" alone left it open whether
-these were headings or a summary of topics, and a validator or a reader comparing two
-audits has nothing to compare if each names its sections differently.
+**These fourteen lines are the report's level-2 headings, verbatim, including the `## N.`
+prefix.** Each appears once, in this order, and the report carries no other `##` heading;
+`Test-Report` in `scripts/test-performance-manifest.ps1` compares them exactly. Stated because
+"report order" alone left it open whether these were headings or a summary of topics, and a
+validator or a reader comparing two audits has nothing to compare if each names its sections
+differently. Under section 8, give each finding all four costing views.
 
-1. Orientation and executive summary.
-2. Repository, scope, and authority boundaries.
-3. Workload contracts.
-4. Environment and reproducibility ledger.
-5. Tool and source ledger.
-6. Baseline results.
-7. Attributed hotspot map.
-8. Costed findings, each with all four costing views.
-9. Rejected and inconclusive experiments.
-10. Recommended experiment order.
-11. Unassessed dimensions and fidelity gaps.
-12. Repository-state preservation evidence.
-13. Artifact ledger.
-14. Remediation manifest.
+```text
+## 1. Orientation and executive summary
+## 2. Repository, scope, and authority boundaries
+## 3. Workload contracts
+## 4. Environment and reproducibility ledger
+## 5. Tool and source ledger
+## 6. Baseline results
+## 7. Attributed hotspot map
+## 8. Costed findings
+## 9. Rejected and inconclusive experiments
+## 10. Recommended experiment order
+## 11. Unassessed dimensions and fidelity gaps
+## 12. Repository-state preservation evidence
+## 13. Artifact ledger
+## 14. Remediation manifest
+```
 
 When a reusable external harness should enter source, add this small table under section 10, outside the `PERF-NNN` remediation lifecycle:
 

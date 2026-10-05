@@ -198,17 +198,19 @@ exit 0
     "batch-review.ps1 OK — a wedged chunk is cut off at -ChunkTimeoutSeconds and a clean chunk is named"
 
     # The ceiling is PER CHUNK. Three 3-second chunks run one at a time (three waves)
-    # take ~9s in all; a 5s ceiling must stop none of them. A batch-wide clock would
-    # kill the later waves for time the earlier ones spent.
+    # take over 9s in all; an 8s ceiling must stop none of them. A batch-wide clock would
+    # kill the later waves for time the earlier ones spent. 8s, not 5s: the chunk clock
+    # also covers each child pwsh's cold start, which a loaded runner can stretch to
+    # seconds, while 3 x 3s of sleep alone still exceeds 8s, so the test still bites.
     $m17 = Join-Path $root 'm17.json'; New-Manifest $m17 @('SLOW1', 'SLOW2', 'SLOW3')
     $runRoot17 = Join-Path $root 'run17'
     $out17 = & pwsh -NoProfile -File (Join-Path $fakeSkill 'batch-review.ps1') -ChunkManifest $m17 -RepoPath $fakeRepo `
-        -RunRoot $runRoot17 -BatchSize 1 -ChunkTimeoutSeconds 5 2>&1 | Out-String
+        -RunRoot $runRoot17 -BatchSize 1 -ChunkTimeoutSeconds 8 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "a multi-wave batch must complete, exited $LASTEXITCODE`n$out17" }
     $rows17 = @(Get-Content -LiteralPath (Join-Path $runRoot17 'batch-summary.json') -Raw | ConvertFrom-Json)
     $killed17 = @($rows17 | Where-Object { $_.timedOut -or $_.exitCode -ne 0 })
     if ($rows17.Count -ne 3 -or $killed17.Count -ne 0) {
-        throw "each chunk ran under the 5s ceiling, so none may time out or fail, got: $($rows17 | ConvertTo-Json -Compress)"
+        throw "each chunk ran under the 8s ceiling, so none may time out or fail, got: $($rows17 | ConvertTo-Json -Compress)"
     }
     "batch-review.ps1 OK — -ChunkTimeoutSeconds is a per-chunk clock across waves"
 

@@ -29,6 +29,7 @@
       "vendor": "openai",
       "effort": "high",
       "repoAccess": true,
+      "allowRepoCommands": true,
       "enabled": true
     }
   ],

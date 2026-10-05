@@ -71,9 +71,18 @@ if ($driver -notmatch 'gh pr diff \$Target --repo \$repoSlug') {
 if ($driver -match 'git -C \$RepoPath diff @(?:diffArgs|wtArgs|compactArgs) 2>&1') {
     throw 'git diff stderr must not be merged into and hashed as the review evidence text'
 }
-$codexSeat = @($manifest.reviewers | Where-Object id -eq 'X')[0]
-if (-not $codexSeat.allowRepoCommands) {
-    throw 'the repo-aware Codex seat must explicitly opt into repo commands in reviewers.json'
+# Every repo-aware Codex record, not only seat X: codex-review.ps1 exits 2 on -RepoPath
+# without the opt-in, so a judgeAudit/verifier pool member or a fixture seat lacking it
+# dies before reviewing. The pinned fixture is held to the same contract as the live file.
+$pinned = Get-Content (Join-Path $root 'test' 'fixtures' 'pinned-reviewers.json') -Raw | ConvertFrom-Json
+foreach ($m in @($manifest, $pinned)) {
+    $codexRecords = @($m.reviewers) + @($m.roles.PSObject.Properties.Value | ForEach-Object { $_; @($_.pool) }) |
+        Where-Object { $_ -and $_.wrapper -eq 'codex' -and $_.repoAccess }
+    foreach ($rec in $codexRecords) {
+        if (-not $rec.allowRepoCommands) {
+            throw "repo-aware Codex record '$($rec.id ?? "$($rec.vendor) pool member")' must set allowRepoCommands, or codex-review.ps1 exits 2 on -RepoPath"
+        }
+    }
 }
 foreach ($refusalToken in 'will\s+not', 'won''''t', 'decline(?:d)?\s+to', 'not\s+going\s+to', 'be\s+reviewed') {
     if ($driver -notmatch [regex]::Escape($refusalToken)) {
