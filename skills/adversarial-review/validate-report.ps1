@@ -323,9 +323,11 @@ foreach ($index in $indexes) {
     # shape the sweep requires with no machine form that validates. It is a fixed,
     # universal git constant, so accept it as a base and check only the tip.
     $shasToCheck = if ($baseSha -eq $emptyTree) { @($tipSha) } else { @($baseSha, $tipSha) }
+    $tipExists = $true
     foreach ($sha in $shasToCheck) {
         & git -C $RepoPath cat-file -e "$sha^{commit}" 2>$null
         if ($LASTEXITCODE -ne 0) {
+            if ($sha -eq $tipSha) { $tipExists = $false }
             $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "target commit does not exist in RepoPath: $sha"; Text = '' }
         }
     }
@@ -359,9 +361,14 @@ foreach ($index in $indexes) {
     }
     $reviewedPaths = @(Get-List $fm 'reviewed-paths')
     $excludedPaths = @(Get-List $fm 'excluded-paths')
-    foreach ($path in $reviewedPaths) {
-        $matchesAtTip = @(& git -C $RepoPath diff --name-only $emptyTree $tipSha -- $path)
-        if (-not $matchesAtTip.Count) {
+    # A missing tip is reported above; probing paths against it would only add a false
+    # "matches no tracked files" per entry.
+    foreach ($path in @(if ($tipExists) { $reviewedPaths })) {
+        $matchesAtTip = @(& git -C $RepoPath diff --name-only $emptyTree $tipSha -- $path 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "reviewed-paths entry could not be probed (git diff exited $LASTEXITCODE): $path"; Text = [string]$path }
+        }
+        elseif (-not $matchesAtTip.Count) {
             $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "reviewed-paths entry matches no tracked files at reviewed tip: $path"; Text = [string]$path }
         }
     }

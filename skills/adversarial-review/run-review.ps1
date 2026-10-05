@@ -485,7 +485,10 @@ if ($Target -match '^\d+$') {
     if ($Pathspec) { Die 'PR targets do not support pathspecs; review the PR as-is or use an explicit git ref/range with -Pathspec.' 2 }
     $isPR = $true
     Write-Host "Resolving PR #$Target via gh..."
-    $originUrl = (& git -C $RepoPath remote get-url origin 2>$null).Trim()
+    # Interpolated, not cast: a failed lookup yields no output, and under
+    # ErrorActionPreference Stop `([string](& git ...)).Trim()` still threw "cannot call
+    # a method on a null-valued expression" (observed) before the Die below could run.
+    $originUrl = "$(& git -C $RepoPath remote get-url origin 2>$null)".Trim()
     if ($LASTEXITCODE -ne 0 -or -not $originUrl) { Die "Cannot resolve origin for PR #$Target in $RepoPath." }
     $repoSlug = [regex]::Match($originUrl, '(?:[:/])([^/:]+/[^/:]+?)(?:\.git)?$')
     if (-not $repoSlug.Success) { Die "Cannot derive GitHub owner/repo from origin '$originUrl'." }
@@ -580,7 +583,7 @@ else {
         }
         if (-not $defaultBranch) { Die 'Could not detect a default branch (no origin/HEAD, no main/master).' }
         $defaultBranch = ($defaultBranch -replace '^origin/', '').Trim()
-        $base = (& git -C $RepoPath merge-base $defaultBranch HEAD 2>$null).Trim()
+        $base = "$(& git -C $RepoPath merge-base $defaultBranch HEAD 2>$null)".Trim()
         if (-not $base) { Die "Could not find merge-base of $defaultBranch and HEAD." }
         $baseDiffArgs = @('-U6', $base)
         $resolvedTargetIdentity = "branch:$base..$((& git -C $RepoPath rev-parse HEAD).Trim())"

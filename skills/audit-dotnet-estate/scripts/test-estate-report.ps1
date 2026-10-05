@@ -58,7 +58,7 @@ foreach ($line in $tableLines | Select-Object -Skip 2) {
     if ([string]::IsNullOrWhiteSpace($coverage)) {
         throw "Performance audit coverage is empty for repository '$repository'."
     }
-    if ($coverage -notmatch '^Freshness: (Current|Stale|Not found|Not assessed); Depth: (Measured|Characterized|Surveyed|Blocked|Legacy-unspecified|—); Harness: (Retained|Promotion candidate|None|Not assessed)$') {
+    if ($coverage -notmatch '^Freshness: (?:(?:Current|Stale); Depth: (?:Measured|Characterized|Surveyed|Blocked|Legacy-unspecified)|(?:Not found|Not assessed); Depth: —); Harness: (Retained|Promotion candidate|None|Not assessed)$') {
         throw "Performance audit coverage for repository '$repository' must declare valid Freshness, Depth, and Harness values."
     }
 }

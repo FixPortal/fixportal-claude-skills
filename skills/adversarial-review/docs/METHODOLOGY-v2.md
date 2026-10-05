@@ -109,12 +109,11 @@ price.
   mid-Jul 2026 launch; swap to it per chunk only if the 1M window is needed, or
   to `-highspeed` only when speed is worth the 3x burn.
 - The judge stays the **Opus lineage** (Anthropic frontier, family `claude-opus`) —
-  one coherent adjudicating voice, whose inputs are already four-vendor.
-  Reviewer≠judge decorrelation is preserved, and now structurally: B is held at
-  `workhorse` and F is constrained to the Fable family, so neither seat can drift
-  onto the judge's model when Anthropic's frontier ranking changes. Under a bare
-  `frontier` constraint it could, silently, and the panel would still report four
-  vendors.
+  one coherent adjudicating voice, whose inputs are already five-vendor.
+  Reviewer≠judge decorrelation is preserved, and now structurally: F, the only
+  Anthropic seat, is constrained to the Fable family, so it cannot drift onto the
+  judge's model when Anthropic's frontier ranking changes. Under a bare `frontier`
+  constraint it could, silently, and the panel would still report five vendors.
 
 ## Where Kimi sits, and why
 

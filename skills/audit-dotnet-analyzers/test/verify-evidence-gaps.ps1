@@ -48,6 +48,14 @@ try {
     if (($statusA -join "`n") -ne ($statusB -join "`n") -or $fingerprintA -ceq $fingerprintB) {
         throw 'Content fingerprint must detect changed bytes when Git status text is unchanged.'
     }
+    $deletedPath = Join-Path $fingerprintRepo 'zz-deleted.txt'
+    [IO.File]::WriteAllText($deletedPath, 'gone')
+    $null = Invoke-FixtureGit -C $fingerprintRepo add zz-deleted.txt
+    Remove-Item -LiteralPath $deletedPath -Force
+    if ($null -ne (Get-ContentFingerprint -Repo $fingerprintRepo)) {
+        throw 'A listed file that is missing after earlier files hashed must make the whole fingerprint null, not a partial array.'
+    }
+    $null = Invoke-FixtureGit -C $fingerprintRepo rm --cached --quiet zz-deleted.txt
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         $newlinePath = Join-Path $fingerprintRepo "line`nbreak.txt"
         [IO.File]::WriteAllText($newlinePath, 'first')

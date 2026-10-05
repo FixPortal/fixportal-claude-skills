@@ -80,7 +80,7 @@ scope". You have the tools. Use them.
   snapshot is optional; without it the script compares live only). Run:
 
   ```bash
-  python ~/.agents/skills/audit-skills/guidance_drift.py --out <run working dir>
+  python <this skill's directory>/guidance_drift.py --out <run working dir>
   ```
 
   It fetches each page uncached through firecrawl, strips site chrome, diffs it
@@ -92,7 +92,10 @@ scope". You have the tools. Use them.
     from the live page text: that makes two runs over unchanged skills disagree.
     After the run, reconcile `audit-brief.md` with the diff, then re-run with
     `--refresh` to store the new snapshot in the same change.
-  - `fetch-failed` — grade from the snapshot and say so in the method line.
+  - `fetch-failed` — grade from the snapshot and say so in the method line. If
+    there is no snapshot either, no guidance was verified: grade Axes 1 and 2 from
+    the brief alone and say "guidance unverified: fetch failed, no snapshot" in the
+    method line.
   - `no-snapshot` — no snapshot to diff against; grade normally and say
     "no snapshot; compared live only" in the method line.
 - Record which owned skills the Claude Code skill listing in this session shows
@@ -216,7 +219,7 @@ delegation is unavailable.
 Resolve the model for this phase before dispatching:
 
 ```text
-python ~/.agents/skills/model-registry/route.py  --routing ~/.agents/skills/audit-skills/routing.json  --phase phase-1-per-skill-audit  --facts '{"fanout": <owned skill count>, "priorUnresolvedHigh": <open Critical+High in the previous report, omitted entirely when there is no previous report>}'  --manifest <run working dir>/routing-manifest.json
+python ~/.agents/skills/model-registry/route.py  --routing <this skill's directory>/routing.json  --phase phase-1-per-skill-audit  --facts '{"fanout": <owned skill count>, "priorUnresolvedHigh": <open Critical+High in the previous report, omitted entirely when there is no previous report>}'  --manifest <run working dir>/routing-manifest.json
 ```
 
 If the `model-registry` skill is not installed, skip resolution and dispatch at your

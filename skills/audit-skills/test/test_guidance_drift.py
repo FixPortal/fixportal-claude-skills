@@ -203,5 +203,37 @@ class FetchTests(unittest.TestCase):
             self.assertEqual([p for p in drift.PAGES if (dest / p["file"]).exists()], [])
 
 
+class FetchTimeoutTests(unittest.TestCase):
+    def test_a_hung_scrape_is_bounded_and_leaves_no_partial_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "live"
+            seen = []
+
+            def hung_run(cmd, **kwargs):
+                seen.append(kwargs.get("timeout"))
+                Path(cmd[-1]).write_text("partial", encoding="utf-8")
+                raise drift.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+            real_which, real_run = drift.shutil.which, drift.subprocess.run
+            drift.shutil.which = lambda name: "firecrawl"
+            drift.subprocess.run = hung_run
+            try:
+                drift.fetch(dest)
+            finally:
+                drift.shutil.which, drift.subprocess.run = real_which, real_run
+            self.assertTrue(all(isinstance(t, (int, float)) and t > 0 for t in seen) and seen)
+            self.assertEqual([p for p in drift.PAGES if (dest / p["file"]).exists()], [])
+
+
+class FetchFailedWithoutSnapshotTests(unittest.TestCase):
+    def test_failed_fetch_and_no_snapshot_is_fetch_failed_and_suspends_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fetched = Path(tmp) / "fetched"
+            fetched.mkdir()
+            result = drift.compare(Path(tmp) / "absent", fetched)
+        self.assertEqual(result["status"], "fetch-failed")
+        self.assertEqual(result["suspended_axes"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

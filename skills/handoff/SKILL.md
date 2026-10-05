@@ -194,9 +194,11 @@ Set-Content -LiteralPath $briefTemp -Value $brief -Encoding UTF8
 **The `File.Move` throw IS the never-overwrite guard** — it refuses an existing
 destination, which is exactly the wanted behaviour, so do not add a `Test-Path` before it
 and do not wrap it in a try that continues. With the token in the name it should never
-fire; if it does, regenerate the token and re-run rather than reusing the name. What the
-throw leaves behind is a `.tmp` sibling: the content was already written, and nothing
-removes it. Clean it up on the failure path:
+fire; if it does, first clean up the current `$briefTemp`
+(below), then regenerate the token and re-run rather than reusing the name — regenerating
+repoints `$briefTemp`, so the failed run's `.tmp` is orphaned if it is left until after.
+What the throw leaves behind is a `.tmp` sibling: the content was already written, and
+nothing removes it. Clean it up on the failure path:
 
 ```powershell
 Remove-Item -LiteralPath $briefTemp -WhatIf   # then, once the path is confirmed, without -WhatIf

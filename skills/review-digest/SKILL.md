@@ -79,9 +79,8 @@ ancestry. That is distinct from a rebase-merge `tip-not-on-head`. The review is 
 carried to the new root (an empty-tree credit would certify files the panel never saw) and
 is **not** dropped either (that hid four fixatdl-wpf reviews and the 46 files that changed
 between their remediated state and the public release). The run stays usable with
-`historyReset: <root sha> (<date>)`; its boundary is the reviewed state in the replaced
-history - its `remediation-tip` when that descends from the reviewed tip - which is still in
-the object store, and its drift is the **tree diff** from that boundary to HEAD. A squashed
+`historyReset: <root sha> (<date>)`; its boundary is the reviewed tip in the replaced
+history, which is still in the object store, and its drift is the **tree diff** from that boundary to HEAD. A squashed
 history has one commit, so a reset group scores changed files, not commits. Files the
 replaced history never had are uncovered. Only when the old commit is gone from the object
 store does the run fall back to `tip-not-in-repo`.

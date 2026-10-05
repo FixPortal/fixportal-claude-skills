@@ -30,6 +30,8 @@ PAGES = [
      "url": "https://code.claude.com/docs/en/skills"},
 ]
 
+SCRAPE_TIMEOUT_S = 300
+
 # Axes whose rules come from these pages. Axes 3-5 come from house instructions.
 GOVERNED_AXES = ["reach", "impl"]
 
@@ -88,8 +90,12 @@ def fetch(dest: Path) -> None:
         (dest / page["file"]).unlink(missing_ok=True)
         if not exe:
             continue  # every page then reads as fetch-failed, which is reported, not hidden
-        subprocess.run([exe, "scrape", page["url"], "--only-main-content", "--max-age", "0",
-                        "-o", str(dest / page["file"])], check=False)
+        try:
+            subprocess.run([exe, "scrape", page["url"], "--only-main-content", "--max-age", "0",
+                            "-o", str(dest / page["file"])], check=False, timeout=SCRAPE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            # A hung scrape must not stall the run; the page then reads as fetch-failed.
+            (dest / page["file"]).unlink(missing_ok=True)
 
 
 def main(argv=None) -> int:

@@ -40,8 +40,11 @@ repeated here.
 
 ## CI contract
 
-- `ci.yml` runs every `skills/**/test/verify-*.ps1`. A new or changed skill
-  must keep its verifiers green; run them locally with pwsh before pushing.
+- `ci.yml` discovers every `skills/**/test/verify-*.ps1`. On a pull request
+  that only touches `skills/<name>/`, it runs just those skills' verifiers
+  (plus mapped siblings); anything else widens the run to all of them, so a
+  scoped green run is not full-suite validation. A new or changed skill must
+  keep its verifiers green; run the full set locally with pwsh before pushing.
 - Workflows are linted by `raven-actions/actionlint` (SHA-pinned,
   `shellcheck: true`) as the first validation step of every job.
 - `.claude/review-policy.json` is the review control plane;

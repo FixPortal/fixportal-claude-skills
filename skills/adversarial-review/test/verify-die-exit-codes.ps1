@@ -14,6 +14,8 @@ $spine = Join-Path $skillDir 'run-review.ps1'
 $manifest = Join-Path $PSScriptRoot 'fixtures' 'pinned-reviewers.json'
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) ("ar-die-codes-" + [Guid]::NewGuid().ToString('N'))
 $workDir = Join-Path ([IO.Path]::GetTempPath()) ("ar-existing-run-" + [Guid]::NewGuid().ToString('N'))
+$workDir2 = Join-Path ([IO.Path]::GetTempPath()) ("ar-no-origin-" + [Guid]::NewGuid().ToString('N'))
+$workDir3 = Join-Path ([IO.Path]::GetTempPath()) ("ar-no-merge-base-" + [Guid]::NewGuid().ToString('N'))
 
 New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
 try {
@@ -46,9 +48,30 @@ try {
         throw "mismatched run evidence must exit 5, got $LASTEXITCODE`n$output"
     }
 
+    # A failed native lookup yields $null, and .Trim() on it threw "cannot call a method
+    # on a null-valued expression" before the Die that names the cause could run. Both
+    # also exit 1, so the message is the assertion. The sandbox has no origin remote.
+    New-Item -ItemType Directory -Path $workDir2 | Out-Null
+    Write-PreflightFixture -Dir $workDir2 -ManifestPath $manifest
+    $output = & pwsh -NoProfile -File $spine -Target '123' -RepoPath $sandbox -ManifestPath $manifest -WorkDir $workDir2 2>&1 | Out-String
+    if ($output -notmatch 'Cannot resolve origin for PR #123') {
+        throw "a PR target with no origin remote must Die naming the origin, got exit $LASTEXITCODE`n$output"
+    }
+    # An orphan branch shares no history with the default branch, so merge-base fails.
+    & git -C $sandbox checkout --orphan lone --quiet 2>$null
+    & git -C $sandbox -c user.email=t@t -c user.name=t commit -m 'lone' --quiet 2>$null
+    New-Item -ItemType Directory -Path $workDir3 | Out-Null
+    Write-PreflightFixture -Dir $workDir3 -ManifestPath $manifest
+    $output = & pwsh -NoProfile -File $spine -RepoPath $sandbox -ManifestPath $manifest -WorkDir $workDir3 2>&1 | Out-String
+    if ($output -notmatch 'Could not find merge-base of') {
+        throw "a branch with no merge-base must Die naming the merge-base, got exit $LASTEXITCODE`n$output"
+    }
+
     'run-review.ps1 OK — fatal exit codes 2 and 5 stay distinct from 1'
 }
 finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $workDir2 -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $workDir3 -Recurse -Force -ErrorAction SilentlyContinue
 }

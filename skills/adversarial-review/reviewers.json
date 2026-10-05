@@ -30,7 +30,7 @@
 
   "reviewers": [
     {
-      "_comment": "Anthropic reviewer #2 (Fable lineage). Same vendor as B -- a correlated, not independent, second vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Constrained by FAMILY, not by id: frontier alone would resolve to whatever Anthropic ranks highest and could collide with the Opus judge, which is precisely the collapse the alternates note below warns about. Fable is available in perpetuity on the Claude subscription.",
+      "_comment": "Anthropic reviewer (Fable lineage), the panel's only Anthropic seat since B was retired to alternates. Were a second Anthropic seat re-enabled, it would be a correlated, not independent, vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Constrained by FAMILY, not by id: frontier alone would resolve to whatever Anthropic ranks highest and could collide with the Opus judge, which is precisely the collapse the alternates note below warns about. Fable is available in perpetuity on the Claude subscription.",
       "id": "F",
       "label": "Claude Fable",
       "wrapper": "claude",
@@ -76,7 +76,7 @@
       "enabled": true
     },
     {
-      "_comment": "xAI reviewer (Grok). Subscription-backed via the Grok CLI (grok-review.ps1), OAuth login -- there is no XAI_API_KEY on this box, so there is no metered fallback and none is declared. FRONTIER by constraint: the seat exists to add a fifth vendor AND a fifth frontier opinion, and the run corpus is what argues for frontier here -- across 60 pooled-maps the two highest-yielding seats were frontier-tier, and the panel's weakest seat was the one held at workhorse for decorrelation reasons a family constraint already covers. repoAccess is false and is NOT negotiable: Grok has no per-invocation read-only mode and grok-review.ps1 passes --always-approve, so the wrapper is made hermetic structurally (throwaway scratch cwd, inputs copied in) exactly as kimi-review.ps1 is. It is listed in noSandboxWrappers for that reason. Grok takes the registry id verbatim (grok-4.6), so it needs no `selectors` entry.",
+      "_comment": "xAI reviewer (Grok). Subscription-backed via the Grok CLI (grok-review.ps1), OAuth login -- there is no XAI_API_KEY on this box, so there is no metered fallback and none is declared. FRONTIER by constraint: the seat exists to add a fifth vendor AND a fifth frontier opinion, and the run corpus is what argues for frontier here -- across 60 pooled-maps the two highest-yielding seats were frontier-tier, and the panel's weakest seat was the one held at workhorse for decorrelation reasons a family constraint already covers. repoAccess is false and is NOT negotiable: Grok has no per-invocation read-only mode and grok-review.ps1 passes --always-approve, so the wrapper is made hermetic structurally (throwaway scratch cwd, inputs copied in) exactly as kimi-review.ps1 is. It is listed in noSandboxWrappers for that reason. Grok takes the registry id verbatim, so it needs no `selectors` entry.",
       "id": "R",
       "label": "Grok",
       "wrapper": "grok",
@@ -126,7 +126,7 @@
       "effort": "high",
       "pool": [
         { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
-        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true },
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true },
         { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
       ]
     },
@@ -140,7 +140,7 @@
           "repoAccess": true
         },
         { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
-        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true },
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true },
         { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
       ]
     },

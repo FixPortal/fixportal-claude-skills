@@ -24,7 +24,8 @@ unreconstructable, and said so in the record; it is reported apart from the unre
 param(
     # No hardcoded default: the estate root is machine-local and must be supplied explicitly.
     [string[]]$Path,
-    [string]$OutFile = (Join-Path $env:TEMP 'review-digest-data.json'),
+    # Mandatory: $env:TEMP is unset off Windows, and a fixed name lets one run overwrite another's snapshot.
+    [Parameter(Mandatory)][string]$OutFile,
     # No hardcoded default: the vault path is machine-local and must be supplied explicitly.
     [string]$VaultRoot,
     # Repositories (canonical origin name or folder name) deliberately never reviewed: vendored
@@ -195,18 +196,10 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
         if (-not $run.historyReset) { return & $fail 'tip-not-on-head' }
         # History replaced after the review (a squashed OSS release). The review is NOT carried to
         # the new root - an empty-tree credit would certify files the panel never saw. Instead the
-        # boundary stays at the reviewed state in the replaced history (its remediation tip when
-        # one descends from it), which is still in the object store, and drift is the TREE diff
-        # from there to HEAD. Dropping these runs as unusable hid four real fixatdl-wpf reviews
-        # and the 46 files that changed between their remediated state and the public release.
-        $boundarySha = $reviewTipSha
-        if ("$($Fm['remediation-tip'])" -match '^[0-9a-f]{7,40}$') {
-            $fixed = @(Invoke-Git $Repo @('rev-parse', '--verify', "$($Fm['remediation-tip'])^{commit}"))[0]
-            if ($fixed) {
-                $null = Invoke-Git $Repo @('merge-base', '--is-ancestor', $reviewTipSha, $fixed)
-                if ($LASTEXITCODE -eq 0) { $boundarySha = $fixed }
-            }
-        }
+        # boundary stays at the reviewed tip in the replaced history, which is still in the
+        # object store, and drift is the TREE diff from there to HEAD. Dropping these runs as
+        # unusable hid four real fixatdl-wpf reviews and the 46 files that changed between
+        # their remediated state and the public release.
     }
     # remediation-tip records provenance only; only the explicit commit set is excluded from drift.
     $base = $m.Groups[1].Value
@@ -406,7 +399,7 @@ $results = foreach ($r in $repos) {
     # latest review. Folding those rows into the headline counted them as if they
     # were drift since the last review: on 2026-10-01 a live-home repository
     # showed 200 commits beside tip c85af4a, and git rev-list of that tip was 34.
-    $newSourceCandidates = if ($newest) { @((Invoke-Git $repo @('diff', '--name-only', $newest.boundarySha, 'HEAD')) | Where-Object { $_ -match $sourceExtRegex -and -not $owner.ContainsKey($_) }) } else { @($uncoveredSource) }
+    $newSourceCandidates = if ($newest) { @((Invoke-Git $repo @('diff', '--name-only', '--diff-filter=d', $newest.boundarySha, 'HEAD')) | Where-Object { $_ -match $sourceExtRegex -and -not $owner.ContainsKey($_) }) } else { @($uncoveredSource) }
     $newestLogBoundary = if ($usable.Count) { $usable[0].logBoundary } else { $null }
     $newSourceMeasure = if ($newest -and $newSourceCandidates.Count) { Measure-Files $repo $newest.boundarySha $newSourceCandidates $allRemediationCommits $newestLogBoundary } else { [pscustomobject]@{ commitIds = @(); changedFiles = $newSourceCandidates; remediationFiles = @(); insertions = 0; deletions = 0 } }
     $newSource = @($newSourceMeasure.changedFiles)
@@ -423,7 +416,7 @@ $results = foreach ($r in $repos) {
         $sinceIns += [int]$coverage[0].insertions
         $sinceDel += [int]$coverage[0].deletions
     } elseif ($newest) {
-        $ownedSince = @((Invoke-Git $repo @('diff', '--name-only', $newest.boundarySha, 'HEAD')) | Where-Object { $owner.ContainsKey($_) })
+        $ownedSince = @((Invoke-Git $repo @('diff', '--name-only', '--diff-filter=d', $newest.boundarySha, 'HEAD')) | Where-Object { $owner.ContainsKey($_) })
         if ($ownedSince.Count) {
             $headline = Measure-Files $repo $newest.boundarySha $ownedSince $allRemediationCommits $newest.logBoundary
             $changedFiles = @($headline.changedFiles)

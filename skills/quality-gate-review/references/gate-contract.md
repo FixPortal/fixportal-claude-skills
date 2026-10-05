@@ -6,16 +6,6 @@
 - [What each consumed skill must return](#what-each-consumed-skill-must-return)
 - [Verdict matrix](#verdict-matrix)
 - [Output](#output)
-- [Quality Gate — <repo> @ <branch>](#quality-gate--repo--branch)
-- [Domain Results](#domain-results)
-- [Adversarial-review findings](#adversarial-review-findings)
-- [Ponytail](#ponytail)
-- [Composition](#composition)
-- [Evidence Gaps](#evidence-gaps)
-- [Required Actions](#required-actions)
-- [Recommended Actions](#recommended-actions)
-- [Verdict](#verdict)
-
 
 ## Evidence domains
 
@@ -86,7 +76,7 @@ Aggregate every applicable domain once: `PASS` requires every domain to be `PASS
 **Overall: PASS | PASS WITH CONDITIONS | FAIL**
 Review Tier: HIGH | NORMAL | LOW | UNCLASSIFIED — <match reason>
 Reviewer Gate: Gitar <status> | CodeRabbit <status> | unresolved threads <count>
-Adversarial Review: <run folder | absent — gap>
+Adversarial Review: <run folder | N/A — not a per-PR control>
 
 ### Domain Results
 | Domain | Result | Evidence / gap |

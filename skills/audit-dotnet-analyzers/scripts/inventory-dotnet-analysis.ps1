@@ -446,12 +446,15 @@ function Get-ContentFingerprint {
     }
     finally { $process.Dispose() }
     $paths = @($pathText.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries) | Sort-Object -Unique)
-    $records = foreach ($path in $paths) {
+    # A `return` inside a `$x = foreach` assignment exits the function after emitting the
+    # records collected so far, so accumulate explicitly and return $null from the loop body.
+    $records = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in $paths) {
         $file = Join-Path $Repo $path
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
         try { $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256 -ErrorAction Stop).Hash }
         catch { return $null }
-        "$path`0$hash`0"
+        $records.Add("$path`0$hash`0")
     }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($records -join ''))
     $sha = [Security.Cryptography.SHA256]::Create()
