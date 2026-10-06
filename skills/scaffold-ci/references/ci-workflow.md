@@ -450,7 +450,7 @@ skills root, which would resolve only under that runtime.
     permissions: {}
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         env:
           RESULTS: ${{ join(needs.*.result, ', ') }}
         run: |
@@ -478,6 +478,20 @@ Rules, each of which is a way this goes wrong:
   reads as a coverage change in a diff. The checker fails on both. This is the in-repo
   half of a fix whose other half is tiering `ci.yml` and the checker HIGH — see
   `review-policy.md`, and the `$comment` block in `review-policy.example.json`.
+- **The failing step also needs an explicit status override.** This is a defensive
+  house contract: adverse upstream `needs` results must reach the failing step
+  whether the current gate job is successful, failed or cancelled. GitHub step
+  `success()`, `failure()` and `cancelled()` read the **current job** status, not
+  its upstream `needs` outcomes; a healthy gate can have failed dependencies.
+  Use `always() && (failure-result || cancelled-result)` as above. The checker
+  intersects coverage across all three current-job states and rejects branches
+  masked in any state. It also requires an actual explicit status function;
+  quoted status-looking text is not an override. Existing skipped-dependency
+  exemptions remain unchanged. A bare default-success step can inspect failed
+  dependencies while the gate itself is healthy: it is not proof of the cause
+  of the observed cancelled-job bypass. That specimen's evaluated `needs` context
+  and precise skip cause remain UNVERIFIED.
+
 - **The gate has no `permissions`, no checkout and no network.** It only reads
   GitHub-controlled `needs.*.result`. It is the one job deciding what can merge, so it gets
   zero token authority and nothing that can fail on its own.
