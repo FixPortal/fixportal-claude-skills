@@ -41,7 +41,7 @@ base = '''jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '''
 with tempfile.TemporaryDirectory() as directory:

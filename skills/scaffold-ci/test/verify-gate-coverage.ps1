@@ -72,7 +72,7 @@ jobs:
     needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($flow.Code -ne 0) { throw "flow needs should pass without site packages:`n$($flow.Output)" }
@@ -90,7 +90,7 @@ jobs:
       - lint
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($block.Code -ne 0) { throw "block needs should pass without site packages:`n$($block.Output)" }
@@ -106,7 +106,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($missing.Code -eq 0 -or $missing.Output -notmatch "not gated by 'ci-gate': lint") {
@@ -127,7 +127,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedUngated.Code -eq 0 -or $quotedUngated.Output -notmatch "not gated by 'ci-gate': security-scan") {
@@ -145,7 +145,7 @@ jobs:
     needs: ['build', "security-scan"]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedGated.Code -ne 0) { throw "quoted job keys and quoted flow needs must pass:`n$($quotedGated.Output)" }
@@ -165,7 +165,7 @@ jobs:
     - lint
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($fourSpaceSeq.Code -ne 0) { throw "a 4-space block sequence is valid YAML and must pass:`n$($fourSpaceSeq.Output)" }
@@ -184,7 +184,7 @@ jobs:
       - lint
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($commentedSeq.Code -ne 0) { throw "a comment inside the needs sequence must not truncate it:`n$($commentedSeq.Output)" }
@@ -202,7 +202,7 @@ jobs:
       - 'lint'
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedSeqItems.Code -ne 0) { throw "quoted block sequence items must be read:`n$($quotedSeqItems.Output)" }
@@ -216,7 +216,7 @@ jobs: # every job in this workflow
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($commentedJobsKey.Code -ne 0) { throw "a trailing comment on 'jobs:' must not hide every job:`n$($commentedJobsKey.Output)" }
@@ -232,7 +232,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($unparsable.Code -eq 0 -or $unparsable.Output -notmatch 'unparsable line at job indentation') {
@@ -253,7 +253,7 @@ jobs:
     needs: [build, secrets]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($conditionalFeeder.Code -eq 0 -or $conditionalFeeder.Output -notmatch "job-level 'if:' on job\(s\) feeding 'ci-gate': secrets") {
@@ -273,7 +273,7 @@ jobs:
     needs: [build, secrets]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $env:GATE_CONDITIONAL_EXEMPT = ''
@@ -295,7 +295,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockScalarIf.Code -ne 0) {
@@ -320,7 +320,7 @@ jobs:
     needs: [build, secrets]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $env:GATE_CONDITIONAL_EXEMPT = ''
@@ -339,7 +339,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($noAlways.Code -eq 0 -or $noAlways.Output -notmatch "must carry ``if: always\(\)`` -- found no job-level 'if:'") {
@@ -355,7 +355,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($narrowedCondition.Code -eq 0 -or $narrowedCondition.Output -notmatch 'must carry') {
@@ -419,7 +419,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         env:
           RESULTS: ${{ join(needs.*.result, ', ') }}
         run: |
@@ -443,7 +443,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           echo "Upstream results: ${{ join(needs.*.result, ', ') }}"
           exit 1
@@ -476,7 +476,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: $body
 "@
         if ($failableGate.Code -ne 0) {
@@ -552,7 +552,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: $body
 "@
         if ($inertGate.Code -eq 0) {
@@ -577,7 +577,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: bash
         run: false 2>/dev/null
 '@
@@ -598,7 +598,7 @@ jobs:
         shell: bash
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: false
 '@
     if ($defaultBashFalse.Code -ne 0) {
@@ -620,7 +620,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: false
 '@
     if ($defaultPwshFalse.Code -eq 0) {
@@ -645,10 +645,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail on build
-        if: needs.build.result != 'success'
+        if: always() && (needs.build.result != 'success')
         run: exit 1
       - name: Fail on lint
-        if: needs.lint.result != 'success'
+        if: always() && (needs.lint.result != 'success')
         continue-on-error: true
         run: exit 1
 '@
@@ -673,8 +673,8 @@ jobs:
     steps:
       - name: Fail if any upstream job did not succeed
         if: >
-          contains(needs.*.result, 'failure') ||
-          contains(needs.*.result, 'cancelled')
+          always() && (contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockScalarCondition.Code -ne 0) {
@@ -695,7 +695,7 @@ jobs:
     steps:
       - name: Fail if any upstream job did not succeed
         if: >2
-          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+          always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockScalarIndented.Code -ne 0) {
@@ -739,7 +739,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: >-
-          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+          always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($dashFolded.Code -ne 0) {
@@ -773,7 +773,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: needs.build.result != 'success'
+      - if: always() && (needs.build.result != 'success')
         run: exit 1
 '@
     if ($spellings.Code -ne 0) {
@@ -789,7 +789,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedAlways.Code -ne 0) {
@@ -816,7 +816,7 @@ jobs:
       - name: Explain the gate shape
         run: |
           cat <<'EOF'
-          if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+          if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
           EOF
       - name: Fail if any upstream job did not succeed
         run: exit 1
@@ -837,7 +837,7 @@ jobs:
       - name: Explain the gate shape
         'run': |
           cat <<'EOF'
-          if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+          if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
           EOF
       - name: Fail if any upstream job did not succeed
         run: exit 1
@@ -862,7 +862,7 @@ jobs:
           echo "This gate is wired like:"
           echo "  if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($conditionAfterRunBody.Code -ne 0) {
@@ -883,7 +883,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $workflowDir 'ci.yml') -Encoding utf8
     $directoryOutput = Join-Path $root 'directory-output.txt'
@@ -948,7 +948,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
 
@@ -990,7 +990,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($noScripts.Code -ne 0) {
@@ -1027,7 +1027,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
         if ($ungated.Code -ne 0) {
@@ -1053,7 +1053,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockScalar.Code -eq 0 -or $blockScalar.Output -notmatch 'assert-coverage-floor\.ps1') {
@@ -1071,7 +1071,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $workingDirectory = New-GateRepo '{"version":1,"high":["src/your-ui/scripts/assert-coverage-floor.ps1"],"low":[]}' `
@@ -1096,7 +1096,7 @@ jobs:
     needs: [earlier, build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($siblingWorkingDirectory.Code -eq 0 -or $siblingWorkingDirectory.Output -notmatch 'scripts/assert-coverage-floor.ps1') {
@@ -1116,7 +1116,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($multiLineCd.Code -eq 0 -or $multiLineCd.Output -notmatch 'after a directory change') {
@@ -1152,7 +1152,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($rooted.Code -eq 0 -or $rooted.Output -notmatch 'probe\.py') {
@@ -1173,7 +1173,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($fullPath.Code -ne 0) {
@@ -1198,7 +1198,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($commentedScalar.Code -eq 0 -or $commentedScalar.Output -notmatch 'probe\.py') {
@@ -1229,7 +1229,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         $windowsUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/probe.ps1') $windowsYaml
@@ -1269,7 +1269,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($notAScript.Code -ne 0) {
@@ -1293,7 +1293,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $plain = Invoke-Gate $bomYaml
@@ -1329,7 +1329,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: |
           $($case.Body)
@@ -1352,7 +1352,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: $($shellCase.Shell)
         run: $($shellCase.Run)
 "@
@@ -1369,7 +1369,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: bash -x {0}
         run: exit 1
 '@
@@ -1389,7 +1389,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: |
           Write-Host "upstream failed" # note
@@ -1418,7 +1418,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         $dottedRepo = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/probe.ps1', 'scripts/sub/keep.txt') $dottedYaml
@@ -1444,7 +1444,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($escaping.Code -ne 0) {
@@ -1469,7 +1469,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         $prefixed = New-GateRepo '{"version":1,"high":[],"low":[]}' @('scripts/gate.py') $prefixedYaml
@@ -1515,7 +1515,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $j8Repo '.github' 'workflows' 'ci.yml') -Encoding utf8
     $j8Anchored = Invoke-GateFile -Repo $j8Repo
@@ -1536,7 +1536,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $j8Repo '.github' 'workflows' 'ci.yml') -Encoding utf8
     $j8Bare = Invoke-GateFile -Repo $j8Repo
@@ -1560,7 +1560,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         $jsUntiered = New-GateRepo '{"version":1,"high":[],"low":[]}' @($case[0]) $jsYaml
@@ -1637,7 +1637,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
         $symlinkOutput = Join-Path $symlinkRepo 'output.txt'
@@ -1731,7 +1731,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
             $overOutput = Join-Path $symlinkRepo 'over-output.txt'
@@ -1791,7 +1791,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $symlinkRepo '.github' 'workflows' 'ci.yml') -Encoding utf8
         $targetText = Join-Path $symlinkRepo 'target-output.txt'
@@ -1848,7 +1848,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ -BomWorkflow -Target '.github/workflows'
     if ($bomDirectory.Code -ne 0) {
@@ -1895,7 +1895,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
         }
@@ -2032,7 +2032,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($staticFalseJob.Code -ne 0) {
@@ -2050,7 +2050,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         continue-on-error: ${{ false && inputs.allow_failure }}
         run: exit 1
 '@
@@ -2070,7 +2070,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($jobTolerant.Code -eq 0 -or $jobTolerant.Output -notmatch 'continue-on-error') {
@@ -2085,7 +2085,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         continue-on-error: $case
         run: exit 1
 "@
@@ -2108,7 +2108,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockScalarTolerance.Code -ne 0) {
@@ -2144,7 +2144,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $payloadUses = New-GateActionRepo $nonCompositeAction $payloadUsesYaml '{"version":1,"high":["scripts/**"],"low":[]}'
@@ -2228,7 +2228,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($flushWorkdir.Code -eq 0 -or $flushWorkdir.Output -notmatch 'sub/scripts/gate\.py') {
@@ -2251,7 +2251,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($siblingWorkdir.Code -ne 0) {
@@ -2272,7 +2272,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($jobDefaults.Code -eq 0 -or $jobDefaults.Output -notmatch 'app/scripts/gate\.py') {
@@ -2293,7 +2293,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($workspaceWorkdir.Code -ne 0) {
@@ -2314,7 +2314,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($blockWorkdir.Code -ne 0) {
@@ -2334,7 +2334,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($unknownWorkdir.Code -eq 0 -or $unknownWorkdir.Output -notmatch 'unsupported working-directory expression') {
@@ -2354,7 +2354,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($dynamicWorkdirWithoutGateScript.Code -ne 0) {
@@ -2374,7 +2374,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($absoluteWorkdir.Code -eq 0 -or $absoluteWorkdir.Output -notmatch 'unsupported absolute working-directory') {
@@ -2400,7 +2400,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($climbingWorkdir.Code -eq 0 -or $climbingWorkdir.Output -notmatch 'climbing above the workspace root') {
@@ -2422,7 +2422,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($interiorWorkdir.Code -ne 0) {
@@ -2448,7 +2448,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($plainClimb.Code -eq 0 -or $plainClimb.Output -notmatch 'climbing above the workspace root') {
@@ -2470,7 +2470,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($plainInterior.Code -ne 0) {
@@ -2490,7 +2490,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 defaults:
   run:
@@ -2514,7 +2514,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($midStringWorkspace.Code -eq 0 -or $midStringWorkspace.Output -notmatch 'unsupported working-directory expression') {
@@ -2543,7 +2543,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($payloadWorkdir.Code -ne 0) {
@@ -2564,7 +2564,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedCd.Code -ne 0) {
@@ -2582,7 +2582,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedCdScript.Code -eq 0 -or $quotedCdScript.Output -notmatch 'directory change') {
@@ -2603,7 +2603,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($quotedCdMultiline.Code -eq 0 -or $quotedCdMultiline.Output -notmatch 'directory change') {
@@ -2647,7 +2647,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($quotedSpelling.Code -eq 0 -or $quotedSpelling.Output -notmatch 'directory change') {
@@ -2681,7 +2681,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($messageCd.Code -ne 0) {
@@ -2707,7 +2707,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($pwshQuotedCd.Code -eq 0 -or $pwshQuotedCd.Output -notmatch 'directory change') {
@@ -2729,7 +2729,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvPayload.Code -ne 0) {
@@ -2749,7 +2749,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvKey.Code -eq 0 -or $bashEnvKey.Output -notmatch 'BASH_ENV') {
@@ -2770,7 +2770,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($quotedBashEnv.Code -eq 0 -or $quotedBashEnv.Output -notmatch 'BASH_ENV') {
@@ -2788,7 +2788,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvFlow.Code -eq 0 -or $bashEnvFlow.Output -notmatch 'BASH_ENV') {
@@ -2807,7 +2807,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - env: { BASH_ENV: /tmp/override }
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvDash.Code -eq 0 -or $bashEnvDash.Output -notmatch 'BASH_ENV') {
@@ -2826,7 +2826,7 @@ jobs:
     steps:
       - env:
           BASH_ENV: /tmp/override
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvDashBlock.Code -eq 0 -or $bashEnvDashBlock.Output -notmatch 'BASH_ENV') {
@@ -2850,7 +2850,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvWithInput.Code -ne 0) {
@@ -2873,7 +2873,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvScalarValue.Code -ne 0) {
@@ -2897,7 +2897,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($noBashEnvQuotedHash.Code -ne 0) {
@@ -2919,7 +2919,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvMultilineFlow.Code -eq 0 -or $bashEnvMultilineFlow.Output -notmatch 'BASH_ENV') {
@@ -2941,7 +2941,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "BASH_ENV=/tmp/override" >> "$GITHUB_ENV"
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvWrite.Code -eq 0 -or $bashEnvWrite.Output -notmatch 'BASH_ENV') {
@@ -2960,7 +2960,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "BASH_ENV<<EOF" >> "$GITHUB_ENV"
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvHeredocThroughEnv.Code -eq 0 -or $bashEnvHeredocThroughEnv.Output -notmatch 'BASH_ENV') {
@@ -2980,7 +2980,7 @@ jobs:
     steps:
       - shell: pwsh
         run: '"BASH_ENV=/tmp/override" | Out-File -FilePath $env:GITHUB_ENV -Append'
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: throw "upstream failed"
 '@
@@ -3001,7 +3001,7 @@ jobs:
           cat >> "$GITHUB_ENV" <<'EOF'
           BASH_ENV=/tmp/override
           EOF
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvHeredoc.Code -eq 0 -or $bashEnvHeredoc.Output -notmatch 'BASH_ENV') {
@@ -3022,7 +3022,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($bashEnvFeeder.Code -ne 0) {
@@ -3044,7 +3044,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $dirMode 'ci.yml') -Encoding utf8
     @'
@@ -3086,7 +3086,7 @@ jobs:
     needs: [mid, quality]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     }
@@ -3129,7 +3129,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@ | Set-Content -LiteralPath (Join-Path $reusable.Repo '.github/workflows/ci.yml') -Encoding utf8
     $reusableResult = Invoke-GateFile -Repo $reusable.Repo
@@ -3197,7 +3197,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: ">&2 echo upstream failed; exit 1"
 '@
     if ($leadingRedirect.Code -ne 0) {
@@ -3221,7 +3221,7 @@ jobs:
     needs: [build, secrets]
     runs-on: ubuntu-latest
     steps:
-      - if: needs.build.result != 'success' || (needs.secrets.result != 'success' && needs.secrets.result != 'skipped')
+      - if: always() && (needs.build.result != 'success' || (needs.secrets.result != 'success' && needs.secrets.result != 'skipped'))
         run: exit 1
 '@
     if ($conditionalFeeder.Code -ne 0) {
@@ -3244,7 +3244,7 @@ jobs:
     needs: [quality]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $env:GATE_EXEMPT = ''
@@ -3269,7 +3269,7 @@ jobs:
     needs: [build, biuld]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     if ($undefinedNeed.Code -eq 0 -or $undefinedNeed.Output -match 'Traceback' -or
@@ -3295,7 +3295,7 @@ jobs:
     needs: [build, secrets]
     runs-on: ubuntu-latest
     steps:
-      - if: $($case.Condition)
+      - if: always() && ($($case.Condition))
         run: exit 1
 "@
         if ($refused.Code -eq 0) {
@@ -3325,7 +3325,7 @@ jobs:
     needs: [build]
     runs-on: windows-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: exit 256
 '@
@@ -3352,7 +3352,7 @@ $($quotedHash[$style])
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 "@
         if ($hashed.Code -eq 0 -or $hashed.Output -notmatch 'probe\.py') {
@@ -3373,7 +3373,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: 'echo " # progress"; exit 1' # gate
 '@
     if ($quotedBody.Code -ne 0) {
@@ -3392,7 +3392,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: echo 'tag # audit'; exit 1
 '@
     if ($plainHash.Code -eq 0) {
@@ -3404,7 +3404,7 @@ jobs:
     # are pinned HERE, in the canonical suite, because the three-way divergence they close
     # was invisible until all three test files were run against one file: a rule owned only
     # by a downstream copy is a rule canonical can silently regress.
-    $both = "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
+    $both = "always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))"
     $absorbed = @(
         # condition suffix, run body, must pass, description
         @('', 'exit 255', $true, 'exit 255 is the top of the shell nonzero range'),
@@ -3455,7 +3455,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure')
+      - if: always() && (contains(needs.*.result, 'failure'))
         run: exit 1
 '@
     if ($failureOnly.Code -eq 0 -or $failureOnly.Output -notmatch 'build:cancelled') {
@@ -3473,7 +3473,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: needs.build.result != 'success'
+      - if: always() && (needs.build.result != 'success')
         run: exit 1
 '@
     if ($notSuccess.Code -ne 0) {
@@ -3491,7 +3491,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: >
           exit 1
 '@
@@ -3510,7 +3510,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: echo len=${#x} && exit 1
 '@
     if ($parameterLength.Code -ne 0) {
@@ -3531,7 +3531,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           exit 0
           exit 1
@@ -3549,7 +3549,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           echo "::error::an upstream job did not succeed"
           exit 1
@@ -3571,7 +3571,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           echo "::error::an upstream job did not succeed"
           printf '%s\n' "collecting upstream results"
@@ -3594,7 +3594,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           echo "::error::an upstream job did not succeed"
           trap 'exit 0' EXIT
@@ -3616,7 +3616,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           set -euo pipefail
           echo "::error::an upstream job did not succeed"
@@ -3651,7 +3651,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           $option
           echo "::error::an upstream job did not succeed"
@@ -3680,7 +3680,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: |
           $subexpression
@@ -3707,7 +3707,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: pwsh
         run: |
           $($case[0] -replace "`n", "`n          ")
@@ -3754,7 +3754,7 @@ jobs:
     needs: [build]
     runs-on: $($case[1])
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: |
           $($case[0] -replace "`n", "`n          ")
 "@
@@ -3777,7 +3777,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: bash
         run: throw "upstream failed"
 '@
@@ -3807,7 +3807,7 @@ jobs:
     defaults:
 $($case[0])
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: $($case[1])
 "@
         if (($jobDefaults.Code -eq 0) -ne $case[2]) {
@@ -3833,7 +3833,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: throw "upstream failed"
 '@
     if ($workflowDefaults.Code -ne 0) {
@@ -3855,7 +3855,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: throw "upstream failed"
 '@
     if ($jobOverridesWorkflow.Code -ne 0) {
@@ -3872,7 +3872,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: throw "upstream failed"
 '@
     if ($flowDefaults.Code -ne 0) {
@@ -3890,7 +3890,7 @@ jobs:
     env:
       shell: pwsh
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: throw "upstream failed"
 '@
     if ($envNamedShell.Code -eq 0) {
@@ -3912,7 +3912,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 defaults:
   run:
@@ -3933,7 +3933,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 defaults:
   run:
@@ -3969,7 +3969,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         env:
           RESULTS: ${{ join(needs.*.result, ', ') }}
         run: |
@@ -4000,7 +4000,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - if: $($case[0])
+      - if: always() && ($($case[0]))
         $($case[1])
         run: exit 1
 "@

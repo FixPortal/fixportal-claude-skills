@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any upstream job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
 

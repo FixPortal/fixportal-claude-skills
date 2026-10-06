@@ -293,7 +293,7 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
     $workflowPath = Join-Path $repo '.github/workflows/ci.yml'
