@@ -21,6 +21,8 @@ $cases = @(
     @{ Name='both-statuses'; Condition="(failure() && contains(needs.*.result, 'failure')) || (cancelled() && contains(needs.*.result, 'cancelled'))"; Accepted=$false },
     @{ Name='failure-or-complete'; Condition="failure() || ($bad)"; Accepted=$true },
     @{ Name='cancelled-or-complete'; Condition="cancelled() || ($bad)"; Accepted=$true },
+    # success() is true on every healthy run, so the step fires with nothing upstream wrong.
+    @{ Name='success-or-complete'; Condition="success() || ($bad)"; Accepted=$false },
     @{ Name='failure-or-incomplete'; Condition="failure() || contains(needs.*.result, 'cancelled')"; Accepted=$false },
     @{ Name='all-true-no-dependencies'; Condition='always()'; Accepted=$false },
     @{ Name='all-true-masks-dependencies'; Condition="always() || ($bad)"; Accepted=$false },
