@@ -188,6 +188,128 @@ echo REACHED_END
     if ($out -notmatch 'TIERED_HIGH' -or $code -eq 0 -or $out -match 'REACHED_END') {
         throw "a label-read failure must apply HIGH and fail the job (exit $code):`n$out"
     }
+
+    # --- matcher cost, bot skip, bracket globs --------------------------------------------
+    function Get-Block([string] $Text, [string] $StartPattern) {
+        $m = [regex]::Match($Text, "(?ms)^(?<i>[ ]+)$StartPattern.*?^\k<i>fi\r?$")
+        if (-not $m.Success) { throw "review-tier.yml: could not locate the block starting /$StartPattern/" }
+        $n = $m.Groups['i'].Value.Length
+        return ($m.Value -split '\r?\n' | ForEach-Object { if ($_.Length -ge $n) { $_.Substring($n) } else { $_.TrimStart() } }) -join "`n"
+    }
+    function Invoke-Bash([string] $Script) { ($Script -replace "`r", '') | & $bash.Source -s 2>&1 | Out-String }
+
+    # M5: the matcher greps the whole path list once per GLOB, not once per path x glob pair.
+    # 200 paths x 20 globs was 4,000 greps (and 4,000 seds); it must stay at one per glob.
+    $counted = @'
+set -euo pipefail
+high=false
+CALLS=$(mktemp)
+grep() { echo g >> "$CALLS"; command grep "$@"; }
+files=$(seq 1 200 | sed 's#^#src/dir/f#; s#$#.cs#')
+patterns=__PATTERNS__
+__BODY__
+echo "HIGH=$high"
+echo "GREPS=$(wc -l < "$CALLS" | tr -d ' ')"
+'@
+    $none = "`$(seq 1 20 | sed 's#^#zzz#; s#`$#/**#')"
+    $out = Invoke-Bash $counted.Replace('__PATTERNS__', $none).Replace('__BODY__', $mBody)
+    if ($out -notmatch 'HIGH=false\b') { throw "M5: 20 globs matching none of 200 paths must stay NORMAL:`n$out" }
+    $greps = [int]([regex]::Match($out, 'GREPS=(\d+)').Groups[1].Value)
+    if ($greps -gt 20) { throw "M5: the matcher ran $greps greps for 20 globs over 200 paths; it must run one per glob:`n$out" }
+    $last = "`$(printf 'zzz/**\nsrc/dir/f200.cs\n')"
+    if ((Invoke-Bash $counted.Replace('__PATTERNS__', $last).Replace('__BODY__', $mBody)) -notmatch 'HIGH=true\b') { throw 'M5: a glob matching only the LAST path must still tier HIGH' }
+
+    # A grep error (exit 2: a regex it cannot compile) is not "no match": it fails closed to HIGH.
+    $grepError = @'
+set -euo pipefail
+high=false
+grep() { return 2; }
+files='src/a.cs'
+patterns='docs/**'
+__BODY__
+echo "HIGH=$high"
+'@
+    $out = Invoke-Bash $grepError.Replace('__BODY__', $mBody)
+    if ($out -notmatch 'HIGH=true\b' -or $out -notmatch 'failing closed') { throw "a grep error in the matcher must fail closed to HIGH with a warning:`n$out" }
+
+    # M5: the 3000 guard counts paths after rename expansion. 1,600 renames are 1,600 records
+    # (under the ceiling) but 3,200 paths for the matcher to walk.
+    $renames = @'
+set -euo pipefail
+GITHUB_REPOSITORY=o/r PR_NUMBER=1 high=false
+gh() { case "$*" in *'/files'*) for i in $(seq 1 __N__); do printf 'n%s\to%s\n' "$i" "$i"; done ;; *) echo __N__ ;; esac; }
+__BODY__
+echo "HIGH=$high"
+'@
+    foreach ($case in @(@{ N = 1600; High = 'true' }, @{ N = 100; High = 'false' })) {
+        $out = Invoke-Bash $renames.Replace('__N__', [string]$case.N).Replace('__BODY__', $body)
+        if ($out -notmatch "HIGH=$($case.High)\b") { throw "M5: $($case.N) renames should give high=$($case.High) (the guard counts paths, not records):`n$out" }
+    }
+
+    # L5 + XL9: a dependency-bot PR skips classification AND sheds a stale review-high label.
+    $skip = Get-Block $tierWorkflow 'if \[ "\$PR_AUTHOR" ='
+    foreach ($case in @(
+        @{ Author = 'dependabot[bot]'; Skipped = $true },
+        @{ Author = 'renovate[bot]';   Skipped = $true },
+        @{ Author = 'octocat';         Skipped = $false }
+    )) {
+        $out = Invoke-Bash @"
+set -euo pipefail
+PR_AUTHOR='$($case.Author)' GITHUB_REPOSITORY=o/r PR_NUMBER=1
+LOG=`$(mktemp); trap 'cat "`$LOG"' EXIT
+gh() { echo "GH:`$*" >> "`$LOG"; }
+$skip
+echo AFTER
+"@
+        $removed = $out -match 'GH:pr edit 1 --repo o/r --remove-label review-high'
+        $reached = $out -match 'AFTER'
+        if ($case.Skipped -and (-not $removed -or $reached)) { throw "L5/XL9: $($case.Author) must skip classification and remove review-high:`n$out" }
+        if (-not $case.Skipped -and ($removed -or -not $reached)) { throw "L5/XL9: $($case.Author) must fall through untouched:`n$out" }
+    }
+
+    # L7 (server half): a bracket or brace entry on the base ref fails closed, loudly.
+    $bracket = Get-Block $tierWorkflow "if grep -q '\[\[\{\]' <<< `"\`$patterns`"; then"
+    foreach ($case in @(@{ P = 'src/[ab].cs'; Fails = $true }, @{ P = 'src/{a,b}.cs'; Fails = $true }, @{ P = 'src/**/*.cs'; Fails = $false })) {
+        $out = Invoke-Bash @"
+set -euo pipefail
+BASE_REF=main
+tier_high_on_failure() { echo TIERED_HIGH; }
+patterns='$($case.P)'
+$bracket
+echo REACHED_END
+"@
+        if ($case.Fails -and ($out -notmatch 'TIERED_HIGH' -or $out -match 'REACHED_END')) { throw "L7: policy entry '$($case.P)' must fail closed:`n$out" }
+        if (-not $case.Fails -and $out -notmatch 'REACHED_END') { throw "L7: policy entry '$($case.P)' is valid and must not fail:`n$out" }
+    }
+}
+
+# L7 (PR-time half): the policy guard rejects a bracket or brace glob where the policy is edited.
+$jq = Get-Command jq -ErrorAction SilentlyContinue
+$guardJq = [regex]::Match($guard, "if ! jq -e '(?<f>[^']*test\([^']*)' `"\`$policy`"")
+if (-not $guardJq.Success) { throw 'review-policy-guard.yml has lost its bracket/brace glob check' }
+if (-not $jq) { Write-Host 'SKIP: no jq on this host; the guard bracket check was not executed' }
+else {
+    foreach ($case in @(
+        @{ Policy = '{"high":["a/[ab].cs"]}';                  Ok = $false },
+        @{ Policy = '{"high":["a/{x,y}.cs"]}';                 Ok = $false },
+        @{ Policy = '{"high":["a/**"],"low":["docs/[x].md"]}'; Ok = $false },
+        @{ Policy = '{"high":["a/**","b/*.cs"],"low":["docs/**"]}'; Ok = $true },
+        @{ Policy = '{"high":["a/**"]}';                       Ok = $true }
+    )) {
+        $file = New-TemporaryFile
+        try {
+            Set-Content -LiteralPath $file -Value $case.Policy -NoNewline
+            & $jq.Source -e $guardJq.Groups['f'].Value $file *> $null
+            if (($LASTEXITCODE -eq 0) -ne $case.Ok) { throw "L7: the guard's glob check gave exit $LASTEXITCODE for $($case.Policy)" }
+        }
+        finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# XL10: the safety comment must not claim that every read is against the base ref; PR metadata
+# (changed files, labels, author) is read through the API too.
+if ($tierWorkflow -match 'every read is an API call against the base ref') {
+    throw 'XL10: review-tier.yml still claims every read is against the base ref'
 }
 foreach ($check in '-s "$policy"', 'jq -e . "$policy"', 'has("high")', 'permissions:') {
     if ($guard -notmatch [regex]::Escape($check)) {
