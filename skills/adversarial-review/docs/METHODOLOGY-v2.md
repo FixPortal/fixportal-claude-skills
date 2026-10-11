@@ -53,11 +53,12 @@ V2 addresses two structural weaknesses in the v1 panel:
 | X  | openai | `frontier` | `codex` (ChatGPT Pro sub) | `openai` (API) | yes (sandbox read-only) |
 | K  | moonshot | `workhorse` | `kimi` (Allegretto sub) | — | no (hermetic; see note) |
 | G  | google | `frontier` | `agy` (paid Google plan) | — | no (diff + `-ContextPath`) |
-| R  | xai | `frontier` | `grok` (grok.com sub, OAuth) | — | no (hermetic; no read-only flag) |
+| Z  | zai | `frontier` | `glm` (GLM Coding Plan, isolated Claude Code) | — | no (no tools, no repo access) |
 
 Seat **B** (anthropic `workhorse`) was retired to `alternates` when R was seated, leaving
-one seat per vendor. `reviewers.json` carries the evidence and the re-enable condition;
-it is deliberately not repeated here.
+one seat per vendor. Seat **R** (xai, `grok`) was disabled to `alternates` on 2026-10-11
+because Grok is no longer available; Z took the fifth vendor slot. `reviewers.json`
+carries the evidence and the re-enable conditions; they are deliberately not repeated here.
 
 **The roster names constraints, not models.** A seat carries a `select` block that
 `run-review.ps1` resolves against the canonical model registry at run time, so a release
@@ -81,11 +82,11 @@ price.
   Anthropic's single vote, and a second same-vendor seat would share one again,
   including in telemetry, which emits one `anthropic/reviewer` row either way.
 - **Two of five finders are repo-aware** — F (Claude, hard read-only plan
-  mode) and X (Codex, hard read-only sandbox). Gemini, Kimi and Grok stay diff-blind,
-  fed the key files via `-ContextPath`. Kimi and Grok ship blind deliberately and
-  for the same reason: neither CLI has a per-invocation read-only flag (Kimi Code's
-  global mode is `yolo`; grok-review.ps1 passes `--always-approve`), so pointing either at
-  the live checkout would let it WRITE the tree it is reviewing, which the
+  mode) and X (Codex, hard read-only sandbox). Gemini, Kimi and GLM stay diff-blind,
+  fed the key files via `-ContextPath`. Kimi ships blind deliberately (and Grok did,
+  while seated) for the same reason: the CLI has no per-invocation read-only flag (Kimi
+  Code's global mode is `yolo`; grok-review.ps1 passes `--always-approve`), so pointing
+  it at the live checkout would let it WRITE the tree it is reviewing, which the
   hard-sandbox reviewers cannot. That is a **write-isolation** constraint, not a
   claim it is untrusted with the source — a detached-commit worktree satisfies it,
   and `SKILL.md` §4 states the one case (a target carrying uncommitted work) where
@@ -249,7 +250,8 @@ Observatory (its own repository, separate GitHub PR):
 - runs endpoint / `AdversarialReviewService.cs` — accept the vendor id
 - `src/AiObservatory.Web/src/components/adversarialReviewGrouping*` + `api/client.ts` — vendor completeness count, label/colour + test
 
-OUTSTANDING for `xai` as of 2026-09-18: `Provider.cs` on `main` already carries `Xai`,
+Historical note, now moot while seat R is disabled (2026-10-11) and relevant again only on
+reinstatement. OUTSTANDING for `xai` as of 2026-09-18: `Provider.cs` on `main` already carries `Xai`,
 but `adversarialReviewGrouping.ts` still hardcodes
 `REVIEWER_ORDER = ['anthropic','google','openai','moonshot']` and derives
 `EXPECTED_REVIEWER_VENDORS` from its length. xAI rows are therefore filtered out of the

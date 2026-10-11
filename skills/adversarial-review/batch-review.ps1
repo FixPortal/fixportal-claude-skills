@@ -50,6 +50,11 @@
     (governance instruments, specifications, procedures) as an engineering
     system rather than as code.
 
+.PARAMETER ManifestPath
+    Reviewer manifest forwarded to every chunk's spine. Defaults to the spine's own
+    reviewers.json. Use it for an approved run-scoped roster; never edit the
+    canonical file for one run.
+
 .PARAMETER BatchSize
     Chunks run concurrently (default 3).
 
@@ -78,6 +83,9 @@ param(
     [string] $Target = 'audit',
     [string[]] $ContextPath,
     [string] $PreamblePath,
+    # Forwarded to every chunk's spine. Without it batch mode always ran the canonical
+    # reviewers.json, so an approved run-scoped roster was silently ignored.
+    [string] $ManifestPath,
 
     [ValidateRange(1, [int]::MaxValue)]
     [int] $BatchSize = 3,
@@ -209,6 +217,7 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +ch
     $Target     = $using:Target
     $ContextPath = $using:ContextPath
     $PreamblePath = $using:PreamblePath
+    $ManifestPath = $using:ManifestPath
     $AllowDirty = $using:AllowDirty
     $timeoutMs  = [int][Math]::Min([int]::MaxValue, [long]$using:ChunkTimeoutSeconds * 1000)
     $drainMs    = 30000
@@ -223,6 +232,7 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +ch
     $ctx = @($ContextPath | Where-Object { $_ }) -join ';'
     if ($ctx) { $a += @('-ContextPath', $ctx) }
     if ($PreamblePath) { $a += @('-PreamblePath', $PreamblePath) }
+    if ($ManifestPath) { $a += @('-ManifestPath', $ManifestPath) }
     # A switch must be a BARE flag under `pwsh -File`: every argument arrives as a string
     # there, and a stringified bool binds to neither [bool] nor [switch].
     if ($AllowDirty) { $a += '-AllowDirty' }

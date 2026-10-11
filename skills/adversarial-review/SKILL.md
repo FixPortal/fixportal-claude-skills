@@ -55,9 +55,9 @@ and estimated tokens. Repo-blind reviewers get compact diffs once the driver
 crosses its transport gate; routing comes from each manifest entry's
 `repoAccess`, never hardcoded IDs.
 
-Before choosing a repository-aware Codex route, read
-`~/.agents/notes/model-routing-traps.md` (if that note is not present, proceed
-and record the assumption); it governs that mode.
+Before choosing a repository-aware Codex route, read the canonical
+`~/.agents/notes/model-routing-traps.md`; its current repository-awareness
+constraints control that mode.
 
 **A target whose reviewable surface, after `excluded-paths`, is only dependency
 bumps does not convene the panel by default.** Estate policy keeps those out of AI
@@ -191,8 +191,8 @@ Low keeps its file:line evidence, never dropped for priority. A `REFUTED` findin
 **stays** in `report.md` with its refuting evidence and leaves only the `_index.md`
 severity tally — deleting it discards the verification that settled it.
 
-Resolve `<vault>` from the runtime's active user instructions; never hardcode a
-drive letter **in this skill's own writes**. The
+Resolve `<vault>` from the runtime's active user instructions rather than a
+remembered path; do not hardcode a drive letter **in this skill's own writes**. The
 consumers are pinned and this rule does not claim otherwise — `collect.ps1`,
 `review-sweep` and `state-of-play` default to the estate's single vault root, so if
 the resolved vault differs, pass them `-VaultRoot`. A report outside the root they

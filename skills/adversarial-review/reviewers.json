@@ -14,6 +14,7 @@
     "agy": "agy-review.ps1",
     "gemini": "gemini-review.ps1",
     "grok": "grok-review.ps1",
+    "glm": "glm-review.ps1",
     "openai": "openai-review.ps1",
     "copilot": "external-review.ps1"
   },
@@ -29,6 +30,17 @@
   },
 
   "reviewers": [
+    {
+      "_comment": "z.AI reviewer (GLM), promoted from supplemental trial to a counted seat by the owner on 2026-10-10 for continued use on the GLM Coding Plan (Lite intended). The promotion rests on z.AI's own positioning of GLM-5.3 as its flagship, NOT on review-quality evidence from this panel: UNVERIFIED that its findings are accepted at a rate comparable to the other seats. RE-DEMOTE (restore `supplemental: true`) IF per-seat acceptance trails the lowest other seat across the next few full runs, or if Lite credit exhaustion drops the seat from more than a quarter of chunks -- a seat the quota cannot sustain is a vendor that vanishes mid-run, and minVendors only absorbs that for so long. Resolved through the registry like every other seat: glm-5.3 is tier frontier, rank 999. It reaches the machine only through glm-review.ps1 (isolated Claude Code, no tools, no repo access, Windows DPAPI credential), which is why repoAccess is false and no fallbackWrapper exists. Deliberately absent from roles.judge, judgeAudit and verifier: this promotion is a review seat, not an adjudication one.",
+      "id": "Z",
+      "label": "GLM",
+      "wrapper": "glm",
+      "select": { "vendor": "zai", "tier": "frontier", "channel": "cli" }, "model": "glm-5.3",
+      "vendor": "zai",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": true
+    },
     {
       "_comment": "Anthropic reviewer (Fable lineage), the panel's only Anthropic seat since B was retired to alternates. Were a second Anthropic seat re-enabled, it would be a correlated, not independent, vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Constrained by FAMILY, not by id: frontier alone would resolve to whatever Anthropic ranks highest and could collide with the Opus judge, which is precisely the collapse the alternates note below warns about. Fable is available in perpetuity on the Claude subscription.",
       "id": "F",
@@ -74,9 +86,13 @@
       "effort": "high",
       "repoAccess": false,
       "enabled": true
-    },
+    }
+  ],
+
+  "alternates": [
     {
-      "_comment": "xAI reviewer (Grok). Subscription-backed via the Grok CLI (grok-review.ps1), OAuth login -- there is no XAI_API_KEY on this box, so there is no metered fallback and none is declared. FRONTIER by constraint: the seat exists to add a fifth vendor AND a fifth frontier opinion, and the run corpus is what argues for frontier here -- across 60 pooled-maps the two highest-yielding seats were frontier-tier, and the panel's weakest seat was the one held at workhorse for decorrelation reasons a family constraint already covers. repoAccess is false and is NOT negotiable: Grok has no per-invocation read-only mode and grok-review.ps1 passes --always-approve, so the wrapper is made hermetic structurally (throwaway scratch cwd, inputs copied in) exactly as kimi-review.ps1 is. It is listed in noSandboxWrappers for that reason. Grok takes the registry id verbatim, so it needs no `selectors` entry.",
+      "_comment": "xAI reviewer (Grok), DISABLED 2026-10-11: the owner reports Grok is no longer available. Moved here from the active panel rather than deleted, so grok-review.ps1, its tests and the wrapper/noSandbox entries stay intact for a reinstatement. Removed from the judgeAudit and verifier pools too, so a vendor known to be gone is never drawn. UNVERIFIED: that a retained dead member would fail its phase; refuted if SKILL.md's host procedure skips an unrunnable pool member. Was subscription-backed via the Grok CLI (OAuth, no XAI_API_KEY, so no metered fallback), frontier by constraint, repoAccess false and not negotiable: no per-invocation read-only mode, grok-review.ps1 passes --always-approve, so the wrapper is hermetic (scratch cwd, inputs copied in) and listed in noSandboxWrappers. RE-ENABLE IF: Grok returns; move this block back into `reviewers`, restore it to both pools, and bump nothing else -- minVendors stays 3.",
+      "_reenablePoolEntry": "To reinstate: append this exact line as the LAST member of BOTH roles.judgeAudit.pool and roles.verifier.pool (add a comma to the codex line before it): { \"wrapper\": \"grok\", \"select\": { \"vendor\": \"xai\", \"tier\": \"frontier\", \"channel\": \"cli\" }, \"vendor\": \"xai\", \"repoAccess\": false }",
       "id": "R",
       "label": "Grok",
       "wrapper": "grok",
@@ -84,11 +100,8 @@
       "vendor": "xai",
       "effort": "high",
       "repoAccess": false,
-      "enabled": true
-    }
-  ],
-
-  "alternates": [
+      "enabled": false
+    },
     {
       "_comment": "Anthropic WORKHORSE, retired from the active panel 2026-09-18 when the xAI seat landed. It held the anthropic axis at workhorse to keep it decorrelated from the Opus judge -- but reviewer F's `family: claude-fable` constraint already makes reviewer==judge collapse unreachable, so that job was being done twice while this seat paid for it in Claude allowance. The vault corpus is what settled it: across 60 pooled-maps / 508 findings / 12 repos it was the LOWEST-yielding seat (73 findings, leading 2 of 12 repos) against Fable's 145 leading 9 of 12. Retiring it leaves exactly one seat per vendor. RE-ENABLE IF: a five-frontier panel starts converging -- this was the only workhorse reviewer, and a cheaper model trips over obvious defects that frontier models can reason past. The evidence that would show it is per-seat acceptance, which is NOT recorded today (aggregate-verdict.json keys on vendor, so B and F merged); wire that first, or the argument for bringing it back cannot be settled by observation either.",
       "id": "B",
@@ -126,8 +139,7 @@
       "effort": "high",
       "pool": [
         { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
-        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true },
-        { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true }
       ]
     },
     "verifier": {
@@ -140,8 +152,7 @@
           "repoAccess": true
         },
         { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
-        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true },
-        { "wrapper": "grok", "select": { "vendor": "xai", "tier": "frontier", "channel": "cli" }, "model": "grok-4.7", "vendor": "xai", "repoAccess": false }
+        { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true }
       ]
     },
     "synthesis": {
