@@ -242,7 +242,6 @@ exit 0
     "batch-review.ps1 OK — -ManifestPath reaches every chunk, and is absent when not given"
 
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
-    # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process
     # dying between truncate and write-complete must not leave a corrupted summary
     # -- can only be faked by locking the destination, and Windows then refuses to
