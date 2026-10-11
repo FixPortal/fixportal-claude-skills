@@ -214,6 +214,34 @@ exit 0
     }
     "batch-review.ps1 OK — -ChunkTimeoutSeconds is a per-chunk clock across waves"
 
+    # A run-scoped roster must reach every chunk. Without a pass-through, batch mode
+    # silently ran the canonical reviewers.json whatever the operator approved.
+    $fakeManifestSkill = Join-Path $root 'fake-manifest-skill'
+    New-Item -ItemType Directory -Path $fakeManifestSkill -Force | Out-Null
+    Copy-Item -LiteralPath $batch -Destination $fakeManifestSkill
+    @'
+param([string] $Target, [string] $RepoPath, [string] $WorkDir, [string] $Pathspec, [string] $ManifestPath)
+Set-Content -LiteralPath (Join-Path $WorkDir 'manifest-seen.txt') -Value "[$ManifestPath]" -Encoding utf8
+@{ pooledCount = 1 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkDir 'status.json') -Encoding utf8
+@{ participants = @() } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkDir 'metrics.json') -Encoding utf8
+exit 0
+'@ | Set-Content -LiteralPath (Join-Path $fakeManifestSkill 'run-review.ps1') -Encoding utf8
+    $m18 = Join-Path $root 'm18.json'; New-Manifest $m18 @('M1', 'M2')
+    $runManifest = Join-Path $root 'run scoped reviewers.json'
+    '{}' | Set-Content -LiteralPath $runManifest -Encoding utf8
+    foreach ($case in @(@{ Name = 'with'; Args = @('-ManifestPath', $runManifest); Want = "[$runManifest]" }, @{ Name = 'without'; Args = @(); Want = '[]' })) {
+        $runRoot18 = Join-Path $root "run18-$($case.Name)"
+        $batchArgs = @('-NoProfile', '-File', (Join-Path $fakeManifestSkill 'batch-review.ps1'), '-ChunkManifest', $m18, '-RepoPath', $fakeRepo, '-RunRoot', $runRoot18, '-BatchSize', '2') + $case.Args
+        $out18 = & pwsh @batchArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "batch $($case.Name) -ManifestPath must complete, exited $LASTEXITCODE`n$out18" }
+        foreach ($id in 'M1', 'M2') {
+            $seen = (Get-Content -LiteralPath (Join-Path (Join-Path $runRoot18 $id) 'manifest-seen.txt') -Raw).Trim()
+            if ($seen -ne $case.Want) { throw "chunk $id $($case.Name) -ManifestPath: spine received $seen, want $($case.Want)" }
+        }
+    }
+    "batch-review.ps1 OK — -ManifestPath reaches every chunk, and is absent when not given"
+
+    # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process
     # dying between truncate and write-complete must not leave a corrupted summary
