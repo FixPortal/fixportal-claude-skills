@@ -1,7 +1,50 @@
 $ErrorActionPreference = 'Stop'
 
-$skill = Get-Content (Join-Path $PSScriptRoot '..' 'SKILL.md') -Raw
+# The shared TypeScript floor (typescript, typescript-eslint, vitest, @vitest/coverage-v8)
+# is owned by scaffold-typescript; this skill's own table holds only frontend-only rows,
+# none of which this check resolves through npm.
+$sharedSkill = Join-Path $PSScriptRoot '..' '..' 'scaffold-typescript' 'SKILL.md'
+# The floors live in a sibling skill the public mirror does not publish; skip with a reason
+# rather than dropping the assertions (private copy throws when the owner is missing).
+if (-not (Test-Path $sharedSkill)) {
+    Write-Host 'SKIP: scaffold-typescript not present in this tree; shared version floors not checked'
+    return
+}
+$skill = Get-Content $sharedSkill -Raw
 $root = Join-Path ([IO.Path]::GetTempPath()) ('frontend-floor-' + [guid]::NewGuid().ToString('N'))
+
+# Return the FLOOR itself - a bare version - not the documented RANGE. Scraping the cell
+# verbatim yielded '^6.0.3', and npm resolves a caret to the newest matching release, so
+# the install proved only "some 6.x works with typescript-eslint". The floor is the number
+# the table actually promises, and it is the one that goes stale silently when a peer range
+# moves under it. Pinning it exactly is the whole point of this check.
+#
+# The cell is parsed for a semver anywhere inside it, so table formatting (backticks, bold,
+# a trailing "(tilde, not caret)" note) cannot break the extraction the way an exact-cell
+# match would.
+function Get-Floor([string] $package) {
+    foreach ($row in $skill -split "`r?`n") {
+        $cells = $row -split '\|'
+        for ($index = 1; $index -lt $cells.Count - 1; $index += 2) {
+            if ($cells[$index].Trim() -ne "``$package``") { continue }
+            $cell = $cells[$index + 1]
+            $version = [regex]::Match($cell, '\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
+            if (-not $version.Success) { throw "No semver floor found for $package in table cell '$($cell.Trim())'" }
+            return $version.Value
+        }
+    }
+    throw "No version floor found for $package"
+}
+
+# Pure static comparison, so it runs before any npm / registry SKIP guard: the frontend
+# template must not sit below the shared floor it inherits.
+$template = Get-Content (Join-Path $PSScriptRoot '..' 'templates' 'package.json') -Raw | ConvertFrom-Json
+foreach ($name in 'typescript','typescript-eslint','eslint','@eslint/js','eslint-plugin-sonarjs','globals','prettier','vitest','@vitest/coverage-v8','@types/node') {
+    $declared = $template.devDependencies.$name
+    if ($null -eq $declared) { throw "scaffold-frontend template lacks $name" }
+    $have = [version]([regex]::Match($declared, '\d+\.\d+\.\d+').Value)
+    if ($have -lt [version](Get-Floor $name)) { throw "frontend template $name $have is below the shared scaffold-typescript floor $(Get-Floor $name)" }
+}
 
 # This check resolves the documented floors against the live npm registry. On a host with
 # no npm it cannot run at all - say so rather than failing the whole suite.
@@ -61,29 +104,6 @@ function Invoke-NpmWithRetry([string] $What, [string[]] $Arguments) {
     return $null
 }
 
-# Return the FLOOR itself - a bare version - not the documented RANGE. Scraping the cell
-# verbatim yielded '^6.0.3', and npm resolves a caret to the newest matching release, so
-# the install proved only "some 6.x works with typescript-eslint". The floor is the number
-# the table actually promises, and it is the one that goes stale silently when a peer range
-# moves under it. Pinning it exactly is the whole point of this check.
-#
-# The cell is parsed for a semver anywhere inside it, so table formatting (backticks, bold,
-# a trailing "(tilde, not caret)" note) cannot break the extraction the way an exact-cell
-# match would.
-function Get-Floor([string] $package) {
-    foreach ($row in $skill -split "`r?`n") {
-        $cells = $row -split '\|'
-        for ($index = 1; $index -lt $cells.Count - 1; $index += 2) {
-            if ($cells[$index].Trim() -ne "``$package``") { continue }
-            $cell = $cells[$index + 1]
-            $version = [regex]::Match($cell, '\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
-            if (-not $version.Success) { throw "No semver floor found for $package in table cell '$($cell.Trim())'" }
-            return $version.Value
-        }
-    }
-    throw "No version floor found for $package"
-}
-
 try {
     New-Item -ItemType Directory -Path $root | Out-Null
     [ordered]@{
@@ -116,7 +136,7 @@ try {
         throw "TypeScript is documented with a caret range ('$($tsCell.Trim())'); typescript-eslint peer-declares <6.1.0, so a caret admits a version that cannot install"
     }
 
-    "scaffold-frontend version floor OK — npm resolved TypeScript $(Get-Floor 'typescript') with typescript-eslint $(Get-Floor 'typescript-eslint'), Vitest $(Get-Floor 'vitest') with @vitest/coverage-v8 $(Get-Floor '@vitest/coverage-v8')"
+    "scaffold-frontend version floor OK (shared rows read from scaffold-typescript) — npm resolved TypeScript $(Get-Floor 'typescript') with typescript-eslint $(Get-Floor 'typescript-eslint'), Vitest $(Get-Floor 'vitest') with @vitest/coverage-v8 $(Get-Floor '@vitest/coverage-v8')"
 }
 finally {
     if ($root.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {

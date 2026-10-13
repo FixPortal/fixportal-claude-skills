@@ -44,7 +44,15 @@ function Invoke-WithRetry([string] $What, [string] $Exe, [string[]] $Arguments, 
 
 try {
     New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
-    Copy-Item -Path (Join-Path $templateRoot '*') -Destination $fixtureRoot -Recurse
+    # Copy the directory's CONTENTS with -Force: a '*' glob skips dotfiles on Unix.
+    Get-ChildItem -LiteralPath $templateRoot -Force | Copy-Item -Destination $fixtureRoot -Recurse -Force
+
+    # Guard: the fixture must carry every template dotfile (.prettierrc.json,
+    # .prettierignore, ...). Without them Prettier silently runs on defaults and every
+    # file fails, which reads as a broken template rather than a bad copy.
+    $dropped = @(Get-ChildItem -LiteralPath $templateRoot -Force -File | Where-Object Name -like '.*' |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $fixtureRoot $_.Name)) } | ForEach-Object Name)
+    if ($dropped.Count -gt 0) { throw "fixture copy dropped template dotfile(s): $($dropped -join ', ')" }
 
     # The template ships config only; a generated app also needs an entrypoint
     # and a Vite config. Keep both minimal and valid.
@@ -73,18 +81,53 @@ export default defineConfig({
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 
-createRoot(document.getElementById('root')!).render(<App />)
+const root = document.getElementById('root')
+if (root) createRoot(root).render(<App />)
 '@
 
     $validApp = @'
 export function App() {
-  const label: string = 'ok'
-  return <p>{label}</p>
+  return <p>ok</p>
 }
 '@
     Set-Content -LiteralPath (Join-Path $fixtureRoot 'src' 'App.tsx') -Value $validApp
 
-    $install = Invoke-WithRetry 'fixture npm install' 'npm' @('install', '--no-audit', '--no-fund') $fixtureRoot
+    # The bare template is red by design (no app, and the architecture spec's layer
+    # rules match no files). A generated app has the five layer folders, each with at
+    # least one module, and at least one real test; add the smallest valid versions so
+    # the whole house gate (format, lint, build, test) can be required green.
+    foreach ($layer in 'api','lib','hooks','components','pages') {
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src' $layer) -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $fixtureRoot 'src' $layer 'index.ts') -Value "export const layer = '$layer'"
+    }
+    Set-Content -LiteralPath (Join-Path $fixtureRoot 'src' 'lib' 'greet.ts') -Value @'
+export function greet(name: string): string {
+  return `Hello, ${name}`
+}
+'@
+    Set-Content -LiteralPath (Join-Path $fixtureRoot 'src' 'lib' 'greet.test.ts') -Value @'
+import { describe, expect, it } from 'vitest'
+import { greet } from './greet'
+
+describe('greet', () => {
+  it('greets by name', () => {
+    expect(greet('Ada')).toBe('Hello, Ada')
+  })
+})
+'@
+
+    # Set-Content appends the platform newline, so a Windows host writes CRLF-terminated
+    # fixture files that `prettier --check` (the format step below) rightly flags.
+    # Normalise every fixture file to LF with exactly one trailing newline.
+    # Template-owned files are left byte-for-byte as shipped: they must pass on their own.
+    foreach ($file in @(Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File -Include '*.ts','*.tsx','*.html')) {
+        $relative = [IO.Path]::GetRelativePath($fixtureRoot, $file.FullName)
+        if (Test-Path -LiteralPath (Join-Path $templateRoot $relative)) { continue }
+        $text = ([IO.File]::ReadAllText($file.FullName) -replace "`r`n", "`n").TrimEnd() + "`n"
+        [IO.File]::WriteAllText($file.FullName, $text)
+    }
+
+    $install = Invoke-WithRetry 'fixture npm install' 'npm' @('install', '--ignore-scripts', '--no-audit', '--no-fund') $fixtureRoot
     if ($null -eq $install) {
         Write-Host 'SKIP: npm registry unreachable after retries; build-gate check not run'
         $global:LASTEXITCODE = 0
@@ -94,13 +137,17 @@ export function App() {
 
     $distDir = Join-Path $fixtureRoot 'dist'
 
-    $validBuild = Invoke-WithRetry 'valid-source build' 'npm' @('run', 'build') $fixtureRoot
-    if ($null -eq $validBuild) {
-        Write-Host 'SKIP: npm registry unreachable after retries; build-gate check not run'
-        $global:LASTEXITCODE = 0
-        return
+    # The full house gate, each step on its own so a failure names the step, then the
+    # chained `gate` script. Order is cheapest first: format, lint, build, test.
+    foreach ($step in 'format','lint','build','test','gate') {
+        $result = Invoke-WithRetry "valid-source $step" 'npm' @('run', $step) $fixtureRoot
+        if ($null -eq $result) {
+            Write-Host 'SKIP: npm registry unreachable after retries; build-gate check not run'
+            $global:LASTEXITCODE = 0
+            return
+        }
+        if (-not $result.Ok) { throw "template '$step' failed against a valid fixture app (should have passed):`n$($result.Output)" }
     }
-    if (-not $validBuild.Ok) { throw "template build failed against valid sources (should have passed):`n$($validBuild.Output)" }
     if (-not (Test-Path $distDir)) { throw 'template build reported success but produced no dist/ output' }
     Remove-Item -LiteralPath $distDir -Recurse -Force
 

@@ -9,10 +9,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "format": "prettier --check .",
     "lint": "eslint .",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gate": "npm run format && npm run lint && npm run build && npm test"
   },
   "dependencies": {
     "react": "^19.2.7",
@@ -37,6 +40,7 @@
     "eslint-plugin-sonarjs": "^4.0.3",
     "globals": "^17.6.0",
     "jsdom": "^30.0.1",
+    "prettier": "^3.9.10",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.61.0",
     "vite": "^8.0.16",
