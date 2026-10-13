@@ -4,13 +4,16 @@ $ErrorActionPreference = 'Stop'
 # is owned by scaffold-typescript; this skill's own table holds only frontend-only rows,
 # none of which this check resolves through npm.
 $sharedSkill = Join-Path $PSScriptRoot '..' '..' 'scaffold-typescript' 'SKILL.md'
-# The floors live in a sibling skill the public mirror does not publish; skip with a reason
-# rather than dropping the assertions (private copy throws when the owner is missing).
-if (-not (Test-Path $sharedSkill)) {
-    Write-Host 'SKIP: scaffold-typescript not present in this tree; shared version floors not checked'
-    return
+# The floors live in a sibling skill the public mirror does not publish. Where it is absent,
+# read the same rows from this skill's own SKILL.md, which reproduces them; every assertion
+# below still runs (the private copy throws when the owner is missing).
+if (Test-Path $sharedSkill) {
+    $floorSource = $sharedSkill
+} else {
+    Write-Host 'NOTE: scaffold-typescript not present in this tree; reading the shared floors from this skill SKILL.md'
+    $floorSource = Join-Path $PSScriptRoot '..' 'SKILL.md'
 }
-$skill = Get-Content $sharedSkill -Raw
+$skill = Get-Content $floorSource -Raw
 $root = Join-Path ([IO.Path]::GetTempPath()) ('frontend-floor-' + [guid]::NewGuid().ToString('N'))
 
 # Return the FLOOR itself - a bare version - not the documented RANGE. Scraping the cell
@@ -136,7 +139,7 @@ try {
         throw "TypeScript is documented with a caret range ('$($tsCell.Trim())'); typescript-eslint peer-declares <6.1.0, so a caret admits a version that cannot install"
     }
 
-    "scaffold-frontend version floor OK (shared rows read from scaffold-typescript) — npm resolved TypeScript $(Get-Floor 'typescript') with typescript-eslint $(Get-Floor 'typescript-eslint'), Vitest $(Get-Floor 'vitest') with @vitest/coverage-v8 $(Get-Floor '@vitest/coverage-v8')"
+    "scaffold-frontend version floor OK (floors read from $(Split-Path (Split-Path $floorSource) -Leaf)/SKILL.md) — npm resolved TypeScript $(Get-Floor 'typescript') with typescript-eslint $(Get-Floor 'typescript-eslint'), Vitest $(Get-Floor 'vitest') with @vitest/coverage-v8 $(Get-Floor '@vitest/coverage-v8')"
 }
 finally {
     if ($root.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {

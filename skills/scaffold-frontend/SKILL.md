@@ -54,15 +54,42 @@ widening breaking jest-dom matcher types, and eslint-plugin-react-refresh
 - **Architecture tests**: `archunit` (npm package), via a local wrapper
 
 Pin all deps to their latest **mutually compatible** releases at scaffold time.
-The table below holds the **frontend-only** floors (the shared TypeScript floor,
-including `prettier`, is in `scaffold-typescript`'s table, referenced just below) —
-the known-good set; bump within current peer ranges when scaffolding, but do not go
-below it. The shared table is dated in its own file (`prettier` joined it in 2026-10).
+The two tables below are the **floor** — the known-good set, last amended 2026-10;
+bump within current peer ranges when scaffolding, but do not go below it. The first
+holds the shared TypeScript toolchain, which the maintained `scaffold-typescript` skill
+owns (that skill is not published in this mirror, so the rows are reproduced here); the
+second holds the frontend-only rows.
 
-Shared TypeScript floor (`typescript`, `typescript-eslint`, `eslint`, `@eslint/js`,
-`eslint-plugin-sonarjs`, `globals`, `prettier`, `vitest`, `@vitest/coverage-v8`, `@types/node`),
-the TypeScript `~` tilde rationale and the Node 24.15.0 engines floor: see
-`scaffold-typescript`. Frontend-only floors:
+| Package | Floor |
+|---|---|
+| `typescript` | **`~6.0.3`** (tilde, not caret) |
+| `typescript-eslint` | ^8.61.0 |
+| `eslint` | ^10.4.1 |
+| `@eslint/js` | ^10.0.1 |
+| `eslint-plugin-sonarjs` | ^4.0.3 |
+| `globals` | ^17.6.0 |
+| `prettier` | ^3.9.10 |
+| `vitest` | ^4.1.10 |
+| `@vitest/coverage-v8` | ^4.1.10 |
+| `@types/node` | ^24.13.3 |
+
+`typescript-eslint` 8.x currently declares TypeScript `>=4.8.4 <6.1.0`, so
+TypeScript 7 is not installable with this stack. Keep TypeScript on the latest
+6.0.x release until that peer range expands; never bypass it with
+`--legacy-peer-deps` or `--force`.
+
+**That is why the range is `~6.0.3` and not `^6.0.3`.** A caret means
+`>=6.0.3 <7.0.0`, which admits 6.1.0 — a version this same paragraph says is not
+installable — so on the day 6.1.0 publishes, every fresh scaffold fails `npm install`
+with `ERESOLVE` and the only documented recoveries are the two flags forbidden above.
+The tilde pins the 6.0.x line the peer range actually allows. Widen it when
+`typescript-eslint` widens, not before.
+
+Use Node **24.15.0 or newer on the Node 24 line**, matching the `engines.node`
+contract in `templates/package.json`. This satisfies Vite, jest-dom, and jsdom 30
+together; verify `node --version` before install.
+
+Frontend-only floors:
 
 | Package | Floor | Package | Floor |
 |---|---|---|---|
@@ -112,23 +139,24 @@ record the assumption).
   `format` (`prettier --check .`), `lint`, `typecheck` (`tsc -b`), `build`,
   `test: vitest run`, coverage and the chained `gate`. Adapt only the package name and app/library
   dependencies; keep the toolchain mutually resolvable.
-- `templates/.prettierrc.json` + `.prettierignore` — byte-identical to
-  `scaffold-typescript`'s (the contract verifier compares them). `.prettierignore`
+- `templates/.prettierrc.json` + `.prettierignore` — byte-identical to the Node
+  TypeScript scaffold's (compared by the contract verifier where that skill is
+  present; it is not published in this mirror). `.prettierignore`
   also lists `.github/ai-smells` and `.github/workflows/review-tier.yml`
   (manifest-listed `scaffold-ci` assets that read DIVERGED if reformatted) and
   `.claude/review-policy.json` (a per-repo copy, not manifest-listed; reason UNVERIFIED).
 - `templates/eslint.config.js` — flat config: `js` + `typescript-eslint`
   `strictTypeChecked` + `stylisticTypeChecked` (type-aware: `projectService`) +
   react-hooks + react-refresh + the full SonarJS recommended set, all SonarJS
-  rules downgraded to `warn`, noise rules off (see below), and the house bans from
-  `scaffold-typescript` (no enums, no default exports, no `Date.now` / bare
+  rules downgraded to `warn`, noise rules off (see below), and the house TypeScript
+  bans (no enums, no default exports, no `Date.now` / bare
   `new Date()`, no `setTimeout` in tests, `switch-exhaustiveness-check`). The
   typed rules live only in the typed block: a block without `projectService`
   crashes on them. Relaxations, each with a WHY in the file: `**/*.config.ts` may
   default-export (Vite/Vitest require it); `src/**/clock.{ts,tsx}` is the one
   place that may call a bare `new Date()`. The template ships no clock file — when the
   first time-dependent code lands, create `src/<area>/clock.ts` (a `Clock` taken by
-  parameter everywhere else; see `scaffold-typescript`'s `src/clock.ts`). Write the
+  parameter everywhere else). Write the
   system clock as `{ now: () => new Date() }`; `Date.now()` is banned everywhere,
   including the clock file, so it cannot leak around the `Clock`. The `setTimeout`
   test ban is mechanical for bare `setTimeout(...)` only; `window.setTimeout` /
@@ -174,9 +202,10 @@ vitest run
 ```
 
 Cheapest and most mechanical first. `prettier --check`, never `--write`: the gate
-reports, it does not rewrite the tree it judges. The language rules (strictness,
-clock, async tests, bans) and what enforces each are in
-`../scaffold-typescript/references/language-rules.md`; do not restate them here.
+reports, it does not rewrite the tree it judges. The language rules are enforced by
+the template configs: strict type-aware lint, `switch-exhaustiveness-check`, no
+`enum` (`erasableSyntaxOnly`), no default exports (config files exempt), no
+`Date.now` or bare `new Date()` outside a `Clock`, and no `setTimeout` in tests.
 Fix lint at the source; the type-aware presets are errors, not advisories.
 
 A bare copy of `templates/` is red by design (no `src` app yet, and the
@@ -243,11 +272,10 @@ pin `archunit` exactly and import `projectFiles` only through the shipped wrappe
 
 ## Bringing an existing frontend to this standard
 
-Do **not** flip everything in one pass. Follow the ladder in `scaffold-typescript`
-("Bringing existing TypeScript to standard": dependencies and lockfile, Prettier
-alone, strict lint, tsconfig flags one at a time with `noUncheckedIndexedAccess`
-and `exactOptionalPropertyTypes` last, then the bans). A blocking weak gate beats
-a non-blocking strict one. Frontend deltas only:
+Do **not** flip everything in one pass. One step per commit, in this order:
+dependencies and lockfile, Prettier alone, strict lint, tsconfig flags one at a time
+with `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` last, then the
+bans. A blocking weak gate beats a non-blocking strict one. Frontend deltas:
 
 - **Prettier step:** do not `prettier --write` the verbatim `scaffold-ci` assets
   (`.github/ai-smells`, `.claude/review-policy.json`,
