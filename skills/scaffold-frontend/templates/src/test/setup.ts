@@ -8,7 +8,9 @@ import '@testing-library/jest-dom/vitest'
 // with their own afterEach(cleanup) are unaffected.
 import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
-afterEach(() => { cleanup() })
+afterEach(() => {
+  cleanup()
+})
 
 // Add project-specific test-environment shims below. Common ones:
 //   - vi.stubEnv('VITE_SOME_FLAG', 'false')  // pin dev-only flags off under test

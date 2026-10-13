@@ -35,6 +35,62 @@ if (-not ($rootTsconfig.references.path -contains './tsconfig.test.json')) {
 $testTsconfigPath = Join-Path $templateRoot 'tsconfig.test.json'
 if (-not (Test-Path $testTsconfigPath)) { throw 'templates/tsconfig.test.json is missing' }
 
+# House TypeScript tightenings (owned by scaffold-typescript, adopted here). Real values,
+# parsed - a flag mentioned in a comment must not satisfy these.
+foreach ($config in 'tsconfig.app.json','tsconfig.node.json','tsconfig.test.json') {
+    $options = (Get-Content (Join-Path $templateRoot $config) -Raw | ConvertFrom-Json).compilerOptions
+    foreach ($flag in 'noUncheckedIndexedAccess','exactOptionalPropertyTypes','noPropertyAccessFromIndexSignature','noImplicitOverride') {
+        if ($options.$flag -ne $true) { throw "$config must set $flag to true" }
+    }
+}
+
+$tsTemplates = Join-Path $skillRoot '..' 'scaffold-typescript' 'templates'
+foreach ($file in '.prettierrc.json','.prettierignore') {
+    $mine = Join-Path $templateRoot $file
+    if (-not (Test-Path $mine)) { throw "templates/$file is missing" }
+    if (-not (Test-Path $tsTemplates)) { Write-Host "SKIP: scaffold-typescript not present in this tree; templates/$file not compared"; continue }
+    if ((Get-Content $mine -Raw) -ne (Get-Content (Join-Path $tsTemplates $file) -Raw)) { throw "templates/$file differs from scaffold-typescript's" }
+}
+if ($package.scripts.format -ne 'prettier --check .') { throw 'package template format script must be "prettier --check ."' }
+if ($package.scripts.lint -ne 'eslint .') { throw 'package template lint script must be "eslint ."' }
+if ($package.scripts.typecheck -ne 'tsc -b') { throw 'package template typecheck script must be "tsc -b"' }
+$ignoreLines = (Get-Content (Join-Path $templateRoot '.prettierignore')).Trim()
+foreach ($entry in 'dist','coverage','.github/ai-smells','.claude/review-policy.json','.github/workflows/review-tier.yml') {
+    if ($ignoreLines -notcontains $entry) { throw ".prettierignore must list '$entry' on its own line" }
+}
+if ($package.scripts.gate -ne 'npm run format && npm run lint && npm run build && npm test') { throw 'package template gate script must chain format, lint, build, test in that order' }
+if (Test-Path $tsTemplates) {
+    $tsPackage = Get-Content (Join-Path $tsTemplates 'package.json') -Raw | ConvertFrom-Json
+    if ($package.devDependencies.prettier -ne $tsPackage.devDependencies.prettier) { throw 'prettier devDependency must match the scaffold-typescript floor' }
+} else {
+    Write-Host 'SKIP: scaffold-typescript not present in this tree; prettier floor not compared'
+}
+
+# ESLint: usage form, not bare mentions (a comment naming a ban would pass a bare grep).
+$eslint = (Get-Content (Join-Path $templateRoot 'eslint.config.js') -Raw)
+$eslintCode = [regex]::Replace($eslint, '(?m)^\s*//.*$|\s//.*$', '')
+$eslintRequired = [ordered]@{
+    'strictTypeChecked in extends'  = 'tseslint\.configs\.strictTypeChecked\s*,'
+    'stylisticTypeChecked in extends' = 'tseslint\.configs\.stylisticTypeChecked\s*,'
+    'projectService'                = 'parserOptions:\s*\{\s*projectService:\s*true,\s*tsconfigRootDir:\s*import\.meta\.dirname'
+    'switch-exhaustiveness-check'   = "'@typescript-eslint/switch-exhaustiveness-check':\s*'error'"
+    'Date.now ban'                  = "'no-restricted-properties':\s*\[\s*'error',\s*\{\s*object:\s*'Date',\s*property:\s*'now'"
+    'bare new Date ban'             = "selector:\s*`"NewExpression\[callee\.name='Date'\]\[arguments\.length=0\]`""
+    'enum ban'                      = "selector:\s*'TSEnumDeclaration'"
+    'default export ban'            = "selector:\s*'ExportDefaultDeclaration'"
+    'setTimeout ban scoped to test files' = "files:\s*\['\*\*/\*\.\{test,spec\}\.\{ts,tsx\}'\],\s*rules:\s*\{\s*'no-restricted-globals':\s*\[\s*'error',\s*\{\s*name:\s*'setTimeout'"
+    'main block lists all three syntax bans' = "'no-restricted-syntax':\s*\['error',\s*noEnum,\s*noDefaultExport,\s*noBareNewDate\]"
+    '*.config.ts block lists noEnum and noBareNewDate but not noDefaultExport' = "files:\s*\['\*\*/\*\.config\.ts'\],\s*rules:\s*\{\s*'no-restricted-syntax':\s*\['error',\s*noEnum,\s*noBareNewDate\]\s*\}"
+    'clock boundary exemption'      = "files:\s*\['src/\*\*/clock\.\{ts,tsx\}'\],\s*rules:\s*\{\s*'no-restricted-syntax':\s*\['error',\s*noEnum,\s*noDefaultExport\],?\s*\}"
+    'react-hooks kept'              = 'reactHooks\.configs\.flat\.recommended'
+    'react-refresh kept'            = 'reactRefresh\.configs\.vite'
+    'sonarjs spread-then-downgrade, unguarded' = "\.\.\.Object\.fromEntries\(\s*Object\.keys\(sonarjs\.configs\.recommended\.rules\)\.map\(\(name\) => \[name, 'warn'\]\),?\s*\)"
+}
+foreach ($item in $eslintRequired.GetEnumerator()) {
+    if ($eslintCode -notmatch $item.Value) { throw "eslint.config.js missing: $($item.Key)" }
+}
+if ($eslintCode -match 'tseslint\.configs\.recommended') { throw 'eslint.config.js still extends tseslint.configs.recommended; strictTypeChecked replaces it' }
+
 # The resolution half needs npm and the live registry. On a host with no npm the static
 # assertions above still hold; say what did not run rather than failing the whole suite.
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
@@ -96,7 +152,7 @@ try {
             return
         }
         if ($shown -match 'TS18003') {
-            # TS18003 "No inputs were found": this mirror's templates/src holds only
+            # TS18003 "No inputs were found": the bare templates/src holds only
             # test-family files (the app project legitimately resolves empty HERE; a
             # scaffolded project has app sources). Fall back to the raw compilerOptions.
             Write-Host "SKIP: $config has no inputs in the bare templates tree; strict asserted from raw JSON"

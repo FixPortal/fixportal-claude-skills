@@ -41,23 +41,23 @@ const EXCEPT_TESTS = { except: { withName: '*.{test,spec,archunit}.*' } }
 // TODO 3 -- replace with this project's FORBIDDEN_EDGES. Each row asserts:
 // nothing in `from` may import from `to`. Derive from the layer diagram: for each
 // pair (low, high), lower layers must not depend on higher ones.
-const FORBIDDEN_EDGES: ReadonlyArray<{
+const FORBIDDEN_EDGES: readonly {
   from: string
   fromGlob: string
   to: string
   toGlob: string
-}> = [
+}[] = [
   // Example -- replace:
-  { from: 'api',        fromGlob: '**/api/**',        to: 'hooks',      toGlob: '**/hooks/**'      },
-  { from: 'api',        fromGlob: '**/api/**',        to: 'components', toGlob: '**/components/**' },
-  { from: 'api',        fromGlob: '**/api/**',        to: 'pages',      toGlob: '**/pages/**'      },
-  { from: 'lib',        fromGlob: '**/lib/**',        to: 'hooks',      toGlob: '**/hooks/**'      },
-  { from: 'lib',        fromGlob: '**/lib/**',        to: 'components', toGlob: '**/components/**' },
-  { from: 'lib',        fromGlob: '**/lib/**',        to: 'pages',      toGlob: '**/pages/**'      },
-  { from: 'hooks',      fromGlob: '**/hooks/**',      to: 'components', toGlob: '**/components/**' },
-  { from: 'hooks',      fromGlob: '**/hooks/**',      to: 'pages',      toGlob: '**/pages/**'      },
-  { from: 'components', fromGlob: '**/components/**', to: 'hooks',      toGlob: '**/hooks/**'      },
-  { from: 'components', fromGlob: '**/components/**', to: 'pages',      toGlob: '**/pages/**'      },
+  { from: 'api', fromGlob: '**/api/**', to: 'hooks', toGlob: '**/hooks/**' },
+  { from: 'api', fromGlob: '**/api/**', to: 'components', toGlob: '**/components/**' },
+  { from: 'api', fromGlob: '**/api/**', to: 'pages', toGlob: '**/pages/**' },
+  { from: 'lib', fromGlob: '**/lib/**', to: 'hooks', toGlob: '**/hooks/**' },
+  { from: 'lib', fromGlob: '**/lib/**', to: 'components', toGlob: '**/components/**' },
+  { from: 'lib', fromGlob: '**/lib/**', to: 'pages', toGlob: '**/pages/**' },
+  { from: 'hooks', fromGlob: '**/hooks/**', to: 'components', toGlob: '**/components/**' },
+  { from: 'hooks', fromGlob: '**/hooks/**', to: 'pages', toGlob: '**/pages/**' },
+  { from: 'components', fromGlob: '**/components/**', to: 'hooks', toGlob: '**/hooks/**' },
+  { from: 'components', fromGlob: '**/components/**', to: 'pages', toGlob: '**/pages/**' },
 ]
 
 describe('architecture / layer isolation', () => {
