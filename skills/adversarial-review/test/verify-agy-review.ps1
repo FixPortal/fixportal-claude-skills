@@ -21,14 +21,15 @@ if ($google.wrapper -ne 'agy') { throw 'reviewer G must use the agy wrapper' }
 
 # The seat is a CONSTRAINT, not a pinned id: a new Gemini is picked up by triaging it
 # in the registry. What must not drift is that the constraint still lands on something
-# agy accepts. Assert the contract (google + frontier + cli) and that it resolves at
+# agy accepts. Assert the contract (google + workhorse + cli; agy has served no Gemini
+# Pro-class model since 2026-10-13, so frontier would resolve to nothing) and that it resolves at
 # all -- an empty resolution is the silent-vendor-drop shape, and the driver dies on it.
 # Public mirror: the model-registry sibling is not published here, so the seat carries a
 # literal `model` BESIDE its `select` as the registry-absent fallback (run-review.ps1
 # Resolve-SeatModel). A literal without `select` would still be a pin, so require select.
 if (-not $google.select) { throw 'reviewer G must resolve through the registry (select), not only pin a literal model id' }
 if ($google.select.vendor -ne 'google') { throw 'reviewer G must select the google vendor' }
-if ($google.select.tier -ne 'frontier') { throw 'reviewer G must select the frontier tier' }
+if ($google.select.tier -ne 'workhorse') { throw 'reviewer G must select the workhorse tier (the best Gemini agy serves)' }
 
 $resolveScript = Join-Path (Split-Path $skillDir -Parent) 'model-registry' 'resolve.py'
 if (Test-Path -LiteralPath $resolveScript) {
