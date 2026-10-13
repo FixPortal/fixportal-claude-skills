@@ -19,7 +19,7 @@ param(
     [string] $OutPath,
     [string] $UsageSidecarPath,
     [Parameter(Mandatory, ParameterSetName='Preflight')][switch] $Preflight,
-    [ValidateRange(30,2700)][int] $TimeoutSeconds = 900
+    [ValidateRange(30,2700)][int] $TimeoutSeconds = 2400
 )
 $ErrorActionPreference = 'Stop'
 

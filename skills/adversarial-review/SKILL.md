@@ -50,7 +50,7 @@ giant diff. Exclude generated/migration/build outputs where appropriate.
 
 ### 0. Resolve and size
 
-Resolve the target exactly as Usage states. Capture the diff, added/total lines,
+Resolve the target as Usage states. Capture the diff, added/total lines,
 and estimated tokens. Repo-blind reviewers get compact diffs once the driver
 crosses its transport gate; routing comes from each manifest entry's
 `repoAccess`, never hardcoded IDs.
@@ -249,3 +249,5 @@ and its contract tests instead.
 - PR pathspec requested.
 - A remembered model/wrapper is about to override the manifest.
 - A report would call unverified Highs confirmed or silently erase contention.
+
+Tests: `test/`.

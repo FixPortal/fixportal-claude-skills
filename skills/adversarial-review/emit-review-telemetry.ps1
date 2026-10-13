@@ -24,7 +24,7 @@
     e.g. "20260614T143022Z". Use the workdir's own timestamp.
 
 .PARAMETER Reviewer
-    Vendor id of the reviewer: anthropic | google | openai | moonshot | xai | zai.
+    Vendor id of the reviewer: anthropic | google | openai | moonshot | xai | zai | deepseek.
 
     THIS SET MUST TRACK reviewers.json, and nothing fails loudly when it does not.
     aggregate-and-emit.ps1 keys $byReviewer by vendor and passes the key straight
@@ -116,7 +116,7 @@ param(
     [string] $RunId,
 
     [Parameter(Mandatory)]
-    [ValidateSet('anthropic', 'google', 'openai', 'moonshot', 'xai', 'zai')]
+    [ValidateSet('anthropic', 'google', 'openai', 'moonshot', 'xai', 'zai', 'deepseek')]
     [string] $Reviewer,
 
     [Parameter(Mandatory)]

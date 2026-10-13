@@ -15,6 +15,7 @@
     "gemini": "gemini-review.ps1",
     "grok": "grok-review.ps1",
     "glm": "glm-review.ps1",
+    "deepseek": "deepseek-review.ps1",
     "openai": "openai-review.ps1",
     "copilot": "external-review.ps1"
   },
@@ -66,22 +67,22 @@
       "enabled": true
     },
     {
-      "_comment": "Moonshot reviewer. Subscription-backed via the Kimi Code CLI (kimi-review.ps1), Allegretto OAuth login -- no API fallback. WORKHORSE is deliberate and is a COST constraint, not a capability one: the highspeed selector spends roughly 3x credits and kimi-code/k3 is the frontier 1M-context model. Registry rank keeps this on the standard selector; if a cheaper standard model supersedes it, this seat follows without an edit. repoAccess is false because Kimi has no per-invocation read-only flag; the wrapper runs hermetically with copied context.",
-      "id": "K",
-      "label": "Kimi (standard)",
-      "wrapper": "kimi",
-      "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding",
-      "vendor": "moonshot",
+      "_comment": "DeepSeek reviewer via the metered API (deepseek-review.ps1; DPAPI key under %LOCALAPPDATA%/YourOrg/deepseek-trial). Entered 2026-10-12 as a supplemental trial seat and PROMOTED TO A COUNTED SEAT THE SAME DAY by the owner (\"I want the next review to include DeepSeek in a 5 seat panel\"), replacing Kimi, so the panel is five vendors again. This is an owner override of the admission rule's contained slot, not a result of evidence: UNVERIFIED that its findings are accepted at a rate comparable to the other seats, and it has had no full panel run. Because it now counts, an outage or a failed preflight kills the chunk rather than being skipped (run-review.ps1 Dies when a counted seat has no PREFLIGHT_SUCCESS). RE-DEMOTE (restore `supplemental: true`) IF per-seat acceptance trails the lowest other seat across the next few full runs, the preflight fails on repeat, or the API balance cannot sustain it. It never judges or verifies (absent from every role pool). A literal `model` pin bypasses the registry deliberately: deepseek-v4-pro is registered with tier null (untriaged), which is structurally unmatchable by `select`, and the wrapper passes the id through and checks the response's own model field. Metered cost is observable (usage sidecar, registry price is the peak list price, an upper bound). repoAccess is false: the wrapper is one HTTPS call with every input inlined, no tools, no cwd.",
+      "id": "D",
+      "label": "DeepSeek (trial)",
+      "wrapper": "deepseek",
+      "model": "deepseek-v4-pro",
+      "vendor": "deepseek",
       "effort": "high",
       "repoAccess": false,
       "enabled": true
     },
     {
-      "_comment": "Google reviewer (Gemini). Subscription-backed via Antigravity CLI (agy-review.ps1) on the user's paid Google plan. Diff-only (repo-blind): pass the key repo files via -ContextPath. Resolves against the registry's `antigravity` source, which is `agy models` -- a live authenticated roster, and a SEPARATE catalogue from the Gemini CLI one, using different ids for what may be the same weights. agy fuses reasoning effort into the selector (`-high`/`-low`), so the resolved id already carries it and agy-review.ps1 reads the effort back off the suffix rather than appending its own.",
+      "_comment": "Google reviewer (Gemini). DOWNGRADED frontier -> workhorse 2026-10-13: Gemini 3.1 Pro (the last Google frontier model on agy) was withdrawn from agy -- absent from `agy models`, rejected by `agy --model`, and agy silently remapped its own default alias to Gemini 3.8 Flash -- which the owner confirmed on Google's side. The best Gemini agy now serves is the 3.8 Flash trio (registry workhorse), so this seat is a Flash-tier vote, not a frontier one: weigh its findings accordingly. RE-UPGRADE to `tier: frontier` IF agy offers a Gemini Pro-class model again (triage it in the registry first). Subscription-backed via Antigravity CLI (agy-review.ps1) on the user's paid Google plan. Diff-only (repo-blind): pass the key repo files via -ContextPath. Resolves against the registry's `antigravity` source, which is `agy models` -- a live authenticated roster, and a SEPARATE catalogue from the Gemini CLI one, using different ids for what may be the same weights. agy fuses reasoning effort into the selector (`-high`/`-low`), so the resolved id already carries it and agy-review.ps1 reads the effort back off the suffix rather than appending its own.",
       "id": "G",
-      "label": "Gemini",
+      "label": "Gemini (Flash)",
       "wrapper": "agy",
-      "select": { "vendor": "google", "tier": "frontier", "channel": "cli" }, "model": "gemini-3.1-pro-high",
+      "select": { "vendor": "google", "tier": "workhorse", "channel": "cli" }, "model": "gemini-3.8-flash-high",
       "vendor": "google",
       "effort": "high",
       "repoAccess": false,
@@ -90,6 +91,18 @@
   ],
 
   "alternates": [
+    {
+      "_comment": "Moonshot reviewer (Kimi), DISABLED 2026-10-12 for QUOTA, and the subscription was then CANCELLED the same day; it stays valid until 2026-11-10 and is deliberately left to interactive use only, so the panel must not draw its quota. Motivating observation, the owner, 2026-10-12: \"50% of my 5 hr usage used already in this session!!\" -- one ordinary working session consumed half the Kimi Plus 5-hour window, and panel runs draw on that same pool, so the seat could not be sustained alongside interactive use. The owner's words: \"I've cancelled my kimi sub ... I'll just use it interactively\" to spend the remaining quota. Moved here rather than deleted so kimi-review.ps1, its tests and the wrapper/noSandbox entries stay intact for a reinstatement. Removed from the judgeAudit and verifier pools too, so a vendor known to be gone is never drawn. Was subscription-backed via the Kimi Code CLI (Allegretto OAuth, no API fallback), already on the cheapest standard selector (workhorse; highspeed costs ~3x), repoAccess false because Kimi has no per-invocation read-only flag (model-routing-traps.md trap 5). RE-ENABLE IF: a Kimi subscription is renewed after 2026-11-10 AND its window can sustain a panel run beside interactive use; move this block back into `reviewers` and restore the pool entries from _reenablePoolEntry. minVendors stays 3.",
+      "_reenablePoolEntry": "To reinstate: add this line to roles.judgeAudit.pool (first member) and roles.verifier.pool (second member, after claude): { \"wrapper\": \"kimi\", \"select\": { \"vendor\": \"moonshot\", \"tier\": \"workhorse\", \"channel\": \"cli\" }, \"model\": \"kimi-code/kimi-for-coding\", \"vendor\": \"moonshot\", \"repoAccess\": false }",
+      "id": "K",
+      "label": "Kimi (standard)",
+      "wrapper": "kimi",
+      "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding",
+      "vendor": "moonshot",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": false
+    },
     {
       "_comment": "xAI reviewer (Grok), DISABLED 2026-10-11: the owner reports Grok is no longer available. Moved here from the active panel rather than deleted, so grok-review.ps1, its tests and the wrapper/noSandbox entries stay intact for a reinstatement. Removed from the judgeAudit and verifier pools too, so a vendor known to be gone is never drawn. UNVERIFIED: that a retained dead member would fail its phase; refuted if SKILL.md's host procedure skips an unrunnable pool member. Was subscription-backed via the Grok CLI (OAuth, no XAI_API_KEY, so no metered fallback), frontier by constraint, repoAccess false and not negotiable: no per-invocation read-only mode, grok-review.ps1 passes --always-approve, so the wrapper is hermetic (scratch cwd, inputs copied in) and listed in noSandboxWrappers. RE-ENABLE IF: Grok returns; move this block back into `reviewers`, restore it to both pools, and bump nothing else -- minVendors stays 3.",
       "_reenablePoolEntry": "To reinstate: append this exact line as the LAST member of BOTH roles.judgeAudit.pool and roles.verifier.pool (add a comma to the codex line before it): { \"wrapper\": \"grok\", \"select\": { \"vendor\": \"xai\", \"tier\": \"frontier\", \"channel\": \"cli\" }, \"vendor\": \"xai\", \"repoAccess\": false }",
@@ -138,7 +151,6 @@
     "judgeAudit": {
       "effort": "high",
       "pool": [
-        { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
         { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true }
       ]
     },
@@ -151,7 +163,6 @@
           "vendor": "anthropic",
           "repoAccess": true
         },
-        { "wrapper": "kimi", "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "cli" }, "model": "kimi-code/kimi-for-coding", "vendor": "moonshot", "repoAccess": false },
         { "wrapper": "codex", "select": { "vendor": "openai", "tier": "frontier", "channel": "cli" }, "model": "gpt-6-astra", "vendor": "openai", "repoAccess": true, "allowRepoCommands": true }
       ]
     },
