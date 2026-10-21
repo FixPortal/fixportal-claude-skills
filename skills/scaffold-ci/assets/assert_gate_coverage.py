@@ -1791,7 +1791,7 @@ GATE_SCRIPT = re.compile(
     # widens DETECTION only -- more scripts required HIGH, never fewer. The trailing
     # `\b` is what keeps `.jsx` out: `js` followed by a word character never matches.
     r"""(?<![\w.-])(?:\.[\\/])?[\\/]?((?:[\w.-]+[\\/])*(?:\.github[\\/]scripts|scripts|build|tools)[\\/]"""
-    r"""[\w.\\/-]*\.(?:[Pp][Ss]1|[Pp][Yy]|[Ss][Hh]|[Mm][Jj][Ss]|[Jj][Ss]))\b"""
+    r"""[\w.\\/-]*\.(?:[Pp][Ss][Mm]1|[Pp][Ss]1|[Pp][Yy]|[Ss][Hh]|[Bb][Aa][Ss][Hh]|[Mm][Jj][Ss]|[Cc][Jj][Ss]|[Jj][Ss]|[Tt][Ss]))\b"""
 )
 # A `run:` key at any depth. Group 1 is everything before the key, so its LENGTH is the
 # key's own column -- which is what continuation_lines needs to find a block scalar's
@@ -2856,7 +2856,7 @@ def changes_directory(body):
     Which shell runs a body is not reliably known here -- a step with no `shell:` key
     runs bash off Windows and pwsh on it -- and the disciplines differ exactly where it
     matters: pwsh does not treat `\"` as an escape, so bash masking never closes
-    `Write-Host "cache: scratch\" ; Set-Location sub` and the real directory change after the
+    `Write-Host "cache: C:\" ; Set-Location sub` and the real directory change after the
     string stays masked. Testing both can only ADD a detection; a wrong positive costs a
     refused workflow while a wrong negative costs an untiered gate script, and those are
     not symmetric.
