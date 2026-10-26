@@ -1,8 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $asset = Join-Path $PSScriptRoot '../assets/assert_gate_coverage.py'
+$mirror = Join-Path $PSScriptRoot '../../../.github/scripts/assert_gate_coverage.py'
 $python = Get-Command python3, python -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $python) { throw 'Python is required for gate consumer regressions' }
-@'
+$regressions = @'
 import importlib.util
 import json
 import pathlib
@@ -17,6 +18,9 @@ spec.loader.exec_module(gate)
 escaped_literal = json.dumps('backslash \\ and quote "')
 assert re.fullmatch(gate._LITERAL, escaped_literal)
 assert gate.static_truth('${{ ' + escaped_literal + ' }}') is True
+assert len(gate.status_reachable_atoms(
+    "always() && contains(needs.*.result, 'failure') && " + escaped_literal
+)) == 1
 unterminated_literal = '"' + '\\' + '"'
 assert re.fullmatch(gate._LITERAL, unterminated_literal) is None
 # A malformed literal must be rejected promptly. Run the regex in a child process so
@@ -74,5 +78,8 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             assert expected is None, field
 print('gate consumer regressions OK')
-'@ | & $python.Source -S - $asset
-if ($LASTEXITCODE -ne 0) { throw 'Gate consumer regressions failed' }
+'@
+foreach ($checker in $asset, $mirror) {
+    $regressions | & $python.Source -S - $checker
+    if ($LASTEXITCODE -ne 0) { throw "Gate consumer regressions failed for $checker" }
+}
