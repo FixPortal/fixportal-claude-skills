@@ -4,13 +4,29 @@ $python = Get-Command python3, python -ErrorAction SilentlyContinue | Select-Obj
 if (-not $python) { throw 'Python is required for gate consumer regressions' }
 @'
 import importlib.util
+import json
 import pathlib
+import re
+import subprocess
 import sys
 import tempfile
 
 spec = importlib.util.spec_from_file_location('gate', sys.argv[1])
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+escaped_literal = json.dumps('backslash \\ and quote "')
+assert re.fullmatch(gate._LITERAL, escaped_literal)
+assert gate.static_truth('${{ ' + escaped_literal + ' }}') is True
+unterminated_literal = '"' + '\\' + '"'
+assert re.fullmatch(gate._LITERAL, unterminated_literal) is None
+# A malformed literal must be rejected promptly. Run the regex in a child process so
+# a backtracking regression fails this check instead of hanging the whole test run.
+probe = "import re, sys; assert re.fullmatch(sys.argv[1], sys.argv[2]) is None"
+subprocess.run(
+    [sys.executable, '-S', '-c', probe, gate._LITERAL, '"' + r'\!' * 32],
+    check=True,
+    timeout=2,
+)
 assert gate.static_truth("!'false'") is False
 assert gate.static_truth("${{ 'left' == 'right' }}") is False
 assert gate.static_truth("${{ 'false' }}") is True
