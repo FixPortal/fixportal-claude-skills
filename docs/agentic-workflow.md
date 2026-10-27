@@ -45,8 +45,9 @@ flowchart LR
 
 As of 2026-10-27 the live setup has 33 registered hook commands across 8 hook events
 (session start, prompt submit, pre-tool, permission request, post-tool, pre-compact,
-notification and stop), 103 authored skills in the canonical skills directory (24 are
-published in this repository), and 17 traps notes. Those are counts read off the
+notification and stop), 103 skills in the canonical skills directory (57 authored by me,
+of which 24 are published in this repository; the other 46 are third-party installs),
+and 17 traps notes. Those are counts read off the
 directories that day, not targets.
 
 ## Principles, and the mechanism behind each

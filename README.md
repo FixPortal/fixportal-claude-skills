@@ -33,10 +33,10 @@ failures that shaped them), see [How I work with coding agents](docs/agentic-wor
 
 | Skill | What it does |
 |---|---|
-| `adversarial-review` | Cross-vendor code review: one reviewer seat per vendor (Anthropic, OpenAI via the Codex CLI, Moonshot via the Kimi Code CLI, Google via Antigravity, and xAI via the Grok CLI at the time of writing), which cross-examine each other before a separate judge adjudicates. The panel is data, not code: `reviewers.json` defines it, pins a literal model per seat, and the driver enforces a minimum vendor-diversity invariant. |
+| `adversarial-review` | Cross-vendor code review: one reviewer seat per vendor (the enabled seats in `reviewers.json` at the time of writing: Anthropic, OpenAI via the Codex CLI, Google via Antigravity, z.AI via an isolated Claude Code session, and DeepSeek via its API; Kimi and Grok seats are present but disabled), which cross-examine each other before a separate judge adjudicates. The panel is data, not code: `reviewers.json` defines it, pins a literal model per seat, and the driver enforces a minimum vendor-diversity invariant. |
 | `review-sweep` | The same review across every repository under a parent folder, one subsystem at a time. |
 | `review-worktree-pass` | Remediate review findings in a dedicated, ephemeral review worktree on a numbered batch branch, so the primary checkout is never disturbed. |
-| `review-digest` | Mine *past* review work across a folder of repos into a dated intelligence report — coverage ledger, recurring-theme digest, risk ranking, and a paste-ready scope brief for the next pass. Read-only; runs no reviews. |
+| `review-digest` | Mine *past* review records across a folder of repos into a dated report — per-repository review coverage, change counts since the last usable review, a ranked work queue (explicitly not a risk verdict), and a paste-ready `/adversarial-review` prompt per changed scope. Reads vault records and git only; runs no reviews and edits no scanned code. |
 | `quality-gate-review` | A merge/release verdict from the evidence already gathered. Classifies what was verified and what is still a gap, rather than re-reviewing. |
 
 ### Audit — measure something against a standard, change nothing
@@ -45,7 +45,7 @@ failures that shaped them), see [How I work with coding agents](docs/agentic-wor
 |---|---|
 | `audit-ci` | GitHub Actions CI/CD for one repo or a folder sweep, measured against a house standard — gaps, drift, cross-repo inconsistency, and a Docker layer-cache opportunity lens. Advisory; hands fixes to `scaffold-ci`. |
 | `audit-tests` | Test quality and adequacy: what the suite actually proves, where the false confidence is, and how a prior audit reconciles against later code changes. |
-| `audit-skills` | Audit authored agent skills across Claude Code, Codex, Kimi, and Antigravity for stale references, weak triggers, runtime incompatibility, and cross-home drift. |
+| `audit-skills` | Audit authored agent skills across Claude Code, Codex, Kimi, Antigravity, and PI for stale references, weak triggers, runtime incompatibility, and cross-home drift. |
 | `audit-github-estate` | GitHub quality and security across an org or repository estate — code scanning, Dependabot, secret scanning, Actions evidence, and post-merge verification. |
 | `audit-dotnet-estate` | Compare multiple .NET repositories against current house standards: scaffold drift, analyzer and formatter conformance, tests, docs, CI. |
 | `audit-dotnet-performance` | Measure and profile one .NET repository, rank evidence-backed performance findings, and publish a reproducible audit manifest. |
@@ -84,10 +84,12 @@ made only of Claude models is same-vendor self-review: its errors correlate, so
 the second opinion mostly agrees with the first. Spanning several vendors is
 what makes one vendor's blind spot another's finding.
 
-Two rules fall out of that and are enforced rather than documented: the active
-reviewer set must span a minimum number of distinct vendors, and the judge is
-never also a reviewer — an adjudicator that voted earlier is just its own
-opinion, counted twice.
+Two rules fall out of that. The driver enforces the first in code: the active
+reviewer set must span a minimum number of distinct vendors (`minVendors` in
+`reviewers.json`). The manifest enforces the second by construction: the judge
+is never also a reviewer — the Opus lineage is reserved for judging, and the
+Anthropic reviewer seat is constrained to a different model family — because an
+adjudicator that voted earlier is just its own opinion, counted twice.
 
 In the private working set each seat names a model *constraint* that a separate
 model registry resolves to whatever is current. This mirror does not ship that

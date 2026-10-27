@@ -46,7 +46,9 @@ repeated here.
   scoped green run is not full-suite validation. A new or changed skill must
   keep its verifiers green; run the full set locally with pwsh before pushing.
 - Workflows are linted by `raven-actions/actionlint` (SHA-pinned,
-  `shellcheck: true`) as the first validation step of every job.
+  `shellcheck: true`) as the first validation step of the `skills` job, the only
+  job that runs it. `review-policy-guard.yml` additionally runs
+  `assert_workflow_hygiene.py` over the workflows.
 - `.claude/review-policy.json` is the review control plane;
   `review-policy-guard.yml` asserts it stays tracked and unignored. Do not
   re-add `.gitignore` to its `high` list without first removing the
