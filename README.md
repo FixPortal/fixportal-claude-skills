@@ -13,6 +13,9 @@ placeholders.
 > `<vault>`, `<workdir>`, and example values like `you@example.com` / `Acme` /
 > `<your-org>` are placeholders — point them at your own locations before use.
 
+For the setup these skills sit inside (the hooks, gates, memory and review routing, and the
+failures that shaped them), see [How I work with coding agents](docs/agentic-workflow.md).
+
 ## What's here
 
 ### Scaffolding — start a repo, or bring an existing one up to standard
