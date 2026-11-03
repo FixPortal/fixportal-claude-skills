@@ -119,15 +119,20 @@ function Get-DefaultBranch([string] $RepoPath) {
 # "Convert-Path and Resolve-Path do not resolve a junction"). Resolve-Path and GetFullPath return
 # the traversed path, so ~/.claude/skills/scaffold-ci and ~/.agents/skills/scaffold-ci -- one
 # directory under two names -- compared as different places.
-function Resolve-RealPath([string] $Path) {
+function Resolve-RealPath([string] $Path, [int] $Depth = 0) {
+    # A cycle of links would recurse forever below; 40 hops is far past any real chain.
+    if ($Depth -gt 40) { throw "Too many nested links resolving '$Path'." }
     $full = [IO.Path]::GetFullPath($Path)
     $result = [IO.Path]::GetPathRoot($full)
     foreach ($segment in $full.Substring($result.Length).Split([char[]] @([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), [StringSplitOptions]::RemoveEmptyEntries)) {
         $result = Join-Path $result $segment
         if (-not (Test-Path -LiteralPath $result)) { continue }
         $target = [IO.Directory]::ResolveLinkTarget($result, $true)
-        if ($target) { $result = $target.FullName }
+        # The target's OWN parents may be links; ResolveLinkTarget only follows links at the target path itself.
+        if ($target) { $result = Resolve-RealPath $target.FullName ($Depth + 1) }
     }
+    # A root keeps its separator: `/` trimmed to '' broke the caller's next Join-Path.
+    if ($result -eq [IO.Path]::GetPathRoot($result)) { return $result }
     return $result.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 }
 

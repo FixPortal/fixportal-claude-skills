@@ -66,7 +66,7 @@ executable cross-check:
    pagination. Check the `gh` exit status before parsing each response. Preserve the
    response envelope's nonnegative `total_count`, append every page's jobs, and verify
    the accumulated job count exactly equals `total_count`. Write a temporary, sanitized
-   JSON object containing only `run: { id, head_sha, conclusion }`, `total_count`, and
+   JSON object containing only `run: { id, head_sha, conclusion, workflow_id }`, `total_count`, and
    every job's `id`, `name`, `started_at`, `completed_at`, `conclusion` and
    `run_attempt`; do not write it into the repository.
 
@@ -89,6 +89,9 @@ executable cross-check:
    The workflow policy and required job names come from the checkout while the evidence measures
    `<sha>`, so the result carries the checkout's own `CheckoutHeadSha`. When it is known and differs from
    `<sha>`, report the two commits as a coverage gap; do not score them as one audited commit.
+   A matching `CheckoutHeadSha` does not prove the files read match that commit, so the checker
+   fails when `.github/`, `.claude/` or `.coderabbit.yaml` hold staged, unstaged or untracked
+   changes. Audit a clean (or isolated) checkout of `<sha>`.
    The checker maps required CI Gate job display names to every expanded Actions job,
    sums measured durations, and excludes the lightweight gate-control jobs. Missing,
    failed, incomplete, or stale evidence fails closed. A required job that concludes
@@ -106,6 +109,15 @@ executable cross-check:
    owner reviewed, a positive `max_minutes`, and a file committed in the audited tree.
    The audited head's measured minutes must not exceed `max_minutes`, so a lane that has
    grown past the approval fails closed until the owner re-approves it.
+   The approval's `run_id` is verified, not just parsed: fetch that run separately through
+   the Actions runs API (`.../actions/runs/<run_id>`), write `{ "run": { id, head_sha,
+   conclusion, workflow_id } }` to a temp file and pass it as `-ApprovalRunEvidencePath`. It
+   must be that `run_id`, `success`, at the approval's `head_sha`, in the same workflow as the
+   audited run. It is provenance only and never the cost measurement. Actions deletes runs
+   after the repository's log retention (90 days by default), and an approval whose run is
+   gone fails closed: the fetch returns 404, so there is no evidence file to pass. Report it
+   as an expired approval for the owner to renew against a current run, not as a lane over
+   budget.
    **Never write that object yourself** — an approval the
    auditor authors is provenance-free and leaves no durable record; this skill is
    read-only and advisory, and cannot approve its own exception. Free-form text is not

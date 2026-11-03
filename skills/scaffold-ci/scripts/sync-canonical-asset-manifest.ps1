@@ -140,7 +140,9 @@ $assets = @(
     }
 )
 $topCommit = $head; $topSyncedAt = $today
-if ($sameSource -and $previous.canonical.commit -and -not ($assets | Where-Object { $_.commit -eq $head -and $_.syncedAt -eq $today })) {
+# A removed asset leaves no stamped entry behind, yet the manifest changed: compare path sets too.
+$assetSetChanged = $sameSource -and ((@($prevByPath.Keys) | Sort-Object) -join "`n") -ne ((@($assets | ForEach-Object { $_.path }) | Sort-Object) -join "`n")
+if ($sameSource -and $previous.canonical.commit -and -not $assetSetChanged -and -not ($assets | Where-Object { $_.commit -eq $head -and $_.syncedAt -eq $today })) {
     $topCommit = $previous.canonical.commit; $topSyncedAt = $previous.canonical.syncedAt
 }
 

@@ -29,6 +29,14 @@ try {
     function Write-OverBudgetEvidence([string] $sha, [string] $name) {
         $value = Get-Content -LiteralPath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') -Raw | ConvertFrom-Json
         $value.run.head_sha = $sha
+        $value.run | Add-Member -NotePropertyName workflow_id -NotePropertyValue 77 -Force
+        $path = Join-Path $tempRoot "$name.json"
+        [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 10))
+        $path
+    }
+    # The run the approval names, fetched separately from the audited-head run.
+    function Write-ApprovalRunEvidence([string] $name, [string] $head, [long] $id = 4241, [string] $conclusion = 'success', [long] $workflowId = 77) {
+        $value = [pscustomobject]@{ run = [pscustomobject]@{ id = $id; head_sha = $head; conclusion = $conclusion; workflow_id = $workflowId } }
         $path = Join-Path $tempRoot "$name.json"
         [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 10))
         $path
@@ -61,8 +69,9 @@ try {
     $approvalCommitSha = (& git -C $approvalRepo rev-parse HEAD).Trim()
     $approvalEvidencePath = Write-OverBudgetEvidence $approvalCommitSha 'actions-cost-approved-head'
     $ancestorEvidencePath = Write-OverBudgetEvidence $approvalAncestorSha 'actions-cost-approved-ancestor'
+    $approvalRunPath = Write-ApprovalRunEvidence 'approval-run' $approvalAncestorSha
     $laneJobs = @('Backend (.NET)', 'Frontend (UI)', 'Secrets')
-    $cost = & $costCheck -EvidencePath (Join-Path $fixtures 'actions-cost-compliant.json') -ExpectedHeadSha $headSha `
+    $cost =& $costCheck -EvidencePath (Join-Path $fixtures 'actions-cost-compliant.json') -ExpectedHeadSha $headSha `
         -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15
     if ($cost.Status -ne 'COMPLIANT' -or $cost.AggregateMinutes -ne 12 -or $cost.CountedJobs -ne 3) {
         throw "Canonical hybrid measured cost was misclassified: $($cost | ConvertTo-Json -Compress)"
@@ -198,17 +207,43 @@ try {
     $colliding.jobs[1].completed_at = $colliding.jobs[0].completed_at
     [IO.File]::WriteAllText($collidingPath, ($colliding | ConvertTo-Json -Depth 10))
     $collidingResult = & $costCheck -EvidencePath $collidingPath -ExpectedHeadSha $approvalCommitSha `
-        -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo
+        -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo `
+        -ApprovalRunEvidencePath $approvalRunPath
     if ($collidingResult.CountedJobs -ne 4) {
         throw "two legs sharing a name and a start second collapsed: counted $($collidingResult.CountedJobs) of 4"
     }
 
     $approved = & $costCheck -EvidencePath $approvalEvidencePath -ExpectedHeadSha $approvalCommitSha `
-        -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo
+        -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo `
+        -ApprovalRunEvidencePath $approvalRunPath
     if ($approved.Status -ne 'APPROVED_EXCEPTION' -or $approved.AggregateMinutes -ne 18 -or $approved.CountedJobs -ne 4 -or
         $approved.MeasuredHeadSha -ne $approvalCommitSha) {
         throw "Approved measured exception was misclassified: $($approved | ConvertTo-Json -Compress)"
     }
+
+    # The approval's run_id is provenance and must be VERIFIED from the run fetched
+    # separately; a bare positive integer must not yield APPROVED_EXCEPTION. Each case differs
+    # from the passing call above in exactly one respect.
+    $approvalRunArguments = @{ EvidencePath = $approvalEvidencePath; ExpectedHeadSha = $approvalCommitSha; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
+    Assert-CostFails 'An approval was accepted with no evidence for its run_id' 'approval run evidence is missing' $approvalRunArguments
+    foreach ($case in @(
+        @{ Name = 'another run id'; Expect = 'does not describe the approval run_id'; Path = (Write-ApprovalRunEvidence 'approval-run-other-id' $approvalAncestorSha 9999) },
+        @{ Name = 'unsuccessful run'; Expect = 'did not conclude successfully'; Path = (Write-ApprovalRunEvidence 'approval-run-failed' $approvalAncestorSha 4241 'failure') },
+        @{ Name = 'run at another head'; Expect = 'head_sha does not match'; Path = (Write-ApprovalRunEvidence 'approval-run-other-head' $approvalCommitSha) },
+        @{ Name = 'run of another workflow'; Expect = 'different workflow'; Path = (Write-ApprovalRunEvidence 'approval-run-other-workflow' $approvalAncestorSha 4241 'success' 78) }
+    )) {
+        Assert-CostFails "Approval run provenance ($($case.Name))" $case.Expect ($approvalRunArguments + @{ ApprovalRunEvidencePath = $case.Path })
+    }
+
+    # A stale payload must be reported as stale even when it also carries a job-level fault;
+    # the head check ran after the job loop, so the job's error masked the real cause.
+    $staleAndFailed = Get-Content -LiteralPath $approvalEvidencePath -Raw | ConvertFrom-Json
+    $staleAndFailed.run.head_sha = $approvalAncestorSha
+    $staleAndFailed.jobs[1].conclusion = 'failure'
+    $staleAndFailedPath = Join-Path $tempRoot 'stale-and-failed-job.json'
+    [IO.File]::WriteAllText($staleAndFailedPath, ($staleAndFailed | ConvertTo-Json -Depth 10))
+    Assert-CostFails 'A stale payload with a failed job was blamed on the job' 'head_sha is stale' `
+        @{ EvidencePath = $staleAndFailedPath; ExpectedHeadSha = $approvalCommitSha; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
 
     # The approved ANCESTOR run's evidence must not stand for the audited HEAD. It did:
     # after one approval every later HEAD came back APPROVED_EXCEPTION on the old run's
@@ -276,7 +311,8 @@ try {
     Invoke-ApprovalGit -C $sha256Repo -c commit.gpgsign=false commit --quiet -m approval
     $sha256Head = (& git -C $sha256Repo rev-parse HEAD).Trim()
     $sha256Evidence = Write-OverBudgetEvidence $sha256Head 'sha256-approval-evidence'
-    $sha256Result = & $costCheck -EvidencePath $sha256Evidence -ExpectedHeadSha $sha256Head -RequiredJobNames $laneJobs -BudgetMinutes 15 -RepositoryRoot $sha256Repo
+    $sha256RunPath = Write-ApprovalRunEvidence 'sha256-approval-run' $sha256Ancestor
+    $sha256Result = & $costCheck -EvidencePath $sha256Evidence -ExpectedHeadSha $sha256Head -RequiredJobNames $laneJobs -BudgetMinutes 15 -RepositoryRoot $sha256Repo -ApprovalRunEvidencePath $sha256RunPath
     if ($sha256Result.Status -ne 'APPROVED_EXCEPTION') { throw "A committed approval in a SHA-256 repository was refused: $($sha256Result | ConvertTo-Json -Compress)" }
 
     New-Item -ItemType Directory -Path (Join-Path $tempRoot '.github/workflows') -Force | Out-Null
@@ -368,7 +404,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .
       - run: |
-          "$RUNNER_TEMP/gitleaks" dir -v --redact .
+          "$RUNNER_TEMP/gitleaks" dir -v --redact -i .gitleaksignore-tree .
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -514,6 +550,10 @@ jobs:
         ActionsEvidencePath = $costEvidence
         ExpectedHeadSha = $headSha
     }
+    # The cases below edit the fixture's working tree on purpose, without committing; the
+    # clean-checkout guard has its own cases that omit this switch.
+    $contractArguments.AllowDirtyCheckout = $true
+    $cleanContractArguments = @{ RepositoryRoot = $repo; ScaffoldRoot = $scaffoldRoot; ActionsEvidencePath = $costEvidence; ExpectedHeadSha = $headSha }
     $missingContractEvidenceFailed = $false
     try { & $contractCheck -RepositoryRoot $repo -ScaffoldRoot $scaffoldRoot -ExpectedHeadSha $headSha 2>$null | Out-Null }
     catch { $missingContractEvidenceFailed = $true }
@@ -524,12 +564,60 @@ jobs:
     if ($contractResult.CheckoutHeadSha -ne $repoApprovalAncestor) {
         throw "The scaffold contract did not record the checkout HEAD: '$($contractResult.CheckoutHeadSha)' vs '$repoApprovalAncestor'"
     }
-    function Assert-ContractFails([string] $because, [string] $expected) {
+    function Assert-ContractFails([string] $because, [string] $expected, [hashtable] $arguments = $contractArguments) {
         $message = $null
-        try { & $contractCheck @contractArguments 2>$null | Out-Null } catch { $message = "$_" }
+        try { & $contractCheck @arguments 2>$null | Out-Null } catch { $message = "$_" }
         if ($null -eq $message) { throw "$($because): the contract passed" }
         if ($message -notmatch $expected) { throw "$($because): failed for the wrong reason: $message" }
     }
+
+    # A matching CheckoutHeadSha says nothing about the working tree the checker actually
+    # reads. A clean tree passes; a modified tracked workflow and an untracked one are each
+    # refused, and the tree is restored after.
+    & $contractCheck @cleanContractArguments | Out-Null
+    $dirtyExtendedOriginal = [IO.File]::ReadAllText($extendedPath)
+    [IO.File]::WriteAllText($extendedPath, $dirtyExtendedOriginal + "# uncommitted`n")
+    Assert-ContractFails 'A modified tracked workflow passed against an unchanged CheckoutHeadSha' 'differ from the checkout HEAD' $cleanContractArguments
+    [IO.File]::WriteAllText($extendedPath, $dirtyExtendedOriginal)
+    $untrackedWorkflowPath = Join-Path $repo '.github/workflows/untracked-extra.yml'
+    [IO.File]::WriteAllText($untrackedWorkflowPath, "name: Untracked`n")
+    Assert-ContractFails 'An untracked workflow passed against an unchanged CheckoutHeadSha' 'differ from the checkout HEAD' $cleanContractArguments
+    Remove-Item -LiteralPath $untrackedWorkflowPath -Force
+    # Code review: a gitignored workflow is read like any other, so it is refused too;
+    # a bytecode cache under .github/scripts is not.
+    $gitignorePath = Join-Path $repo '.gitignore'
+    [IO.File]::WriteAllText($gitignorePath, "ignored-extra.yml`n__pycache__/`n")
+    $ignoredWorkflowPath = Join-Path $repo '.github/workflows/ignored-extra.yml'
+    [IO.File]::WriteAllText($ignoredWorkflowPath, "name: Ignored`n")
+    Assert-ContractFails 'A gitignored workflow passed against an unchanged CheckoutHeadSha' 'differ from the checkout HEAD' $cleanContractArguments
+    Remove-Item -LiteralPath $ignoredWorkflowPath -Force
+    $pycachePath = Join-Path $repo '.github/scripts/__pycache__'
+    New-Item -ItemType Directory -Path $pycachePath | Out-Null
+    $pycacheFile = Join-Path $pycachePath 'x.cpython-312.pyc'
+    [IO.File]::WriteAllText($pycacheFile, 'cache')
+    & $contractCheck @cleanContractArguments | Out-Null
+    Remove-Item -LiteralPath $pycacheFile -Force
+    Remove-Item -LiteralPath $pycachePath -Force
+    Remove-Item -LiteralPath $gitignorePath -Force
+    # A git checkout whose status cannot be read is a failure, not a skip.
+    $indexPath = Join-Path $repo '.git/index'
+    $indexBytes = [IO.File]::ReadAllBytes($indexPath)
+    [IO.File]::WriteAllText($indexPath, 'not an index')
+    try { Assert-ContractFails 'An unreadable git status was skipped' 'git status failed' $cleanContractArguments }
+    finally { [IO.File]::WriteAllBytes($indexPath, $indexBytes) }
+    & $contractCheck @cleanContractArguments | Out-Null
+    # Code review: an index flag hides a modified workflow from git status.
+    $extendedRelative = [IO.Path]::GetRelativePath($repo, $extendedPath).Replace('\', '/')
+    foreach ($flag in '--assume-unchanged', '--skip-worktree') {
+        Invoke-ApprovalGit -C $repo update-index $flag $extendedRelative
+        [IO.File]::WriteAllText($extendedPath, $dirtyExtendedOriginal + "# hidden by $flag`n")
+        try { Assert-ContractFails "A workflow modified under $flag passed" 'differ from the checkout HEAD' $cleanContractArguments }
+        finally {
+            [IO.File]::WriteAllText($extendedPath, $dirtyExtendedOriginal)
+            Invoke-ApprovalGit -C $repo update-index ($flag -replace '^--', '--no-') $extendedRelative
+        }
+    }
+    & $contractCheck @cleanContractArguments | Out-Null
 
     # The audited repository's OWN gate scripts must never run. A canonical-compare
     # failure is recorded rather than thrown, and the drifted copies then executed inside
@@ -573,7 +661,7 @@ jobs:
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $twoFailureOutput = (& pwsh -NoProfile -File $contractCheck -RepositoryRoot $repo -ScaffoldRoot $scaffoldRoot `
-            -ActionsEvidencePath $costEvidence -ExpectedHeadSha $headSha 2>&1 | ForEach-Object { "$_" }) -join "`n"
+            -ActionsEvidencePath $costEvidence -ExpectedHeadSha $headSha -AllowDirtyCheckout 2>&1 | ForEach-Object { "$_" }) -join "`n"
     $twoFailureExit = $LASTEXITCODE
     $ErrorActionPreference = $savedPreference
     [IO.File]::WriteAllText($hygienePath, $hygieneOriginal)
@@ -612,16 +700,22 @@ jobs:
     catch { throw "A github.ref_name mainline-only job was incorrectly treated as tag-capable: $_" }
     # `ref_name == 'main'` ALONE is also true for a TAG named `main`, so it does not prove
     # a branch-only job.
-    $refNameOnly = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: github.ref_name == 'main'`n")
+    $refNameOnlyIf = $release.Replace("  ship:`n", "  ship:`n    if: github.ref_name == 'main'`n")
+    if ($refNameOnlyIf -eq $release) { throw 'the ref_name-only fixture mutated nothing; the case would be vacuous' }
+    $refNameOnly = Remove-FirstShipAncestry $refNameOnlyIf
     [IO.File]::WriteAllText($releasePath, $refNameOnly.Replace("`r`n", "`n"))
     Assert-ContractFails 'A ref_name-only mainline job (true for a tag named main) skipped ancestry validation' $shipLacksAncestry
     # A NEGATED mainline comparison has no `||` and is true on every tag.
-    $negatedGate = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: `${{ !(github.ref == 'refs/heads/main') }}`n")
+    $negatedGateIf = $release.Replace("  ship:`n", "  ship:`n    if: `${{ !(github.ref == 'refs/heads/main') }}`n")
+    if ($negatedGateIf -eq $release) { throw 'the negated-gate fixture mutated nothing; the case would be vacuous' }
+    $negatedGate = Remove-FirstShipAncestry $negatedGateIf
     [IO.File]::WriteAllText($releasePath, $negatedGate.Replace("`r`n", "`n"))
     Assert-ContractFails 'A negated mainline guard skipped ancestry validation' $shipLacksAncestry
     # ...but a negated FUNCTION call is not a negated group: `!cancelled()` beside the
     # mainline comparison is still branch-only and must not be inspected as tag-fired.
-    $notCancelledGate = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: `${{ !cancelled() && github.ref == 'refs/heads/main' }}`n")
+    $notCancelledGateIf = $release.Replace("  ship:`n", "  ship:`n    if: `${{ !cancelled() && github.ref == 'refs/heads/main' }}`n")
+    if ($notCancelledGateIf -eq $release) { throw 'the !cancelled() fixture mutated nothing; the case would be vacuous' }
+    $notCancelledGate = Remove-FirstShipAncestry $notCancelledGateIf
     [IO.File]::WriteAllText($releasePath, $notCancelledGate.Replace("`r`n", "`n"))
     try { & $contractCheck @contractArguments | Out-Null }
     catch { throw "A !cancelled() mainline-only job was incorrectly treated as tag-capable: $_" }
@@ -661,6 +755,7 @@ jobs:
     $approvedContractArguments.ExpectedHeadSha = (& git -C $repo rev-parse HEAD).Trim()
     # Measured at the audited head; the approval names the ancestor run it reviewed.
     $approvedContractArguments.ActionsEvidencePath = Write-OverBudgetEvidence $approvedContractArguments.ExpectedHeadSha 'repo-approval-evidence'
+    $approvedContractArguments.ApprovalRunEvidencePath = Write-ApprovalRunEvidence 'repo-approval-run' $repoApprovalAncestor
     $approvedContract = & $contractCheck @approvedContractArguments
     if ($approvedContract.Status -ne 'APPROVED_EXCEPTION') {
         throw "Approved exception was not propagated to the scaffold contract: $($approvedContract.Status)"
@@ -692,12 +787,12 @@ jobs:
         # The push-event range scan is load-bearing in its own right: without it, every
         # non-pull_request run of this job scanned a zero-commit range and exited 0.
         'push range secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .'; New = '          echo no-push-range-scan' }
-        'checked-out-tree secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" dir -v --redact .'; New = '          echo no-tree-scan' }
+        'checked-out-tree secret scan job scope' = @{ Old = '          "$RUNNER_TEMP/gitleaks" dir -v --redact -i .gitleaksignore-tree .'; New = '          echo no-tree-scan' }
         'PR range secret scan arguments' = @{ Old = '--log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .'; New = '--log-opts="--diff-merges=remerge ${HEAD_SHA}" .' }
         # --no-merges emits no merge diff, so a secret written in a conflict resolution
         # and removed later reached neither range scan nor the tree scan.
         'range secret scan sees merge resolutions' = @{ Old = '--log-opts="--diff-merges=remerge ${range}" .'; New = '--log-opts="--no-merges ${range}" .' }
-        'checked-out-tree secret scan target' = @{ Old = '"$RUNNER_TEMP/gitleaks" dir -v --redact .'; New = '"$RUNNER_TEMP/gitleaks" dir -v --redact src' }
+        'checked-out-tree secret scan target' = @{ Old = '"$RUNNER_TEMP/gitleaks" dir -v --redact -i .gitleaksignore-tree .'; New = '"$RUNNER_TEMP/gitleaks" dir -v --redact -i .gitleaksignore-tree src' }
     }
 
     [IO.File]::WriteAllText($workflowPath, $workflow.Replace("`r`n", "`n"))

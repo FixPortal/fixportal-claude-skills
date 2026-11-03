@@ -374,7 +374,7 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
       - name: Scan the checked-out tree for secrets
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/gitleaks" dir -v --redact .
+          "$RUNNER_TEMP/gitleaks" dir -v --redact -i .gitleaksignore-tree .
 ```
 
 **What covers which event.** Two of the three steps are conditional, so read the coverage
@@ -417,7 +417,16 @@ the first release tag after adoption fails `Secrets` on old history. Collect bot
 - `gitleaks git -v --redact --log-opts="--diff-merges=remerge HEAD" --report-format json --report-path git.json .`
 - `gitleaks dir -v --redact --report-format json --report-path dir.json .`
 
-Take the `Fingerprint` of every finding you accept from both reports.
+Take the `Fingerprint` of every finding you accept from both reports, but keep them in
+two files. Gitleaks 8.30.1 checks a finding's `<file>:<rule>:<line>` form against every
+loaded ignore entry, git findings included (`detect/detect.go`, `AddFinding`), and a
+`git` scan always loads `<source>/.gitleaksignore`. A dir-mode fingerprint in that file
+would therefore also excuse a NEW secret on the same line in a later commit. So:
+
+- `.gitleaksignore` holds only the commit-qualified `git`-mode fingerprints.
+  Never put a `<file>:<rule>:<line>` entry in it.
+- `.gitleaksignore-tree` holds the `dir`-mode fingerprints and is passed only to the tree
+  scan with `-i .gitleaksignore-tree`; no `git` scan references it.
 
 Use `.gitleaksignore` (`-i, --gitleaks-ignore-path`), **not** `--baseline-path`. They are
 different mechanisms and not interchangeable: `--baseline-path` takes a JSON report, while
@@ -469,8 +478,9 @@ scanning at all.
 - **Owner:** the repository owner, on the day the run fails. A red scheduled sweep is not a
   flaky test to be re-run.
 - **Action:** *rotate first, then fingerprint.* Revoke and reissue the credential at the
-  provider, then add its fingerprint to `.gitleaksignore` so the now-dead string stops
-  failing the gate. Fingerprinting without rotating hides a live credential behind an
+  provider, then add its fingerprint so the now-dead string stops failing the gate: the
+  commit-qualified `git`-mode one to `.gitleaksignore`, and the `dir`-mode one to
+  `.gitleaksignore-tree` if the string is still in the checked-out tree. Fingerprinting without rotating hides a live credential behind an
   accepted baseline, which is the one outcome this file must never make convenient.
   Rewriting history is not rotation: the credential is compromised the moment it is
   verified, and forks, clones and caches keep it reachable.

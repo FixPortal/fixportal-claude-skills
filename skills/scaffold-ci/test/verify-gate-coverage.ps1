@@ -4100,8 +4100,10 @@ jobs:
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env: &shared`n      HARMLESS: 1`n")) $true '' 'R-D M4: an anchored env: with harmless keys must pass'
 
     # R-D XM1 / S2: a flow defaults: on the line after its key, at job and workflow scope.
-    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults:`n      {run: {shell: `"bash -n {0}`"}}`n")) $false '' 'R-D XM1: a next-line flow defaults must not read as no default'
-    Assert-Gate (Invoke-Gate ("defaults:`n  {run: {shell: `"bash -n {0}`"}}`n" + (New-GateYaml 'exit 1'))) $false '' 'S2: a next-line flow defaults at workflow scope must not read as no default'
+    # Refused structurally, before the shell is read; the needle pins that refusal (code review).
+    $nextLineFlow = 'flow-style value for `defaults` must start on the key''s own line'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults:`n      {run: {shell: `"bash -n {0}`"}}`n")) $false $nextLineFlow 'R-D XM1: a next-line flow defaults must not read as no default'
+    Assert-Gate (Invoke-Gate ("defaults:`n  {run: {shell: `"bash -n {0}`"}}`n" + (New-GateYaml 'exit 1'))) $false $nextLineFlow 'S2: a next-line flow defaults at workflow scope must not read as no default'
 
     # S13: an unquoted flow scalar is read to the comma or brace, not the first space.
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults: {run: {shell: bash -e}}`n")) $false 'unsupported shell' 'S13: `bash -e` must not truncate to `bash`'
@@ -4136,7 +4138,11 @@ jobs:
 
     # tax c02-C5: an explicit pwsh gate may say `echo "..."`; a bare echo argument stays refused.
     Assert-Gate (Invoke-Gate (New-GateYaml ('echo "upstream failed"' + "`nexit 1") -shell pwsh)) $true '' 'tax c02-C5: a quoted echo under shell: pwsh must be accepted'
-    Assert-Gate (Invoke-Gate (New-GateYaml ('echo $x' + "`nexit 1") -shell pwsh)) $false '' 'tax c02-C5: an unquoted echo argument under shell: pwsh stays refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo $x' + "`nexit 1") -shell pwsh)) $false 'uses pwsh; only inert' 'tax c02-C5: an unquoted echo argument under shell: pwsh stays refused'
+    # ...and with NO shell key `echo` is not a pwsh message line: it runs under bash, whose quoting
+    # reads this body as messages around an `exit 0` (code review).
+    $echoBypass = 'echo "x\"' + "`n" + 'echo " ; exit 0 ; echo "' + "`n" + 'echo "x\"' + "`nexit 1"
+    Assert-Gate (Invoke-Gate (New-GateYaml $echoBypass)) $false 'not a recognised failing form' 'tax c02-C5: echo must not be vouched for by the pwsh reading when no shell is declared'
 
     # R-D M2 / tax M16: every start-up route, as env keys and as gate-job body writes.
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env:`n      SHELLOPTS: noexec`n")) $false 'SHELLOPTS' 'R-D M2: SHELLOPTS on the gate job must be refused'
@@ -4189,7 +4195,7 @@ jobs:
     if ($bareContains.Output -match 'reports success unconditionally') { throw "R-D M9: the refusal must not claim the gate reports success unconditionally:`n$($bareContains.Output)" }
 
     # tax M14: `!` binds tighter than a comparison, so `!1 == 2` cannot fold to true.
-    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace [regex]::Escape("- if: $gateIf"), "- if: always() && !1 == 2 && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))")) $false '' 'tax M14: a negated comparison must not fold to true and credit coverage'
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace [regex]::Escape("- if: $gateIf"), "- if: always() && !1 == 2 && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))")) $false 'has no step whose `if:` references a reachable' 'tax M14: a negated comparison must not fold to true and credit coverage'
 
     # S6 / tax M17: falsy literals on a feeder step are always-skipped; 1 is not.
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ 0 }}`n        run: echo build`n")) $false 'always-skipped' 'S6: if: ${{ 0 }} on a feeder step must be refused'
@@ -4218,6 +4224,25 @@ jobs:
     } finally { $env:GATE_STEP_EXEMPT = '' }
     Assert-Gate $tolerantExempt $true '' 'S12: a tolerated feeder step named in GATE_STEP_EXEMPT must pass'
     Assert-Gate $staleStepExempt $false 'GATE_STEP_EXEMPT' 'S12: a GATE_STEP_EXEMPT entry naming no tolerated step must be refused'
+    # Directory mode judges staleness across every workflow: release.yml's own `build` exempts nothing,
+    # and that must not redden an entry ci.yml's `build` uses (code review).
+    function Invoke-GateDirectory([string] $ciYaml, [string] $releaseYaml) {
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        $workflows = Join-Path $repo '.github' 'workflows'
+        New-Item -ItemType Directory -Path $workflows -Force | Out-Null
+        $ciYaml | Set-Content -LiteralPath (Join-Path $workflows 'ci.yml') -Encoding utf8
+        $releaseYaml | Set-Content -LiteralPath (Join-Path $workflows 'release.yml') -Encoding utf8
+        $output = Join-Path $repo 'output.txt'
+        & $python.Source -S $script $workflows *> $output
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = Get-Content -LiteralPath $output -Raw }
+    }
+    $env:GATE_STEP_EXEMPT = 'build/lint-report'
+    try {
+        $sharedFeeder = Invoke-GateDirectory $tolerantStep (New-GateYaml 'exit 1')
+        $staleEverywhere = Invoke-GateDirectory (New-GateYaml 'exit 1') (New-GateYaml 'exit 1')
+    } finally { $env:GATE_STEP_EXEMPT = '' }
+    Assert-Gate $sharedFeeder $true '' 'S12: a GATE_STEP_EXEMPT entry used by one workflow must not be stale in another sharing the feeder name'
+    Assert-Gate $staleEverywhere $false 'GATE_STEP_EXEMPT names step' 'S12: a GATE_STEP_EXEMPT entry no workflow uses must still be refused in directory mode'
 
     # tax M37: a local reusable-workflow feeder gets the feeder checks inside the callee.
     $reuseHead = "on: workflow_call`njobs:`n  inner:`n"
@@ -4243,6 +4268,79 @@ jobs:
     $npmFiles = @{ 'package.json' = '{"scripts":{"lint:ratchet":"node scripts/lintRatchet.mjs"}}'; 'scripts/lintRatchet.mjs' = 'process.exit(1)' }
     Assert-Gate (New-GateFilesRepo $npmFiles $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint:ratchet`n")) $false 'lintRatchet' 'S7: a script reached through npm run must be tiered HIGH'
     Assert-Gate (New-GateFilesRepo $npmFiles $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint:ratchet`n")) $true '' 'S7: a HIGH-tiered npm run script must pass'
+    # Code review: `npm test` / `npm t` run scripts.test; a directory option is refused, not misread as the name.
+    $npmTest = @{ 'package.json' = '{"scripts":{"test":"node scripts/gate.mjs","lint":"node scripts/lint.mjs","outer":"npm --prefix sub run lint"}}'; 'scripts/gate.mjs' = 'process.exit(1)'; 'scripts/lint.mjs' = 'process.exit(1)' }
+    foreach ($command in 'npm test', 'npm t') {
+        Assert-Gate (New-GateFilesRepo $npmTest $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $false 'gate\.mjs' "S7: a script reached through '$command' must be tiered HIGH"
+    }
+    Assert-Gate (New-GateFilesRepo $npmTest $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm test`n")) $true '' 'S7: a HIGH-tiered npm test script must pass'
+    # A directory option is resolved to the package npm runs in: refusing it outright reddened every
+    # consumer whose gate runs `npm test` over workspaces (estate re-sync).
+    $npmMono = @{
+        'package.json' = '{"workspaces":["packages/*"],"scripts":{"test":"npm run test --workspaces","outer":"npm --prefix packages/app run lint"}}'
+        'packages/app/package.json' = '{"name":"@x/app","scripts":{"lint":"node scripts/lint.mjs","test":"node scripts/lint.mjs"}}'
+        'packages/app/scripts/lint.mjs' = 'process.exit(1)'
+    }
+    $policyPackages = '{"version":1,"high":[".github/workflows/ci.yml","packages/**"],"low":[]}'
+    foreach ($command in 'npm run --prefix packages/app lint', 'npm --prefix packages/app run lint', 'npm -C packages/app test', 'npm run -w packages/app lint', 'npm run --workspace=@x/app lint', 'npm run lint -w packages', 'npm run lint --ws', 'npm run outer', 'npm test') {
+        Assert-Gate (New-GateFilesRepo $npmMono $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $false 'packages/app/scripts/lint\.mjs' "S7: '$command' runs the workspace script, which must be tiered HIGH"
+    }
+    foreach ($command in 'npm --prefix packages/app run lint', 'npm test') {
+        Assert-Gate (New-GateFilesRepo $npmMono $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $true '' "S7: '$command' with its workspace script tiered HIGH must pass"
+    }
+    # Where npm would run cannot be read statically: refused, not guessed.
+    $unresolved = @(
+        @{ Run = 'npm run lint --prefix "$APP_DIR"'; Needle = 'not a literal path' }
+        @{ Run = 'npm run lint --prefix ../outside'; Needle = 'leaves the repository' }
+        @{ Run = 'npm run lint --prefix C:/outside'; Needle = 'leaves the repository' }
+        @{ Run = 'npm run lint -w missing'; Needle = 'is not a workspace' }
+    )
+    foreach ($case in $unresolved) {
+        Assert-Gate (New-GateFilesRepo $npmMono $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $($case.Run)`n")) $false $case.Needle "S7: '$($case.Run)' must be refused"
+    }
+    Assert-Gate (New-GateFilesRepo $npmTest $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint --workspaces`n")) $false 'selects no workspace' "S7: '--workspaces' in a package with none must be refused"
+    # Code review: from a workspace, a drive-absolute prefix joined to `packages/app/C:/x`
+    # and passed the containment check.
+    $npmDrive = $npmMono.Clone()
+    $npmDrive['packages/app/package.json'] = '{"name":"@x/app","scripts":{"escape":"npm --prefix C:/outside run lint"}}'
+    Assert-Gate (New-GateFilesRepo $npmDrive $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: npm run escape -w packages/app`n")) $false 'leaves the repository' "S7: a drive-absolute prefix in a workspace script must be refused"
+    # Code review: `--workspaces=false` runs the root script; `--include-workspace-root`
+    # runs it beside the workspaces; a prefix is applied first and its own workspaces are selected.
+    $npmNested = $npmMono.Clone()
+    $npmNested['package.json'] = '{"workspaces":["packages/*"],"scripts":{"lint":"node scripts/root-lint.mjs"}}'
+    $npmNested['scripts/root-lint.mjs'] = 'process.exit(1)'
+    $npmNested['frontend/package.json'] = '{"workspaces":["apps/*"]}'
+    $npmNested['frontend/apps/web/package.json'] = '{"name":"web","scripts":{"test":"node scripts/web.mjs"}}'
+    $npmNested['frontend/apps/web/scripts/web.mjs'] = 'process.exit(1)'
+    foreach ($case in @(
+        @{ Run = 'npm run lint --workspaces=false'; Needle = 'scripts/root-lint\.mjs' }
+        @{ Run = 'npm run lint --ws --include-workspace-root'; Needle = 'scripts/root-lint\.mjs' }
+        @{ Run = 'npm run lint --ws --iwr'; Needle = 'scripts/root-lint\.mjs' }
+        @{ Run = 'npm --prefix frontend test --workspaces'; Needle = 'frontend/apps/web/scripts/web\.mjs' }
+    )) {
+        Assert-Gate (New-GateFilesRepo $npmNested $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $($case.Run)`n")) $false $case.Needle "S7: '$($case.Run)' runs a script outside packages/**, which must be tiered HIGH"
+    }
+    Assert-Gate (New-GateFilesRepo $npmTest $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint -- --prefix x`n")) $true '' 'S7: a --prefix after -- is a script argument, not an npm option'
+    # Code review: the refusal is for commands that run a package script. An install or
+    # audit in another package runs none this reading follows, so it must not fail the gate.
+    foreach ($command in 'npm ci --prefix frontend', 'npm install -w app', 'npm --prefix frontend ci', 'npm audit --prefix ui', 'npm --workspace=app install') {
+        Assert-Gate (New-GateFilesRepo $npmTest $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $true '' "S7: '$command' runs no package script and must not be refused"
+    }
+    # Code review: `npm restart` runs stop then start when there is no restart script;
+    # an option value before or after `run` is not the script name; `--ws` is a workspace alias.
+    $npmLife = @{ 'package.json' = '{"scripts":{"stop":"node scripts/stop.mjs","start":"node scripts/start.mjs","lint":"node scripts/lint.mjs"}}'; 'scripts/stop.mjs' = 'process.exit(1)'; 'scripts/start.mjs' = 'process.exit(1)'; 'scripts/lint.mjs' = 'process.exit(1)' }
+    Assert-Gate (New-GateFilesRepo $npmLife $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm restart`n")) $false 'st(op|art)\.mjs' "S7: a script reached through 'npm restart' must be tiered HIGH"
+    foreach ($command in 'npm --loglevel warn run lint', 'npm run --loglevel warn lint') {
+        Assert-Gate (New-GateFilesRepo $npmLife $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $false 'lint\.mjs' "S7: a script reached through '$command' must be tiered HIGH"
+    }
+    # Code review: with a `restart` script npm runs it and not stop/start,
+    # so untiered stop/start scripts must not fail the gate.
+    $npmRestart = @{ 'package.json' = '{"scripts":{"restart":"node scripts/restart.mjs","stop":"node tools/stop.mjs","start":"node tools/start.mjs"}}'; 'scripts/restart.mjs' = 'process.exit(1)'; 'tools/stop.mjs' = 'process.exit(1)'; 'tools/start.mjs' = 'process.exit(1)' }
+    Assert-Gate (New-GateFilesRepo $npmRestart $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm restart`n")) $true '' "S7: 'npm restart' with a restart script must not require stop/start HIGH"
+    # Code review: `install-ci-test` and its `sit` alias run scripts.test as well.
+    foreach ($command in 'npm install-ci-test', 'npm sit') {
+        Assert-Gate (New-GateFilesRepo $npmTest $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $false 'gate\.mjs' "S7: a script reached through '$command' must be tiered HIGH"
+    }
 
     # tax M36 (owner decision): interpreter targets GATE_SCRIPT cannot see are resolved, and an
     # unresolvable repo-local target is refused.

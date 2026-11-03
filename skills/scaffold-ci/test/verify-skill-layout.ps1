@@ -34,7 +34,14 @@ if ($ci -notmatch '(?i)never retry|not retry') { throw 'timeout retries can stil
 # Usage form: the YAML step block with its run: line, Format ahead of Lint (cheapest first).
 # Anchored at the Node job's own `npm ci` step and barred from crossing a job header, so a
 # Lint pair in another job cannot satisfy it.
-if ($ci -notmatch '(?s)run: npm ci\r?\n(?:[ \t]*#[^\r\n]*\r?\n)*[ \t]*- name: Format \(read-only\)\r?\n\s+run: npm run format\r?\n(?:(?!\r?\n  [A-Za-z0-9_-]+:[ \t]*\r?\n).)*?- name: Lint\r?\n\s+run: npm run lint') { throw 'Node job must run "npm run format" in a Format (read-only) step before the Lint step' }
+# The format line's newline is a lookahead, not consumed: the header guard below starts with a newline, so consuming it let the next job's Lint step satisfy the pattern.
+$formatBeforeLint = '(?s)run: npm ci\r?\n(?:[ \t]*#[^\r\n]*\r?\n)*[ \t]*- name: Format \(read-only\)\r?\n\s+run: npm run format(?=\r?\n)(?:(?!\r?\n  [A-Za-z0-9_-]+:[ \t]*(?:#[^\r\n]*)?\r?\n).)*?- name: Lint\r?\n\s+run: npm run lint'
+if ($ci -notmatch $formatBeforeLint) { throw 'Node job must run "npm run format" in a Format (read-only) step before the Lint step' }
+$nodeJobNoLint = "  node:`n    steps:`n      - run: npm ci`n      - name: Format (read-only)`n        run: npm run format`n  other:`n    steps:`n      - name: Lint`n        run: npm run lint`n"
+if ($nodeJobNoLint -match $formatBeforeLint) { throw 'a Lint step in the next job satisfied the Node job Format-before-Lint pattern' }
+# A job header may carry an inline comment (code review).
+if ($nodeJobNoLint.Replace("  other:`n", "  other: # next job`n") -match $formatBeforeLint) { throw 'a Lint step in a commented next job header satisfied the Node job Format-before-Lint pattern' }
+if ($nodeJobNoLint.Replace("  other:`n    steps:`n", '') -notmatch $formatBeforeLint) { throw 'the Format-before-Lint pattern rejects a Lint step in the same job' }
 
 # `npm run format` is read-only only while the repo's script is `prettier --check .`; the
 # common-mistakes row must say to confirm it (R-C CX13).

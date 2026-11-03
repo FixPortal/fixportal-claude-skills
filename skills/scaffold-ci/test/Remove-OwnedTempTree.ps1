@@ -29,23 +29,26 @@
     against fixtures, so no test ever needs to point a delete at the real profile.
 #>
 
+# Only this platform's separators: on Unix a backslash is an ordinary filename character and must survive.
+$script:OwnedTempSeparators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+
 function Get-OwnedTempFullPath([string] $Path) {
     $full = [IO.Path]::GetFullPath($Path)
     $fsRoot = [IO.Path]::GetPathRoot($full)
     # A filesystem root keeps its separator so it stays recognisable; every other path loses trailing ones.
     if ($full.Length -le $fsRoot.Length) { return $fsRoot }
-    return $full.TrimEnd('\', '/')
+    return $full.TrimEnd($script:OwnedTempSeparators)
 }
 
 function Test-OwnedTempInside([string] $Child, [string] $Parent) {
     $cmp = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    $prefix = $Parent.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $prefix = $Parent.TrimEnd($script:OwnedTempSeparators) + [IO.Path]::DirectorySeparatorChar
     return $Child.StartsWith($prefix, $cmp)
 }
 
 function Test-OwnedTempSame([string] $A, [string] $B) {
     $cmp = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    return [string]::Equals($A.TrimEnd('\', '/'), $B.TrimEnd('\', '/'), $cmp)
+    return [string]::Equals($A.TrimEnd($script:OwnedTempSeparators), $B.TrimEnd($script:OwnedTempSeparators), $cmp)
 }
 
 function Get-OwnedTempRefusal {
@@ -53,7 +56,8 @@ function Get-OwnedTempRefusal {
     param([string] $Path, [string] $TempRoot, [string[]] $ProtectedPath)
     if ([string]::IsNullOrWhiteSpace($Path)) { return 'empty path' }
     if ($Path -match '[*?\[\]]') { return 'wildcard characters in path' }
-    if (-not [IO.Path]::IsPathRooted($Path)) { return 'path is not absolute' }
+    # Fully qualified, not merely rooted: Windows `C:fixture` and `\fixture` are rooted but resolve against the current drive or directory.
+    if (-not [IO.Path]::IsPathFullyQualified($Path)) { return 'path is not absolute' }
     if ([string]::IsNullOrWhiteSpace($TempRoot)) { return 'no temp root' }
     $protectedList = @($ProtectedPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if (-not $protectedList.Count) { return 'no protected path supplied, so a poisoned temp root cannot be ruled out' }
@@ -73,7 +77,7 @@ function Get-OwnedTempRefusal {
     if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "temp root '$root' is a reparse point" }
 
     $walk = $root
-    foreach ($segment in ($full.Substring($root.Length + 1) -split '[\\/]')) {
+    foreach ($segment in ($full.Substring($root.Length + 1).Split($script:OwnedTempSeparators))) {
         $walk = Join-Path $walk $segment
         if (-not (Test-Path -LiteralPath $walk)) { break }
         try { $item = Get-Item -LiteralPath $walk -Force -ErrorAction Stop } catch { return "cannot inspect '$walk': $($_.Exception.Message)" }
