@@ -90,6 +90,57 @@ function Get-HighEntries([string] $Text) {
     }
     finally { $document.Dispose() }
 }
+# True when the live verifier step sits in a job CI Gate waits on (or in CI Gate itself): a
+# step in any other job runs and can fail without ever blocking a merge.
+# shortcut: line-based scan of the block-style `jobs:` map (2-space job ids, 4-space keys);
+# a flow-style or re-indented ci.yml reads as not gated and is refused for hand review.
+function Test-VerifierInGatedJob([string] $Text) {
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    $blocks = [ordered]@{}
+    $current = $null
+    $inJobs = $false
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '^jobs:\s*(?:#.*)?$') { $inJobs = $true; continue }
+        if (-not $inJobs) { continue }
+        if ($line -match '^[^\s#]') { break }
+        if ($line -match '^  (?<id>[A-Za-z0-9_-]+):\s*(?:#.*)?$') { $current = $Matches['id']; $blocks[$current] = [Collections.Generic.List[string]]::new(); continue }
+        if ($current) { $blocks[$current].Add($line) }
+    }
+    $verifierJob = $null
+    foreach ($id in $blocks.Keys) {
+        if (@($blocks[$id] | Where-Object { $_ -match '^[ \t]*(?:-[ \t]+)?run:[ \t]*python3[ \t]+\.github/scripts/assert_canonical_assets\.py\b' }).Count) { $verifierJob = $id; break }
+    }
+    if (-not $verifierJob) { return $false }
+    # A verifier that can be skipped or whose failure is accepted gates nothing either, so an
+    # `if:` or a non-false `continue-on-error:` on its step or its job is refused for hand review.
+    $jobLines = @($blocks[$verifierJob])
+    $runAt = @(0..($jobLines.Count - 1) | Where-Object { $jobLines[$_] -match '^[ \t]*(?:-[ \t]+)?run:[ \t]*python3[ \t]+\.github/scripts/assert_canonical_assets\.py\b' })[0]
+    $stepAt = @($runAt..0 | Where-Object { $jobLines[$_] -match '^[ \t]*-[ \t]' })[0]
+    if ($null -eq $stepAt) { return $false }
+    $dash = $jobLines[$stepAt].IndexOf('-')
+    $stepLines = @($jobLines[$stepAt])
+    for ($k = $stepAt + 1; $k -lt $jobLines.Count; $k++) {
+        $indent = $jobLines[$k].Length - $jobLines[$k].TrimStart().Length
+        if ($jobLines[$k].Trim() -and $indent -le $dash) { break }
+        $stepLines += $jobLines[$k]
+    }
+    $softened = '^[ \t]*(?:-[ \t]+)?(?:if:|continue-on-error:(?![ \t]*false[ \t]*(?:#.*)?$))'
+    if (@($stepLines | Where-Object { $_ -match $softened }).Count) { return $false }
+    if (@($jobLines | Where-Object { $_ -match '^    (?:if:|continue-on-error:(?![ \t]*false[ \t]*(?:#.*)?$))' }).Count) { return $false }
+    $gateJob = $blocks.Keys | Where-Object { $_ -eq 'ci-gate' -or @($blocks[$_] | Where-Object { $_ -match '^    name:\s*["'']?CI Gate["'']?\s*(?:#.*)?$' }).Count } | Select-Object -First 1
+    if (-not $gateJob) { return $false }
+    if ($verifierJob -eq $gateJob) { return $true }
+    $needs = @()
+    $gateLines = @($blocks[$gateJob])
+    for ($i = 0; $i -lt $gateLines.Count; $i++) {
+        if ($gateLines[$i] -match '^    needs:\s*\[(?<list>[^\]]*)\]') { $needs = @($Matches['list'] -split ',' | ForEach-Object { $_.Trim().Trim('"''') } | Where-Object { $_ }) }
+        elseif ($gateLines[$i] -match '^    needs:\s*["'']?(?<one>[A-Za-z0-9_-]+)["'']?\s*(?:#.*)?$') { $needs = @($Matches['one']) }
+        elseif ($gateLines[$i] -match '^    needs:\s*(?:#.*)?$') {
+            for ($j = $i + 1; $j -lt $gateLines.Count -and $gateLines[$j] -match '^      -\s*["'']?(?<item>[A-Za-z0-9_-]+)'; $j++) { $needs += $Matches['item'] }
+        }
+    }
+    return $needs -contains $verifierJob
+}
 $policyHigh = @(Get-HighEntries $policyText)
 $manifestEntry = $policyHigh -ccontains $manifestRel
 $verifierEntry = $policyHigh -ccontains $verifierRel
@@ -116,7 +167,9 @@ if ($presentParts.Count -eq 4) {
     # contains the command text and runs nothing. Both HIGH entries, exactly, because the
     # guard's loop asks for both.
     $ciRunsVerifier = $ciText -match '(?m)^[ \t]*(?:-[ \t]+)?run:[ \t]*python3[ \t]+\.github/scripts/assert_canonical_assets\.py\b'
-    $coverage = ($LASTEXITCODE -eq 0) -and $ciRunsVerifier -and $manifestEntry -and $verifierEntry
+    # The step must also be merge-blocking: in a job CI Gate does not need, a failing verifier blocks nothing.
+    $verifierExit = $LASTEXITCODE
+    $coverage = ($verifierExit -eq 0) -and $ciRunsVerifier -and (Test-VerifierInGatedJob $ciText) -and $manifestEntry -and $verifierEntry
     if (-not $coverage) {
         $issues += "all four artefacts are present but conformance is incomplete (verifier exit $LASTEXITCODE, CI/policy wiring checked) -- inspect by hand`n$proofOut"
     }

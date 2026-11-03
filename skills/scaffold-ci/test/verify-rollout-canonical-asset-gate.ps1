@@ -286,7 +286,31 @@ try {
            Break = { param($repo) $p = Join-Path $repo '.claude' 'review-policy.json'; [IO.File]::WriteAllText($p, ([IO.File]::ReadAllText($p) -replace '(?m)^\s*"\.github/scripts/assert_canonical_assets\.py",?\r?\n', '')) } }
         @{ Name = 'adopted-bad-json'; Why = 'a policy that no longer parses (XL21)'
            Break = { param($repo) Add-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Value '{ not json' } }
+        # The step still runs and passes, but in a job CI Gate does not need, so a failing
+        # verifier could not block a merge.
+        @{ Name = 'adopted-ungated-job'; Why = 'the verifier step moved to a job CI Gate does not need'
+           Break = {
+               param($repo)
+               $ci = Join-Path $repo '.github' 'workflows' 'ci.yml'
+               $text = [IO.File]::ReadAllText($ci)
+               $moved = $text -replace '(?m)^[ ]*- name: Assert canonical asset copies[^\n]*\n[ ]*run: python3 \.github/scripts/assert_canonical_assets\.py[^\n]*\n?', ''
+               if ($moved -ceq $text) { throw 'the ungated-job fixture removed nothing; the case would be vacuous' }
+               if (-not $moved.EndsWith("`n")) { $moved += "`n" }
+               $moved += "  extra:`n    runs-on: ubuntu-latest`n    steps:`n      - name: Verify`n        run: python3 .github/scripts/assert_canonical_assets.py`n"
+               [IO.File]::WriteAllText($ci, $moved) } }
     )
+    # Code review: a step CI can skip, or whose failure it accepts, gates nothing.
+    foreach ($soft in @(@{ Name = 'adopted-step-if'; Key = 'if: false' }, @{ Name = 'adopted-step-coe'; Key = 'continue-on-error: true' })) {
+        $key = $soft.Key
+        $adoptedCases += @{ Name = $soft.Name; Why = "a verifier step with '$key'"
+            Break = {
+                param($repo)
+                $ci = Join-Path $repo '.github' 'workflows' 'ci.yml'
+                $text = [IO.File]::ReadAllText($ci)
+                $softened = $text -replace '(?m)^([ ]*)(- name: Assert canonical asset copies[^\n]*)\n', "`$1`$2`n`$1  $key`n"
+                if ($softened -ceq $text) { throw "the '$key' fixture changed nothing; the case would be vacuous" }
+                [IO.File]::WriteAllText($ci, $softened) }.GetNewClosure() }
+    }
     foreach ($case in $adoptedCases) {
         $repo = New-FixtureRepo $case.Name
         $r = Invoke-Rollout $repo

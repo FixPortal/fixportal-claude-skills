@@ -283,7 +283,14 @@ try {
     # final recursive cleanup stays inside this run's tree whether or not it follows the link.
     $alias = Join-Path $root '_skill-alias'
     New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) -Path $alias -Target $tempSkill | Out-Null
+    # A link whose TARGET runs through another link: `_deep` points at `<alias>/scripts`, so the
+    # real file sits in the skill root but its resolved target still names the alias.
+    $linkedExceptions = Join-Path $tempSkill 'scripts' 'linked-exceptions.json'
+    Copy-Item -LiteralPath $insideExceptions -Destination $linkedExceptions
+    $deepLink = Join-Path $root '_deep'
+    New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) -Path $deepLink -Target (Join-Path $alias 'scripts') | Out-Null
     foreach ($case in @(
+        @{ Script = $tempSweep; Exceptions = (Join-Path $deepLink 'linked-exceptions.json'); Why = 'an in-skill exception file reached through a link whose target has a linked parent' }
         @{ Script = $tempSweep; Exceptions = $insideExceptions; Why = 'an in-skill exception file' }
         @{ Script = $tempSweep; Exceptions = (Join-Path $alias 'exceptions.json'); Why = 'an in-skill exception file reached through a link alias' }
         @{ Script = (Join-Path $alias 'scripts' 'sweep-canonical-asset-drift.ps1'); Exceptions = $insideExceptions; Why = 'the sweep run through a link alias of its own skill root' }
@@ -304,6 +311,23 @@ try {
     New-TierGitRepo 'repo-origin-match' 'release' 'release'
     & $sweep -Root $tierRoot -ExceptionsPath $exceptionsPath -Json | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "a masked branch line and a declared local implementation must not fail the sweep; got exit $LASTEXITCODE" }
+
+    # Code review: a link whose target is the filesystem root resolved to '' on Unix,
+    # and the next Join-Path threw. The link lives OUTSIDE $root, so the recursive cleanup in
+    # `finally` can never walk into it; it is removed on its own, without recursion.
+    $fsRoot = [IO.Path]::GetPathRoot($exceptionsPath)
+    $rootLink = Join-Path ([IO.Path]::GetTempPath()) "asset-drift-rootlink-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) -Path $rootLink -Target $fsRoot | Out-Null
+    try {
+        $viaRoot = Join-Path $rootLink $exceptionsPath.Substring($fsRoot.Length)
+        $rootLinkError = $null
+        try { & $sweep -Root $tierRoot -ExceptionsPath $viaRoot -Json | Out-Null } catch { $rootLinkError = $_.Exception.Message }
+        if ($rootLinkError -or $LASTEXITCODE -ne 0) { throw "an exception file reached through a link to the filesystem root must be read; got exit $LASTEXITCODE $rootLinkError" }
+    }
+    finally {
+        "removing root link (link only, no recursion): $rootLink"
+        [IO.Directory]::Delete($rootLink, $false)
+    }
 
     'sweep-canonical-asset-drift.ps1 OK - current/extended/drifted/local/absent classification, reorder limit, CRLF tolerance, line counts, exit codes, the default multi-asset path, and review-tier.yml''s declared variance'
 }

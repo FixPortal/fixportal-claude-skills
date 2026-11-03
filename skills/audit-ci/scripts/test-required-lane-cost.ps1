@@ -8,7 +8,11 @@ param(
     # COMMITTED .claude/ci-budget-approval.json, which review-policy.json tiers HIGH.
     # There is no path override: the committed tree is the only approval source, so an
     # -ApprovalPath that could only ever equal that one path was redundant.
-    [string] $RepositoryRoot
+    [string] $RepositoryRoot,
+    # The run the committed approval names, fetched SEPARATELY from the audited-head run
+    # (`{ "run": { id, head_sha, conclusion, workflow_id } }`). It only validates approval
+    # provenance; it is never the cost measurement.
+    [string] $ApprovalRunEvidencePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +38,12 @@ if ($evidence.run.PSObject.Properties.Name -notcontains 'id' -or
     throw 'Required-lane cost evidence omitted a valid run id.'
 }
 $evidenceHeadSha = [string] $evidence.run.head_sha
+# Checked before any per-job error so a stale payload is blamed as stale, not as whichever
+# job-level fault it also happens to carry. The evidence must measure the AUDITED head on
+# BOTH paths: accepting the old run an approval names would let every later HEAD come back
+# APPROVED_EXCEPTION on that old run's minutes, however much the lane has grown. The
+# approval bounds HEAD's own measurement through its committed max_minutes.
+if ($evidenceHeadSha -ne $ExpectedHeadSha) { throw 'Required-lane cost evidence head_sha is stale.' }
 if ($evidence.run.PSObject.Properties.Name -notcontains 'conclusion' -or
     [string] $evidence.run.conclusion -ne 'success') {
     throw 'Required-lane cost evidence is not from a successful completed run.'
@@ -174,12 +184,6 @@ foreach ($requiredName in $required) {
 
 $aggregate = [Math]::Round([double] (($counted | Measure-Object -Property Minutes -Sum).Sum), 3)
 $approval = $null
-# The evidence must measure the AUDITED head on BOTH paths. Accepting the old run the
-# approval names instead means that after one approval every later HEAD comes back
-# APPROVED_EXCEPTION on that old run's minutes, however much the lane has grown, while
-# the result reports HEAD as measured. The approval bounds HEAD's own measurement
-# through its committed max_minutes.
-if ($evidenceHeadSha -ne $ExpectedHeadSha) { throw 'Required-lane cost evidence head_sha is stale.' }
 if ($aggregate -gt $BudgetMinutes) {
     # Approval must come from a COMMITTED file in the audited repository, not a temporary
     # object the auditor writes for itself. It names the run the owner reviewed (its head
@@ -227,6 +231,21 @@ if ($aggregate -gt $BudgetMinutes) {
     if ($aggregate -gt [double] $approval.max_minutes) {
         throw "Required-lane measured cost is $aggregate minutes at the audited head, above the approved max_minutes of $($approval.max_minutes)."
     }
+    # run_id was only checked as a positive integer, so any number produced APPROVED_EXCEPTION
+    # without naming a real reviewed run. The run is verified from its own fetched evidence.
+    if ([string]::IsNullOrWhiteSpace($ApprovalRunEvidencePath) -or -not (Test-Path -LiteralPath $ApprovalRunEvidencePath)) {
+        throw 'Owner approval run evidence is missing; fetch the approval run_id separately (evaluation.md step 4).'
+    }
+    try { $approvalRun = (Get-Content -LiteralPath $ApprovalRunEvidencePath -Raw | ConvertFrom-Json).run }
+    catch { throw "Owner approval run evidence is malformed JSON: $($_.Exception.Message)" }
+    if ($approvalRun -isnot [pscustomobject]) { throw 'Owner approval run evidence omitted the run object.' }
+    if ("$($approvalRun.id)" -ne "$($approval.run_id)") { throw 'Owner approval run evidence does not describe the approval run_id.' }
+    if ([string] $approvalRun.conclusion -ne 'success') { throw 'Owner approval run did not conclude successfully.' }
+    if ([string] $approvalRun.head_sha -cne [string] $approval.head_sha) { throw 'Owner approval run head_sha does not match the approval head_sha.' }
+    if ([string]::IsNullOrWhiteSpace([string] $approvalRun.workflow_id) -or [string]::IsNullOrWhiteSpace([string] $evidence.run.workflow_id)) {
+        throw 'Owner approval run and audited run evidence must both carry workflow_id.'
+    }
+    if ("$($approvalRun.workflow_id)" -ne "$($evidence.run.workflow_id)") { throw 'Owner approval run is from a different workflow than the audited run.' }
 }
 
 [pscustomobject]@{

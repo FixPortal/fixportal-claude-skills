@@ -69,28 +69,58 @@ function Assert-NoUnsafeCodeQualityDefault {
         # let the other half's "disabled" vouch for it: "Enable Code Quality AI findings;
         # keep Code Quality disabled on private repositories" enables AI findings and
         # passed because the product clause said disabled.
-        $aiClausePattern = '(?i)\bAI findings\b[^.;,]*'
+        # A clause ends at the next mention, so "AI findings disabled and enable AI findings on
+        # public repositories" is two clauses and the second is read on its own.
+        $aiClausePattern = '(?i)\bAI findings\b(?:(?!\bAI findings\b)[^.;,])*'
         # "off" is in the vocabulary because it is what the stripped clause used to lend
         # the rest of the line: "AI findings disabled; private/internal keep it off" is a
         # disablement of the product, and without "off" the strip leaves it looking like
         # an enablement. But only a DISABLING "off": tied to a verb ("keep it off") or
         # directly to a visibility or the findings ("private/internal off"). A bare `off`
-        # let "kick off a baseline scan" excuse a private enablement.
+        # let "kick off a baseline scan" excuse a private enablement. The verb form may only
+        # take it/Code Quality as its object and must end the clause or lead into a scope
+        # ("on private repositories"): "turn off notifications" disabled nothing.
         $disabledWords = '(?i)\b(?:disabled?|not-configured)\b' +
-            '|\b(?:keeps?|kept|turn(?:s|ed)?|switch(?:es|ed)?|leaves?|left|stays?|remains?|set)\b(?:\s+\w+){0,2}\s+off\b' +
-            '|(?:private/internal|private or internal|repositor(?:y|ies)|AI findings)\s*:?\s*off\b'
+            '|\b(?:keeps?|kept|turn(?:s|ed)?|switch(?:es|ed)?|leaves?|left|stays?|remains?|set)\b(?:\s+(?:it|them|paid|Code|Quality|turned|switched))*\s+off\b(?=\s*(?:$|[.;,]|\s(?:on|for|in|at|everywhere)\b))' +
+            '|(?:private/internal|private or internal|repositor(?:y|ies)|AI findings)\s*:?\s*off\b' +
+            # The object after "off": "turn off Code Quality on private repositories" or
+            # "turn off AI findings". The product name must end the clause or lead into a scope,
+            # so "turn off Code Quality AI findings" / "... notifications" leave the product enabled.
+            '|\b(?:turn(?:s|ed)?|switch(?:es|ed)?|set)\s+off\s+(?:paid\s+)?Code\s+Quality\b(?=\s*(?:$|[.;,]|\s(?:on|for|in|at|everywhere)\b))' +
+            # A negative status counts only for its own subject: "notifications are not enabled"
+            # says nothing about Code Quality.
+            '|\b(?:Code Quality|AI findings|it|them)\s+(?:(?:is|are|must|should|will|do|does|can|may)\s+)*(?:not|never)\s+(?:be\s+)?enabled\b'
+        # "turn off AI findings" disables the findings only, so it counts for the AI-findings
+        # verdict and never for the product: "turn off Code Quality AI findings" on a private
+        # enablement still leaves paid Code Quality on.
+        $aiDisabledWords = $disabledWords + '|\b(?:turn(?:s|ed)?|switch(?:es|ed)?|set)\s+off\s+(?:(?:paid\s+)?Code\s+Quality\s+)?AI findings\b'
         # One vocabulary for both halves: a clause is stripped when it says disabled in any
         # form the vocabulary accepts, so "not-configured" cannot survive the strip
-        # and vouch for the product. The AI-findings verdict still reads the FIRST clause:
-        # a table row naming "AI findings enabled anywhere" as the drift it reports is not
-        # an instruction to enable them.
-        $aiClauses = @([regex]::Matches($line, $aiClausePattern) | ForEach-Object Value)
+        # and vouch for the product. The AI-findings verdict reads EVERY clause before a
+        # "drift:" / "gap:" marker: a table row naming "AI findings enabled anywhere" as the
+        # drift it reports is not an instruction to enable them, but a later instruction
+        # ("keep it disabled; enable AI findings on public repositories") is.
+        $aiMatches = @([regex]::Matches($line, $aiClausePattern))
+        $aiClauses = @($aiMatches | ForEach-Object Value)
+        $marker = [regex]::Match($line, '(?i)\b(?:drift|gap|non-compliant)\s*:')
+        # Each mention is read with its governing verb: the text since the last clause boundary,
+        # cut after its last conjunction, so "turn off AI findings and keep AI findings disabled"
+        # reads "turn off AI findings ..." and "keep AI findings disabled", while in "keep Code
+        # Quality disabled and enable AI findings" the second mention's verb is "enable".
+        $withVerb = {
+            param($m)
+            $segment = ($line.Substring(0, $m.Index) -split '[.;,]')[-1]
+            (($segment -split '(?i)\b(?:and|or|but|then|while)\b')[-1]) + $m.Value
+        }
+        $instructionMatches = @($aiMatches | Where-Object { -not $marker.Success -or $_.Index -lt $marker.Index })
+        if (-not $instructionMatches.Count) { $instructionMatches = $aiMatches }
+        $instructionClauses = @($instructionMatches | ForEach-Object { & $withVerb $_ })
         $withoutAiClause = $line
         foreach ($clause in $aiClauses) {
             if ($clause -match $disabledWords) { $withoutAiClause = $withoutAiClause.Replace($clause, '') }
         }
         $saysDisabled = $withoutAiClause -match $disabledWords
-        $aiSaysDisabled = $aiClauses.Count -gt 0 -and $aiClauses[0] -match $disabledWords
+        $aiSaysDisabled = $instructionClauses.Count -gt 0 -and -not @($instructionClauses | Where-Object { $_ -notmatch $aiDisabledWords }).Count
         # Anchored on the VISIBILITY, not on the bare word: the public row of the estate
         # policy table contains "private vulnerability reporting", and matching that read
         # the public row as a private-enablement rule.
@@ -222,7 +252,18 @@ foreach ($mutation in @(
     # R-D M40: a clause ending in "not-configured" survived the strip and vouched for the product.
     @{ Name = 'private enablement masked by a not-configured AI-findings clause'; Line = 'Private repositories enable Code Quality with AI findings not-configured.' },
     # R-D XL24: a bare "off" anywhere excused the line.
-    @{ Name = 'private enablement excused by an unrelated off'; Line = 'Private repositories enable Code Quality and kick off a baseline scan.' }
+    @{ Name = 'private enablement excused by an unrelated off'; Line = 'Private repositories enable Code Quality and kick off a baseline scan.' },
+    # "turn off" matched the verb form of the vocabulary with nothing tied to Code Quality.
+    @{ Name = 'private enablement excused by an unrelated turn off'; Line = 'Enable Code Quality on private repositories and turn off notifications.' },
+    # Only the FIRST AI-findings clause was read, so a later one enabling them was accepted.
+    @{ Name = 'a later AI-findings clause enables them'; Line = 'Keep Code Quality AI findings disabled; enable AI findings on public repositories.' },
+    # Code review: with no punctuation between them, the first clause swallowed the second.
+    @{ Name = 'a later AI-findings mention in the same clause enables them'; Line = 'Keep Code Quality AI findings disabled and enable AI findings on public repositories.' },
+    @{ Name = 'private enablement excused by turning off only the AI findings'; Line = 'Enable Code Quality on private repositories and turn off Code Quality AI findings.' },
+    # Second review: "off" with another object after the product name, and a negative status
+    # whose subject is not Code Quality, each excused an enablement.
+    @{ Name = 'private enablement excused by turning off Code Quality notifications'; Line = 'Enable Code Quality on private repositories and turn off Code Quality notifications.' },
+    @{ Name = 'AI-findings enablement excused by an unrelated not enabled'; Line = 'Enable Code Quality with AI findings when notifications are not enabled.' }
 )) {
     $rejected = $false
     try {
@@ -236,7 +277,10 @@ foreach ($mutation in @(
 foreach ($line in @(
     'Code Quality: public enabled, AI findings disabled; private/internal off.',
     'Enable Code Quality on public repositories and keep it turned off on private repositories.',
-    'Configure Code Quality on public repositories with AI findings off.'
+    'Configure Code Quality on public repositories with AI findings off.',
+    'Enable Code Quality on public repositories and turn off Code Quality on private repositories.',
+    'Code Quality AI findings disabled; AI findings must not be enabled on public repositories.',
+    'Enable Code Quality on public repositories and turn off AI findings and keep AI findings disabled.'
 )) {
     Assert-NoUnsafeCodeQualityDefault 'accepted-line check' $line
 }

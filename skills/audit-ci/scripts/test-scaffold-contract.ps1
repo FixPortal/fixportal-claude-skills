@@ -3,7 +3,11 @@ param(
     [Parameter(Mandatory)] [string] $RepositoryRoot,
     [Parameter(Mandatory)] [string] $ScaffoldRoot,
     [string] $ActionsEvidencePath,
-    [string] $ExpectedHeadSha
+    [string] $ExpectedHeadSha,
+    # Forwarded to the cost check; required only when the lane is over budget and an approval is consulted.
+    [string] $ApprovalRunEvidencePath,
+    # Fixture-only: skips the clean-checkout requirement for the audited files.
+    [switch] $AllowDirtyCheckout
 )
 
 $ErrorActionPreference = 'Stop'
@@ -449,7 +453,7 @@ elseif (-not $unknownRequired) {
         $requiredJobNames = @($requiredJobs | ForEach-Object { Get-JobName $jobs[$_] $_ })
         $costEvidence = & (Join-Path $PSScriptRoot 'test-required-lane-cost.ps1') -EvidencePath $ActionsEvidencePath `
             -ExpectedHeadSha $ExpectedHeadSha -RequiredJobNames $requiredJobNames -BudgetMinutes $aggregateBudget `
-            -RepositoryRoot $repository
+            -RepositoryRoot $repository -ApprovalRunEvidencePath $ApprovalRunEvidencePath
     }
     catch { $failures.Add($_.Exception.Message) }
 }
@@ -615,6 +619,35 @@ else {
     foreach ($command in $canonicalGitleaks) {
         $invocation = '(?m)^\s*(?:-\s*run:\s*)?' + [regex]::Escape($command) + '\s*$'
         if (-not ($secretRuns | Where-Object { $_ -match $invocation })) { $failures.Add("Private secret job is missing canonical scan: $command") }
+    }
+}
+
+# Everything above read the WORKING TREE, so a matching CheckoutHeadSha proves nothing about
+# staged, unstaged or untracked workflow/policy changes. Require them clean (or audit an
+# isolated checkout of the SHA). A non-git directory has no HEAD to compare and is skipped;
+# a git checkout whose status cannot be read fails, since its tree was never compared.
+if (-not $AllowDirtyCheckout) {
+    $null = & git --no-optional-locks -C $repository rev-parse --is-inside-work-tree 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $dirty = @(& git --no-optional-locks -C $repository status --porcelain --untracked-files=all -- .github .claude .coderabbit.yaml 2>$null)
+        $statusExit = $LASTEXITCODE
+        # Ignored files are listed only for the paths the audit reads: a gitignored workflow
+        # is read like any other, while .claude also holds ignored local state it never reads.
+        # Bytecode caches from a local run of .github/scripts are never read.
+        $ignored = @(& git --no-optional-locks -C $repository status --porcelain --ignored --untracked-files=all -- .github .coderabbit.yaml .claude/review-policy.json .claude/ci-budget-approval.json 2>$null |
+            Where-Object { $_.StartsWith('!! ') -and $_ -notmatch '(^|/)__pycache__/' })
+        $ignoredExit = $LASTEXITCODE
+        # git status reports nothing for a path flagged assume-unchanged (lower-case tag) or
+        # skip-worktree (S), whatever its working-tree content.
+        $flagged = @(& git --no-optional-locks -C $repository ls-files -v -- .github .claude .coderabbit.yaml 2>$null |
+            Where-Object { $_ -cmatch '^(?:[a-z]|S) ' })
+        $flagExit = $LASTEXITCODE
+        if ($statusExit -ne 0 -or $ignoredExit -ne 0 -or $flagExit -ne 0) {
+            $failures.Add("git status failed in the audited checkout (exit $statusExit/$ignoredExit/$flagExit), so its working tree could not be compared with HEAD.")
+        }
+        elseif ($dirty.Count -or $ignored.Count -or $flagged.Count) {
+            $failures.Add("Audited files differ from the checkout HEAD (staged, unstaged, untracked, ignored, or flagged assume-unchanged/skip-worktree): $((@($dirty) + @($ignored) + @($flagged) | Select-Object -First 5) -join '; '). Commit or stash them, clear the index flags, or audit an isolated checkout.")
+        }
     }
 }
 

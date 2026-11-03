@@ -227,16 +227,58 @@ try {
     & $generator -RepoRoot $gen | Out-Null
     $restamped = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($restamped.canonical.commit -ne $old) { throw "a no-change regeneration must not move the top-level stamp; got $($restamped.canonical.commit)" }
+    # The dates are provenance too: a generator rewriting every syncedAt on a no-change run kept the commits.
+    if ($restamped.canonical.syncedAt -ne '2026-01-01') { throw "a no-change regeneration must not move the top-level syncedAt; got $($restamped.canonical.syncedAt)" }
+    foreach ($a in $restamped.assets) {
+        if ($a.syncedAt -ne '2026-01-01') { throw "$($a.path) syncedAt moved to $($a.syncedAt) on a no-change regeneration" }
+    }
     Add-Content -LiteralPath (Join-Path $gen 'scripts' 'summarize-stryker.ps1') -Value '# one asset moves' -Encoding utf8
     & $generator -RepoRoot $gen | Out-Null
     $restamped = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     foreach ($a in $restamped.assets) {
         $want = if ($a.path -eq 'scripts/summarize-stryker.ps1') { $head } else { $old }
         if ($a.commit -ne $want) { throw "$($a.path) stamped $($a.commit); expected $want -- only a changed asset may claim the new sync" }
+        # Compared with the top-level date rather than a recomputed today, so a midnight rollover cannot flake it.
+        if ($a.path -eq 'scripts/summarize-stryker.ps1') {
+            if ($a.syncedAt -eq '2026-01-01' -or $a.syncedAt -ne $restamped.canonical.syncedAt) { throw "the changed asset must take the new sync date; got $($a.syncedAt) vs top-level $($restamped.canonical.syncedAt)" }
+        }
+        elseif ($a.syncedAt -ne '2026-01-01') { throw "$($a.path) syncedAt moved to $($a.syncedAt); an unchanged asset keeps its date" }
     }
     if ($restamped.canonical.commit -ne $head) { throw 'a run that changed an asset must move the top-level stamp to HEAD' }
+    if ($restamped.canonical.syncedAt -eq '2026-01-01') { throw 'a run that changed an asset must move the top-level syncedAt' }
     $r = Invoke-Verifier $gen
     if ($r.Code -ne 0) { throw "per-asset stamps must stay verifier-compatible; got $($r.Code)`n$($r.Output)" }
+
+    # An asset LEAVING the manifest is a manifest change even though no remaining asset's hash
+    # moved, so the top-level stamp must advance even when no remaining entry takes HEAD.
+    $rem = New-FixtureRepo 'gen-removal'
+    New-Item -ItemType Directory -Path (Join-Path $rem 'scripts') -Force | Out-Null
+    foreach ($pair in @(
+        @{ From = 'assets/assert_gate_coverage.py'; To = '.github/scripts/assert_gate_coverage.py' }
+        @{ From = 'templates/summarize-stryker.ps1'; To = 'scripts/summarize-stryker.ps1' }
+    )) {
+        Copy-Item (Join-Path $skillRoot $pair.From) (Join-Path $rem ($pair.To -replace '/', [IO.Path]::DirectorySeparatorChar)) -Force
+    }
+    & $generator -RepoRoot $rem | Out-Null
+    $remManifestPath = Join-Path $rem '.github' 'canonical-assets.json'
+    $remParsed = Get-Content -LiteralPath $remManifestPath -Raw | ConvertFrom-Json
+    if (@($remParsed.assets).Count -ne 2) { throw "the removal fixture must start with 2 assets; got $(@($remParsed.assets).Count)" }
+    $remParsed.canonical.commit = $old; $remParsed.canonical.syncedAt = '2026-01-01'
+    foreach ($a in $remParsed.assets) {
+        $a | Add-Member -NotePropertyName commit -NotePropertyValue $old -Force
+        $a | Add-Member -NotePropertyName syncedAt -NotePropertyValue '2026-01-01' -Force
+    }
+    [IO.File]::WriteAllText($remManifestPath, ($remParsed | ConvertTo-Json -Depth 5) + "`n", [Text.UTF8Encoding]::new($false))
+    Remove-Item -LiteralPath (Join-Path $rem 'scripts' 'summarize-stryker.ps1') -Force
+    & $generator -RepoRoot $rem | Out-Null
+    $remAfter = Get-Content -LiteralPath $remManifestPath -Raw | ConvertFrom-Json
+    if (@($remAfter.assets).Count -ne 1) { throw "the removal must leave 1 asset; got $(@($remAfter.assets).Count)" }
+    if ($remAfter.canonical.commit -ne $head -or $remAfter.canonical.syncedAt -eq '2026-01-01') {
+        throw "a removed asset must advance the top-level stamp; got $($remAfter.canonical.commit) / $($remAfter.canonical.syncedAt)"
+    }
+    if (@($remAfter.assets)[0].commit -ne $old -or @($remAfter.assets)[0].syncedAt -ne '2026-01-01') {
+        throw 'the retained, unchanged asset must keep its own stamp when another asset is removed'
+    }
 
     # A no-change run naming ANOTHER repository must not carry the old commits forward:
     # they would be recorded under a repository that does not contain them (R-D XL23).

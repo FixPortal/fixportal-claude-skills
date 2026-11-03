@@ -331,7 +331,8 @@ if (-not $optionalLoop.Success) { throw 'review-policy-guard.yml: could not loca
 # needs a Windows path and the host's real (case-insensitive) filesystem semantics.
 # On Windows there is no fallback: the bash Get-Command finds is the WSL launcher, which
 # cannot cd to the Windows path the fixture builds (R-D XL25).
-$gitBash = @((Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Git\bin\bash.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+# ProgramFiles is empty off Windows, where Join-Path would throw; there the $bash fallback applies.
+$gitBash = @(if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Git\bin\bash.exe' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $gitBash -and $bash -and -not $IsWindows) { $gitBash = $bash.Source }
 # This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
 . (Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1')
