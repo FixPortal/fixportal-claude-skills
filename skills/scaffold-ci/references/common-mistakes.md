@@ -31,6 +31,7 @@ if explicitly asked:
 | Required PR job has no timeout or exceeds ten minutes | Set `timeout-minutes: 10`; move extended coverage to weekly/manual. |
 | Slow test is retried after timeout | Do not retry; make it bounded, optimize it, or move it to the extended lane. |
 | E2E, stress/load/soak, or compatibility matrix runs on every PR | Use a separate project/list in one weekly/manual extended workflow capped at 45 minutes. |
+| Node job has no read-only Prettier gate, or runs `prettier --write` in CI | Add `Format (read-only)` running `npm run format` after install, before lint, and confirm the repo's `format` script is exactly `prettier --check .`: one that runs `--write` turns the gate into a silent rewrite. CI never mutates source. |
 | Formatting repeated in publish/deploy | Make those jobs depend on the backend gate; check once. |
 | Stryker as a `ci.yml` job, a push/PR trigger, or a manual-only workflow | Separate `mutation.yml` with `workflow_dispatch` plus one staggered weekly UTC schedule. |
 | Job/step `continue-on-error` to keep score informational | Remove it and use `break: 0`; execution/report failures must be red. |

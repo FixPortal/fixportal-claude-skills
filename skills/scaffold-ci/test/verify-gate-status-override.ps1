@@ -6,7 +6,12 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ('gate-status-' + [guid]::NewGui
 New-Item -ItemType Directory $scratch | Out-Null
 $bad = "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')"
 $cases = @(
-    @{ Name='implicit-success'; Condition=$bad; Accepted=$false },
+    # The bare shape DOES fail on a healthy gate job; it is refused by POLICY because a
+    # cancelled gate job (or a failed earlier gate step) masks it through the implicit
+    # success() guard. The refusal must not say the gate "aggregates nothing and reports
+    # success unconditionally", which is false and sends authors hunting for a missing
+    # condition. The needle pins the wording.
+    @{ Name='implicit-success'; Condition=$bad; Accepted=$false; Needle='refused by policy'; Forbidden='reports success unconditionally' },
     @{ Name='explicit-success-mask'; Condition="success() && ($bad)"; Accepted=$false },
     @{ Name='failure-only'; Condition="failure() && ($bad)"; Accepted=$false },
     @{ Name='cancelled-only'; Condition="cancelled() && ($bad)"; Accepted=$false },
@@ -48,6 +53,8 @@ jobs:
         $output = & $python.Source -S $checker $path 2>&1 | Out-String
         $accepted = $LASTEXITCODE -eq 0
         if ($accepted -ne $case.Accepted) { throw "$($case.Name): expected accepted=$($case.Accepted), actual=$accepted`n$output" }
+        if ($case.Needle -and $output -notmatch [regex]::Escape($case.Needle)) { throw "$($case.Name): refusal must say '$($case.Needle)'`n$output" }
+        if ($case.Forbidden -and $output -match [regex]::Escape($case.Forbidden)) { throw "$($case.Name): refusal must not claim '$($case.Forbidden)'`n$output" }
     }
     "Gate status override: $($cases.Count) cases passed"
 } finally {

@@ -279,6 +279,9 @@ One `secrets` job in `ci.yml`, added to `ci-gate`'s `needs` like every other qua
 later" — an advisory gate becomes permanently decorative.
 
 Scan the pull request's commit range, not full history; history belongs to the sweep.
+The one exception is a push with no predecessor: a new `v*` tag arrives with an all-zero
+`before` and walks everything reachable from HEAD (the push-range step below), so the
+baseline under *Pre-existing findings* must come from that same walk.
 `--log-opts` is passed through to `git log -p`.
 
 **The checkout must be unshallowed.** `actions/checkout` fetches a shallow clone by
@@ -403,6 +406,18 @@ so a green push build says nothing about whether either scan works.
 
 Commit a `.gitleaksignore` holding one fingerprint per line for what already exists in the
 repository. Generate it once, review it, commit it.
+
+Generate it from the scans the gate runs, not from one of them. The first `v*` tag walks all
+history with `--diff-merges=remerge`, and a `git`-mode fingerprint carries the commit
+(`<commit>:<file>:<rule>:<line>`) while a `dir`-mode one does not (`<file>:<rule>:<line>`),
+observed with gitleaks 8.30.1. A baseline taken from the tree scan alone, or from a default
+`gitleaks git` run without `remerge`, therefore misses fingerprints that tag path emits, and
+the first release tag after adoption fails `Secrets` on old history. Collect both:
+
+- `gitleaks git -v --redact --log-opts="--diff-merges=remerge HEAD" --report-format json --report-path git.json .`
+- `gitleaks dir -v --redact --report-format json --report-path dir.json .`
+
+Take the `Fingerprint` of every finding you accept from both reports.
 
 Use `.gitleaksignore` (`-i, --gitleaks-ignore-path`), **not** `--baseline-path`. They are
 different mechanisms and not interchangeable: `--baseline-path` takes a JSON report, while

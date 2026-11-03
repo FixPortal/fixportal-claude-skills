@@ -15,7 +15,7 @@ layer caching), which the house rollout has not yet reached.
 
 **Core principle: measure against `scaffold-ci`, do not improvise a "best
 practice".** `scaffold-ci` is the single source of truth for the house standard.
-Read its [ten control surfaces](../scaffold-ci/SKILL.md), its [CI workflow
+Read its [control surfaces](../scaffold-ci/SKILL.md), its [CI workflow
 contract](../scaffold-ci/references/ci-workflow.md), and its shipped
 [`secret-sweep.yml`](../scaffold-ci/assets/secret-sweep.yml),
 [`assert_gate_coverage.py`](../scaffold-ci/assets/assert_gate_coverage.py),

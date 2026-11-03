@@ -41,7 +41,7 @@ Local asset edits fail the consumer manifest gate; see `references/ci-workflow.m
 - No-deploy workflows cancel superseded branch runs but not main or tags; deploy workflows use `cancel-in-progress: false`.
 - Backend CI is npm-free. Restore local tools and run `dotnet csharpier check .` before restore/build/test.
 - End-to-end, stress/load/soak, repeated concurrency, slow packaging, and compatibility matrices never run in the required PR lane.
-- `CI Gate` has `if: always()`, zero permissions, and needs every quality job. `Gate coverage` runs the shipped stdlib-only asset, asserting gate semantics.
+- `CI Gate` has `if: always()`, zero permissions, and needs every quality job. `Gate coverage` runs the shipped asset on system `python3` with PyYAML, asserting gate semantics.
 - `review-policy-guard.yml` verifies the policy is tracked, uses `git check-ignore --no-index`, and runs `assert_workflow_hygiene.py` — which parses workflows, never greps them.
 - Secret gates pin the gitleaks install and scan range *and* tree; sweeps use the TruffleHog detector allowlist.
 - Tag-fired publish/deploy asserts ancestry of the default branch.

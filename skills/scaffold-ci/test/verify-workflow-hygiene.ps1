@@ -33,8 +33,7 @@ function Invoke-Hygiene([hashtable] $files) {
     }
     Push-Location $repo
     try {
-        # No -S here, unlike the gate-coverage test: that asset is stdlib-only by
-        # design, this one needs PyYAML from site-packages exactly as the runner does.
+        # No -S here: this asset needs PyYAML from site-packages exactly as the runner does.
         $output = & $python.Source $script 2>&1 | Out-String
         [pscustomobject]@{ Code = $LASTEXITCODE; Output = $output }
     }
@@ -211,6 +210,25 @@ runs:
         throw "an exempted workflow that checks out code THROUGH a local composite action must still fail:`n$($exemptViaComposite.Output)"
     }
 
+    # obs N02-C3 (owner decision): a non-local reusable workflow cannot be followed, so an
+    # exempted workflow calling one - directly or through a local reusable workflow - fails.
+    $remoteCall = "    uses: other-org/ci/.github/workflows/label.yml@0123456789abcdef0123456789abcdef01234567`n"
+    $exemptHead = "on:`n  pull_request_target:`n    branches: [main]`npermissions:`n  contents: read`njobs:`n  label:`n"
+    $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = 'ci.yml'
+    try {
+        $exemptRemote = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $exemptHead + $remoteCall }
+        $exemptRemoteNested = Invoke-Hygiene @{
+            '.github/workflows/ci.yml' = $exemptHead + "    uses: ./.github/workflows/_inner.yml`n"
+            '.github/workflows/_inner.yml' = "on: workflow_call`npermissions:`n  contents: read`njobs:`n  inner:`n" + $remoteCall
+        }
+    } finally { $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = $oldExempt }
+    if ($exemptRemote.Code -ne 1 -or $exemptRemote.Output -notmatch 'non-local reusable') {
+        throw "N02-C3: an exempted workflow calling a remote reusable workflow must fail:`n$($exemptRemote.Output)"
+    }
+    if ($exemptRemoteNested.Code -ne 1 -or $exemptRemoteNested.Output -notmatch 'non-local reusable') {
+        throw "N02-C3: a remote reusable workflow reached through a local one must fail:`n$($exemptRemoteNested.Output)"
+    }
+
     # --- Duplicate `on:` / YAML-1.1 `True:` key. Which one GitHub honours depends on the
     #     parser, so a trigger could hide in the one this check does not read.
     $dupKey = Invoke-Hygiene @{ '.github/workflows/ci.yml' = @'
@@ -323,6 +341,13 @@ jobs:
         image: postgres@sha256:$DIGEST
 "@ }
     if ($digestPinned.Code -ne 0) { throw "a bare sha256: digest is an immutable pin and must pass:`n$($digestPinned.Output)" }
+
+    # ...but only for an IMAGE. A step `uses:` resolves a git ref, which cannot contain `:`,
+    # so `@sha256:` there names no revision (adversarial review 20261020T200501Z N02-C4).
+    foreach ($ref in "actions/checkout@sha256:$DIGEST", "owner/repo@sha256:$DIGEST") {
+        $digestUses = Invoke-Hygiene @{ '.github/workflows/ci.yml' = "on:`n  pull_request:`npermissions:`n  contents: read`njobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - uses: $ref`n" }
+        if ($digestUses.Code -ne 1 -or $digestUses.Output -notmatch 'pinned with an @sha256: digest') { throw "a step uses: pinned by @sha256: must fail ($ref):`n$($digestUses.Output)" }
+    }
 
     # --- A local composite action is this repo's own code, but what IT calls is not,
     #     and is invisible to a scan that stops at .github/workflows.

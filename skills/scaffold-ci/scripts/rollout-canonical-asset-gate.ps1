@@ -7,8 +7,8 @@ Adopts the canonical-asset divergence gate in ONE consuming repository (filesyst
 The estate rollout's per-repo unit. In one pass it: copies the verifier byte-identically
 from canonical, runs the generator to write .github/canonical-assets.json, splices the
 verification step into ci.yml's gate-coverage job, and adds the manifest to
-.claude/review-policy.json's high list (plus a named verifier entry only where no glob
-already covers it). It then runs the verifier -- and the repo's gate checker against the
+.claude/review-policy.json's high list, plus the named verifier entry the guard's exact
+loop requires (a glob does not satisfy it). It then runs the verifier -- and the repo's gate checker against the
 adopted ci.yml, with the anchor step's GATE_EXEMPT / GATE_CONDITIONAL_EXEMPT honored --
 as the proof the adoption is green.
 
@@ -73,19 +73,26 @@ if (Test-Path -LiteralPath $ciPath -PathType Leaf) { $ciText = [IO.File]::ReadAl
 $policyText = $null
 if (Test-Path -LiteralPath $policyPath -PathType Leaf) { $policyText = [IO.File]::ReadAllText($policyPath) }
 
-# Every "does the policy cover X" question is asked of the HIGH array body, never the
-# whole file: a `.github/scripts/**` glob sitting in `low` read as covering the verifier,
-# so the rollout omitted the named entry from high and then failed its own conformance
-# proof with all four artefacts already written. Empty when there is no high array.
-function Get-HighArrayBody([string] $Text) {
-    if ([string]::IsNullOrEmpty($Text)) { return '' }
-    $open = [regex]::Match($Text, '"high"\s*:\s*\[')
-    if (-not $open.Success) { return '' }
-    $after = $Text.Substring($open.Index + $open.Length)
-    $close = $after.IndexOf(']')
-    if ($close -ge 0) { $after.Substring(0, $close) } else { $after }
+# Every "does the policy cover X" question is asked of the PARSED high array, by exact
+# element -- the same test the guard makes with `jq '.high | index($r)'`. A glob is not an
+# element, so `.github/scripts/**` does not cover the verifier there; a text slice of the
+# file stopped at the first `]`, even inside a string; and a slice could read a policy that
+# does not parse as adopted. Empty when the policy does not parse or has no high array.
+function Get-HighEntries([string] $Text) {
+    if ([string]::IsNullOrEmpty($Text)) { return @() }
+    try { $document = [System.Text.Json.JsonDocument]::Parse($Text) } catch { return @() }
+    try {
+        $high = [System.Text.Json.JsonElement]::new()
+        if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object -or
+            -not $document.RootElement.TryGetProperty('high', [ref]$high) -or
+            $high.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) { return @() }
+        return @($high.EnumerateArray() | Where-Object { $_.ValueKind -eq [System.Text.Json.JsonValueKind]::String } | ForEach-Object { $_.GetString() })
+    }
+    finally { $document.Dispose() }
 }
-$policyHigh = Get-HighArrayBody $policyText
+$policyHigh = @(Get-HighEntries $policyText)
+$manifestEntry = $policyHigh -ccontains $manifestRel
+$verifierEntry = $policyHigh -ccontains $verifierRel
 
 # Idempotence is ALL FOUR artefacts, not one: a single-marker check reads a
 # half-finished adoption as complete and buries it. A partial set is a SKIP for hand
@@ -93,7 +100,7 @@ $policyHigh = Get-HighArrayBody $policyText
 $verifierPresent = Test-Path -LiteralPath $verifierPath -PathType Leaf
 $manifestPresent = Test-Path -LiteralPath $manifestPath -PathType Leaf
 $ciMentions = ($null -ne $ciText) -and $ciText.Contains('assert_canonical_assets.py')
-$policyMentions = $policyHigh.Contains('".github/canonical-assets.json"')
+$policyMentions = $manifestEntry
 $presentParts = @(
     if ($verifierPresent) { 'verifier' }
     if ($manifestPresent) { 'manifest' }
@@ -105,7 +112,11 @@ if ($presentParts.Count -eq 4) {
     $adoptPython = @('python3', 'python') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
     if (-not $adoptPython) { throw "no python interpreter on this host -- cannot prove $name verifies" }
     $proofOut = (& $adoptPython $verifierPath $repo 2>&1 | Out-String)
-    $coverage = ($LASTEXITCODE -eq 0) -and $ciText.Contains('python3 .github/scripts/assert_canonical_assets.py') -and $policyMentions
+    # A `run:` key on a live line, as the gate anchor is matched: a commented-out step still
+    # contains the command text and runs nothing. Both HIGH entries, exactly, because the
+    # guard's loop asks for both.
+    $ciRunsVerifier = $ciText -match '(?m)^[ \t]*(?:-[ \t]+)?run:[ \t]*python3[ \t]+\.github/scripts/assert_canonical_assets\.py\b'
+    $coverage = ($LASTEXITCODE -eq 0) -and $ciRunsVerifier -and $manifestEntry -and $verifierEntry
     if (-not $coverage) {
         $issues += "all four artefacts are present but conformance is incomplete (verifier exit $LASTEXITCODE, CI/policy wiring checked) -- inspect by hand`n$proofOut"
     }
@@ -226,14 +237,14 @@ if ([regex]::Matches($ciReread, 'assert_canonical_assets\.py').Count -ne 1) {
 }
 
 # review-policy.json splice: entries become the first elements of "high" (valid JSON,
-# minimal diff). The manifest entry always; the verifier named entry only where the
-# .github/scripts/** glob (or a prior named entry) does not already cover it. Operates
-# on the preflight-read $policyText -- a concurrent edit mid-run is not the threat model.
+# minimal diff). The manifest and the named verifier entry, each unless that exact string
+# is already an element -- a `.github/scripts/**` glob does not satisfy the guard's exact
+# loop. Operates on the preflight-read $policyText -- a concurrent edit mid-run is not the
+# threat model.
 $policyEol = if ($policyText.Contains("`r`n")) { "`r`n" } else { "`n" }
 $additions = @()
-if (-not $policyHigh.Contains('".github/canonical-assets.json"')) { $additions += '".github/canonical-assets.json"' }
-$verifierCovered = $policyHigh.Contains('".github/scripts/**"') -or $policyHigh.Contains('".github/scripts/assert_canonical_assets.py"')
-if (-not $verifierCovered) { $additions += '".github/scripts/assert_canonical_assets.py"' }
+if (-not $manifestEntry) { $additions += "`"$manifestRel`"" }
+if (-not $verifierEntry) { $additions += "`"$verifierRel`"" }
 if ($additions.Count -gt 0) {
     $highMatch = [regex]::Match($policyText, '"high"\s*:\s*\[')
     if (-not $highMatch.Success) { throw "no `"high`" array in ${name}'s review-policy.json: refusing" }
@@ -243,9 +254,10 @@ if ($additions.Count -gt 0) {
     # on the last one. The re-read parse cannot be the only rail against this. Entry
     # detection is scoped to the array body -- past the closing bracket the next key's
     # lines (e.g. "low") would read as entries and reintroduce the trailing comma.
+    # Emptiness comes from the parse; the text slice below only finds an entry's indent.
     $arrayEnd = $afterOpen.IndexOf(']')
     $arrayBody = if ($arrayEnd -ge 0) { $afterOpen.Substring(0, $arrayEnd) } else { $afterOpen }
-    $hasEntries = $arrayBody -match '"'
+    $hasEntries = $policyHigh.Count -gt 0
     $entryIndentMatch = [regex]::Match($arrayBody, '(?m)^(?<indent>[ \t]+)"')
     $entryIndent = if ($entryIndentMatch.Success) { $entryIndentMatch.Groups['indent'].Value } else { '    ' }
     $policyInsert = ''

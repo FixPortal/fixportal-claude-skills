@@ -115,7 +115,10 @@ try {
     $policyAfter = [IO.File]::ReadAllText((Join-Path $adopt '.claude' 'review-policy.json'))
     $null = $policyAfter | ConvertFrom-Json -ErrorAction Stop
     if (-not $policyAfter.Contains('".github/canonical-assets.json"')) { throw 'policy must gain the manifest entry' }
-    if ($policyAfter.Contains('".github/scripts/assert_canonical_assets.py"')) { throw 'the glob already covers the verifier -- no named entry should have been added' }
+    # The guard's optional loop asks `.high | index(".github/scripts/assert_canonical_assets.py")`,
+    # exact element equality, so the fixture's `.github/scripts/**` glob does not satisfy it and
+    # the named entry must be spliced anyway (R-D L5).
+    if (-not ((ConvertFrom-Json $policyAfter).high -ccontains '.github/scripts/assert_canonical_assets.py')) { throw 'a glob does not satisfy the guard -- the named verifier entry must be added to high' }
 
     # idempotence: a second run is a clean SKIP, not a second splice
     $r = Invoke-Rollout $adopt
@@ -273,6 +276,37 @@ try {
     $r = Invoke-Rollout $broken
     if ($r.Code -ne 2 -or $r.Output -notmatch 'conformance is incomplete') { throw "a broken adoption must exit 2 naming it`n$($r.Output)" }
     if ($r.Output -match 'partial adoption') { throw "the verification-fails refusal must not also claim a partial adoption`n$($r.Output)" }
+
+    # The already-adopted proof re-checks wiring, not just presence (R-D L6, XL20, XL21, L9).
+    # Each case starts from a clean adoption, then breaks one thing the guard or CI would see.
+    $adoptedCases = @(
+        @{ Name = 'adopted-commented'; Why = 'a commented-out verifier step (XL20)'
+           Break = { param($repo) $ci = Join-Path $repo '.github' 'workflows' 'ci.yml'; [IO.File]::WriteAllText($ci, ([IO.File]::ReadAllText($ci) -replace '(?m)^(\s*)run: python3 \.github/scripts/assert_canonical_assets\.py', '$1# run: python3 .github/scripts/assert_canonical_assets.py')) } }
+        @{ Name = 'adopted-no-named'; Why = 'a policy holding the glob but not the named verifier entry (L6)'
+           Break = { param($repo) $p = Join-Path $repo '.claude' 'review-policy.json'; [IO.File]::WriteAllText($p, ([IO.File]::ReadAllText($p) -replace '(?m)^\s*"\.github/scripts/assert_canonical_assets\.py",?\r?\n', '')) } }
+        @{ Name = 'adopted-bad-json'; Why = 'a policy that no longer parses (XL21)'
+           Break = { param($repo) Add-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Value '{ not json' } }
+    )
+    foreach ($case in $adoptedCases) {
+        $repo = New-FixtureRepo $case.Name
+        $r = Invoke-Rollout $repo
+        if ($r.Code -ne 0) { throw "setup adoption for $($case.Name) must succeed; got $($r.Code)`n$($r.Output)" }
+        & $case.Break $repo
+        $r = Invoke-Rollout $repo
+        if ($r.Code -eq 0 -or $r.Output -match 'already adopted') { throw "$($case.Why) must not read as already adopted; got $($r.Code)`n$($r.Output)" }
+    }
+
+    # A `]` inside a high entry ended the old text slice early, so the manifest entry after it
+    # was not seen and a complete adoption read as partial.
+    $bracket = New-FixtureRepo 'adopted-bracket'
+    $r = Invoke-Rollout $bracket
+    if ($r.Code -ne 0) { throw "setup adoption for adopted-bracket must succeed; got $($r.Code)`n$($r.Output)" }
+    $bracketPolicyPath = Join-Path $bracket '.claude' 'review-policy.json'
+    $bracketText = [IO.File]::ReadAllText($bracketPolicyPath)
+    $highOpen = [regex]::Match($bracketText, '"high"\s*:\s*\[')
+    [IO.File]::WriteAllText($bracketPolicyPath, $bracketText.Insert($highOpen.Index + $highOpen.Length, '"docs/odd]name.md",'), [Text.UTF8Encoding]::new($false))
+    $r = Invoke-Rollout $bracket
+    if ($r.Code -ne 0 -or $r.Output -notmatch 'already adopted \(verified\)') { throw "a high entry containing ] must not hide the manifest entry from the already-adopted check`n$($r.Output)" }
 
     # checker-conformance proof: the rollout runs the repo's REAL gate checker against
     # its (spliced) ci.yml, honoring the anchor step's GATE_EXEMPT env.

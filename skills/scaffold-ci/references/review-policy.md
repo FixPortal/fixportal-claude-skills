@@ -103,6 +103,10 @@ allowlist is the only thing that catches a *new* third-party dependency, but def
 with any short list fails most repos in this estate, and a gate that reddens on adoption gets
 reverted rather than fixed.
 
+The HIGH-list loops sit in their own step, `Policy-controlled paths must remain HIGH`
+(`shell: bash`, `set -euo pipefail`), so a consumer's contract checker can pin that step's
+whole body. Keep the name exact; scaffold-ci's tests fail if it disappears.
+
 What is asserted:
 
 - **Third-party actions must be pinned to a full 40-character commit SHA** — a hard failure.
@@ -280,14 +284,18 @@ byte comparison rather than a reviewer's verdict, so a throttled or absent CodeR
 review is not a coverage gap for the PR. It holds only when ALL of these hold — each
 checkable from the diff:
 
-1. Every changed path is a file this contract SHIPS (`.claude/review-policy.json`,
-   `.coderabbit.yaml`, `.github/workflows/review-policy-guard.yml`,
-   `.github/scripts/assert_gate_coverage.py`,
-   `.github/scripts/assert_workflow_hygiene.py`, `scripts/summarize-stryker.ps1`).
-2. Each is identical, line endings aside, to the canonical file that
-   `~/.agents/skills/scaffold-ci/scripts/canonical-assets.json` names for it (under
-   `assets/` for all but the Stryker summariser, whose canonical is
-   `templates/summarize-stryker.ps1`) — proved per file with
+1. Every changed path is the `relative` path of an entry in
+   `~/.agents/skills/scaffold-ci/scripts/canonical-assets.json` (read the inventory; do not
+   work from a list restated here), or `.github/canonical-assets.json` itself, in which only
+   the `sha256`, `commit` and `syncedAt` of the synced entries and the top-level `canonical`
+   stamp change. A repo that has adopted the divergence gate must regenerate that manifest
+   in the same PR as any sync, so the manifest is part of a mechanical sync, not an
+   exception to it. `.claude/review-policy.json` and `.coderabbit.yaml` have no canonical
+   copy, so an edit to either is never covered.
+2. Each synced file is identical, line endings aside, to the canonical file that inventory
+   names for it (its `canonical` path, relative to `~/.agents/skills/scaffold-ci/`: under
+   `assets/` for most, `templates/summarize-stryker.ps1` for the Stryker summariser, and
+   outside the skill for the few shared with another skill) — proved per file with
    `audit-ci/scripts/compare-canonical-file.ps1 -IgnoreLineEndings`, output pasted into
    the PR body. Line endings are excluded because git rewrites them per checkout, so
    raw byte identity is not a condition a copy can reliably meet; every other byte must

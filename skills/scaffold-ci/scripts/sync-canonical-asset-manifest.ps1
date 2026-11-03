@@ -97,6 +97,7 @@ if ($assets.Count -eq 0) {
 }
 
 $manifestPath = Join-Path (Join-Path $target '.github') 'canonical-assets.json'
+$previous = $null
 if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
     try {
         $null = [System.Text.Json.JsonDocument]::Parse([IO.File]::ReadAllText($manifestPath))
@@ -104,6 +105,7 @@ if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
     catch {
         throw "$manifestPath exists and is not strict-valid JSON -- it may carry a hand-edit. Fix or remove it deliberately; refusing to overwrite."
     }
+    $previous = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 }
 
 $headOut = (& git -C $PSScriptRoot rev-parse HEAD 2>&1 | Out-String).Trim()
@@ -111,13 +113,43 @@ $head = ($headOut -split "`n" | Where-Object { $_ -match '^[0-9a-f]{40}$' } | Se
 if ($LASTEXITCODE -ne 0 -or -not $head) {
     throw "could not resolve the canonical checkout's HEAD for the provenance block: $headOut"
 }
+$today = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+
+# Provenance is stamped PER ASSET: an asset whose hash is unchanged since the previous
+# manifest keeps its recorded commit/syncedAt; only new or changed assets take this HEAD
+# and today. Stamping every asset on every run claimed a whole-repo sync when one file
+# moved. A pre-per-asset manifest's unchanged entries inherit its top-level stamp -- the
+# best record there is. The top-level stamp moves only on a run that changed an asset.
+#
+# Inherited stamps belong to the repository that recorded them. A run naming a different
+# -CanonicalRepository (a mirror's own copy) starts a new provenance and inherits nothing;
+# carrying the old commit forward recorded it under a repository that does not contain it.
+$sameSource = $previous -and $previous.canonical.repository -ceq $CanonicalRepository
+$prevByPath = @{}
+if ($sameSource) { foreach ($p in @($previous.assets)) { if ($p.path) { $prevByPath[$p.path] = $p } } }
+$assets = @(
+    foreach ($a in $assets) {
+        $old = $prevByPath[$a.path]
+        $commit = $head; $syncedAt = $today
+        if ($old -and $old.sha256 -eq $a.sha256) {
+            $commit = $old.commit ?? $previous.canonical.commit
+            $syncedAt = $old.syncedAt ?? $previous.canonical.syncedAt
+        }
+        $a | Add-Member -NotePropertyName commit -NotePropertyValue $commit -PassThru |
+            Add-Member -NotePropertyName syncedAt -NotePropertyValue $syncedAt -PassThru
+    }
+)
+$topCommit = $head; $topSyncedAt = $today
+if ($sameSource -and $previous.canonical.commit -and -not ($assets | Where-Object { $_.commit -eq $head -and $_.syncedAt -eq $today })) {
+    $topCommit = $previous.canonical.commit; $topSyncedAt = $previous.canonical.syncedAt
+}
 
 $manifest = [pscustomobject]@{
     schema = 1
     canonical = [pscustomobject]@{
         repository = $CanonicalRepository
-        commit = $head
-        syncedAt = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+        commit = $topCommit
+        syncedAt = $topSyncedAt
     }
     assets = @($assets | Sort-Object path)
 }

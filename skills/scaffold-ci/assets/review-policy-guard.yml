@@ -108,9 +108,18 @@ jobs:
             echo "::error file=$policy::A high/low entry contains '[' or '{'. Tier globs support only *, ** and ?; a bracket class or brace alternation would match literally and under-tier. Write one entry per path."
             exit 1
           fi
-          # The review control plane must stay HIGH in every repo: this file decides which
-          # reviewers a PR needs, and .coderabbit.yaml can silence a reviewer outright.
-          #
+
+      # The review control plane must stay HIGH in every repo: this file decides which
+      # reviewers a PR needs, and .coderabbit.yaml can silence a reviewer outright. This
+      # deliberately sits in its own simple step (the shape a hardened consumer uses) so a
+      # consumer's contract checker can require its complete executable body instead of
+      # interpreting a larger shell program. The step NAME is pinned by scaffold-ci's tests.
+      - name: Policy-controlled paths must remain HIGH
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy=.claude/review-policy.json
+
           # The MERGE BARRIER joined the list on 2026-08-23, after an adversarial-review
           # sweep found the same hole in six estate repos at once. "CI Gate" is a required
           # status check produced by the PR's OWN copy of ci.yml: a PR that keeps the job,
@@ -150,10 +159,16 @@ jobs:
           # but if present they must receive HIGH review.
           # assert_canonical_assets.py joined on 2026-09-26: gate coverage already refuses a
           # gate-feeding script that is not HIGH, but the guard should hold that on its own.
+          #
+          # "Exists" means TRACKED, case-exactly: `[ -f NuGet.config ]` is true for a tracked
+          # lowercase nuget.config on a case-insensitive filesystem (Windows, macOS) and
+          # demanded a path the repo does not have. git ls-files reports the name as committed.
+          # grep has no -q on purpose: it must drain the pipe, or pipefail can see git die of
+          # SIGPIPE in a large repo and report "not tracked".
           for required in .claude/ci-budget-approval.json .github/canonical-assets.json \
             .github/scripts/assert_canonical_assets.py \
             nuget.config NuGet.config global.json .config/dotnet-tools.json .npmrc Directory.Build.props; do
-            if [ -f "$required" ] && ! jq -e --arg r "$required" '.high | index($r)' "$policy" >/dev/null; then
+            if git ls-files | grep -xF -- "$required" >/dev/null && ! jq -e --arg r "$required" '.high | index($r)' "$policy" >/dev/null; then
               echo "::error file=$policy::'$required' exists but is missing from the high list. An edit to it would get the lighter review."
               exit 1
             fi

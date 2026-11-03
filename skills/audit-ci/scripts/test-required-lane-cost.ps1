@@ -6,10 +6,9 @@ param(
     [Parameter(Mandatory)] [double] $BudgetMinutes,
     # Audited repository root. Owner approval of a budget breach is read from its
     # COMMITTED .claude/ci-budget-approval.json, which review-policy.json tiers HIGH.
-    [string] $RepositoryRoot,
-    # Explicit override for that file's location. Never a temporary object the auditor
-    # wrote for itself -- that is provenance-free and leaves no durable record.
-    [string] $ApprovalPath
+    # There is no path override: the committed tree is the only approval source, so an
+    # -ApprovalPath that could only ever equal that one path was redundant.
+    [string] $RepositoryRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,21 +83,47 @@ $counted = [Collections.Generic.List[object]]::new()
 # a compliant lane into APPROVED_EXCEPTION. Anchoring on `\(.*\)$` does not fix it:
 # `Backend (Legacy)` also ends in a bracket.
 $countedJobs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-foreach ($requiredName in $required) {
-    # A matrix job's declared name commonly carries an expression -- `Frontend (${{
-    # matrix.node }})` -- and nothing here renders it, so an exact or "name (" match
-    # could never hit the Actions job names and every repo using the ordinary matrix
-    # naming pattern failed outright, blaming the evidence producer for an omission that
-    # had not happened. Match on the literal prefix before the first expression instead.
-    $expressionAt = $requiredName.IndexOf('${{', [StringComparison]::Ordinal)
-    $matchName = if ($expressionAt -ge 0) { $requiredName.Substring(0, $expressionAt).TrimEnd(' ', '(') } else { $requiredName }
-    if ([string]::IsNullOrWhiteSpace($matchName)) {
-        throw "Required job name '$requiredName' begins with an expression, so no literal prefix can be matched against measured evidence. Give the job a literal name prefix."
+# A matrix job's declared name commonly carries an expression -- `Frontend (${{
+# matrix.node }})` -- and nothing here renders it. Each required name therefore becomes an
+# ANCHORED pattern: literal text escaped, every expression a wildcard, plus GitHub's
+# optional ` (<matrix values>)` leg suffix. Cutting the name at its first expression
+# instead dropped the literal text after it, so `Frontend (${{ matrix.node }}) tests`
+# claimed an unrelated `Frontend (22) lint` as one of its legs.
+$patterns = @(foreach ($requiredName in $required) {
+    $literalParts = [regex]::Split($requiredName, '\$\{\{.*?\}\}')
+    if ([string]::IsNullOrWhiteSpace(($literalParts -join ''))) {
+        throw "Required job name '$requiredName' is only an expression, so no literal text can be matched against measured evidence. Give the job a literal name part."
     }
-    $legs = @($jobs | Where-Object {
-        $_ -is [pscustomobject] -and $_.PSObject.Properties.Name -contains 'name' -and
-        ([string] $_.name -eq $matchName -or ([string] $_.name).StartsWith("$matchName (", [StringComparison]::Ordinal))
-    })
+    $body = ($literalParts | ForEach-Object { [regex]::Escape($_) }) -join '.*'
+    [pscustomobject]@{
+        Name = $requiredName
+        Regex = [regex]::new("^$body(?: \(.*\))?$")
+        Specificity = ($literalParts -join '').Length
+    }
+})
+# Every job belongs to EXACTLY ONE required name: an exact name match first, else the
+# pattern with the most literal text. A job matching several names equally is ambiguous
+# and refused. Matching each name independently let the shorter `Backend` claim the job
+# `Backend (integration)`, so a required `Backend` missing from the evidence passed on a
+# job that belonged to another name.
+$assigned = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+foreach ($pattern in $patterns) { $assigned[$pattern.Name] = [Collections.Generic.List[object]]::new() }
+foreach ($job in $jobs) {
+    if ($job -isnot [pscustomobject] -or $job.PSObject.Properties.Name -notcontains 'name') { continue }
+    $jobName = [string] $job.name
+    $best = $null; $bestScore = -1; $tied = $false
+    foreach ($pattern in $patterns) {
+        if (-not $pattern.Regex.IsMatch($jobName)) { continue }
+        $score = if ($jobName -ceq $pattern.Name) { [int]::MaxValue } else { $pattern.Specificity }
+        if ($score -gt $bestScore) { $best = $pattern; $bestScore = $score; $tied = $false }
+        elseif ($score -eq $bestScore) { $tied = $true }
+    }
+    if (-not $best) { continue }
+    if ($tied) { throw "Required-lane cost evidence job '$jobName' matches more than one required job name equally; give the required jobs distinguishable names." }
+    $assigned[$best.Name].Add($job)
+}
+foreach ($requiredName in $required) {
+    $legs = @($assigned[$requiredName])
     if (-not $legs.Count) { throw "Required-lane cost evidence omitted job '$requiredName' and its matrix legs." }
     foreach ($job in $legs) {
         # The Actions job `id` IS the identity, and it is REQUIRED -- there is no name-plus-
@@ -149,29 +174,28 @@ foreach ($requiredName in $required) {
 
 $aggregate = [Math]::Round([double] (($counted | Measure-Object -Property Minutes -Sum).Sum), 3)
 $approval = $null
+# The evidence must measure the AUDITED head on BOTH paths. Accepting the old run the
+# approval names instead means that after one approval every later HEAD comes back
+# APPROVED_EXCEPTION on that old run's minutes, however much the lane has grown, while
+# the result reports HEAD as measured. The approval bounds HEAD's own measurement
+# through its committed max_minutes.
+if ($evidenceHeadSha -ne $ExpectedHeadSha) { throw 'Required-lane cost evidence head_sha is stale.' }
 if ($aggregate -gt $BudgetMinutes) {
     # Approval must come from a COMMITTED file in the audited repository, not a temporary
-    # object the auditor writes for itself. The committed approval names the measured
-    # run's head and id; its head must be an ancestor of the audited tree, so the approval
-    # cannot depend on its own commit SHA. The file is tiered HIGH, so changing it is
-    # itself reviewed.
-    if ([string]::IsNullOrWhiteSpace($ApprovalPath)) {
-        if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
-            throw "Required-lane measured cost is $aggregate minutes; target is $BudgetMinutes and no repository root was given to locate the committed approval."
-        }
-        $ApprovalPath = Join-Path $RepositoryRoot '.claude' 'ci-budget-approval.json'
+    # object the auditor writes for itself. It names the run the owner reviewed (its head
+    # must be an ancestor of the audited tree, so the approval cannot depend on its own
+    # commit SHA) and the most minutes the owner accepts. The file is tiered HIGH, so
+    # changing it is itself reviewed.
+    if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+        throw "Required-lane measured cost is $aggregate minutes; target is $BudgetMinutes and no repository root was given to locate the committed approval."
     }
-    if (-not $RepositoryRoot) { throw 'A budget exception requires RepositoryRoot so approval provenance can be verified.' }
     $approvalRelativePath = '.claude/ci-budget-approval.json'
-    $expectedApprovalPath = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $approvalRelativePath))
-    if ([IO.Path]::GetFullPath($ApprovalPath) -ne $expectedApprovalPath) {
-        throw "Owner approval must be read from $expectedApprovalPath."
-    }
     $treeEntry = @(& git -C $RepositoryRoot ls-tree $ExpectedHeadSha -- $approvalRelativePath 2>$null)
     if ($LASTEXITCODE -ne 0 -or $treeEntry.Count -ne 1) {
         throw 'Owner approval is not present in the audited commit tree.'
     }
-    if ($treeEntry[0] -notmatch '^100(?:644|755) blob [0-9a-f]{40}\s+\.claude/ci-budget-approval\.json$') {
+    # 40 hex for a SHA-1 repository, 64 for SHA-256.
+    if ($treeEntry[0] -notmatch '^100(?:644|755) blob (?:[0-9a-f]{40}|[0-9a-f]{64})\s+\.claude/ci-budget-approval\.json$') {
         throw 'Owner approval in the audited tree must be a regular file, not a symlink or other object.'
     }
     $approvalJson = & git -C $RepositoryRoot show "$ExpectedHeadSha`:$approvalRelativePath" 2>$null
@@ -179,29 +203,38 @@ if ($aggregate -gt $BudgetMinutes) {
     try { $approval = ($approvalJson -join "`n") | ConvertFrom-Json }
     catch { throw "Owner approval evidence is malformed JSON: $($_.Exception.Message)" }
     if ($approval -isnot [pscustomobject]) { throw 'Owner approval evidence must be a JSON object.' }
-    foreach ($field in 'approved', 'owner', 'approved_at', 'head_sha', 'run_id') {
+    foreach ($field in 'approved', 'owner', 'approved_at', 'head_sha', 'run_id', 'max_minutes') {
         if ($approval.PSObject.Properties.Name -notcontains $field) { throw "Owner approval evidence omitted $field." }
     }
     if ($approval.approved -isnot [bool] -or -not $approval.approved) { throw 'Owner approval evidence is not explicitly approved.' }
     if ([string]::IsNullOrWhiteSpace([string] $approval.owner)) { throw 'Owner approval evidence has no owner.' }
     try { [DateTimeOffset]::Parse([string] $approval.approved_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) | Out-Null }
     catch { throw 'Owner approval evidence has an invalid approved_at timestamp.' }
-    if ([string]::IsNullOrWhiteSpace([string] $approval.head_sha) -or [string] $approval.head_sha -ne $evidenceHeadSha) {
-        throw 'Owner approval must identify the measured run head_sha.'
+    # A full object id, so the value cannot reach git as an option or a ref expression.
+    if ([string] $approval.head_sha -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+        throw 'Owner approval must identify the reviewed run head_sha.'
     }
-    if (($approval.run_id -isnot [int] -and $approval.run_id -isnot [long]) -or
-        [long] $approval.run_id -ne [long] $evidence.run.id) {
-        throw 'Owner approval evidence run_id is missing or stale.'
+    if (($approval.run_id -isnot [int] -and $approval.run_id -isnot [long]) -or [long] $approval.run_id -le 0) {
+        throw 'Owner approval evidence run_id is missing or invalid.'
     }
-    & git -C $RepositoryRoot merge-base --is-ancestor $evidenceHeadSha $ExpectedHeadSha 2>$null
+    if (($approval.max_minutes -isnot [int] -and $approval.max_minutes -isnot [long] -and
+            $approval.max_minutes -isnot [double] -and $approval.max_minutes -isnot [decimal]) -or
+        [double] $approval.max_minutes -le 0) {
+        throw 'Owner approval evidence max_minutes must be a positive number.'
+    }
+    & git -C $RepositoryRoot merge-base --is-ancestor ([string] $approval.head_sha) $ExpectedHeadSha 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Owner approval must refer to a measured run on an ancestor of the audited HEAD.' }
+    if ($aggregate -gt [double] $approval.max_minutes) {
+        throw "Required-lane measured cost is $aggregate minutes at the audited head, above the approved max_minutes of $($approval.max_minutes)."
+    }
 }
-elseif ($evidenceHeadSha -ne $ExpectedHeadSha) { throw 'Required-lane cost evidence head_sha is stale.' }
 
 [pscustomobject]@{
     Status = if ($aggregate -gt $BudgetMinutes) { 'APPROVED_EXCEPTION' } else { 'COMPLIANT' }
     AggregateMinutes = $aggregate
-    CountedJobs = $counted.Count
+    # Measured jobs only. A skipped job is recorded with zero minutes and named in
+    # SkippedJobs, and counting it here contradicted that.
+    CountedJobs = @($counted | Where-Object { -not $_.Skipped }).Count
     # EMITTED, not just recorded. The loop above sets Skipped on its internal list and the
     # output carried only a count, so no consumer could tell a skipped required job from a
     # measured one - while both the comment there and audit-ci/SKILL.md describe a report
@@ -209,6 +242,9 @@ elseif ($evidenceHeadSha -ne $ExpectedHeadSha) { throw 'Required-lane cost evide
     # (CodeRabbit, PR #135.)
     SkippedJobs = @($counted | Where-Object { $_.Skipped } | ForEach-Object { $_.Name })
     HeadSha = $ExpectedHeadSha
+    # The head the measured run actually built. Equal to HeadSha by the check above;
+    # emitted so a consumer reads the measurement's provenance, not the caller's claim.
+    MeasuredHeadSha = $evidenceHeadSha
     RunId = [long] $evidence.run.id
     Approval = $approval
 }
