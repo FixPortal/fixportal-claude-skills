@@ -27,6 +27,13 @@ class CompareAssetSemanticsTests(unittest.TestCase):
         second = self.definitions("def choose(x=value()):\n    return x\ndef value():\n    return 1\n")
         self.assertNotEqual(first, second)
 
+    def test_annotated_variadics_keep_order(self):
+        # *args/**kwargs annotations evaluate at definition time too (R-D L10).
+        for signature in ("*args: T", "**kwargs: T"):
+            first = self.definitions(f"T = int\ndef a({signature}):\n    return 1\ndef b():\n    return 2\n")
+            second = self.definitions(f"T = int\ndef b():\n    return 2\ndef a({signature}):\n    return 1\n")
+            self.assertNotEqual(first, second, signature)
+
     def test_duplicate_top_level_names_fail(self):
         with self.assertRaises(SystemExit) as error:
             self.definitions("def check():\n    return 1\ndef check():\n    return 2\n")

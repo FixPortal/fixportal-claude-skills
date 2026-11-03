@@ -35,8 +35,13 @@ foreach ($asset in 'review-policy-guard.yml', 'review-policy.example.json', 'rev
         throw "scaffold-ci must ship $asset under assets/, not reference a runtime-specific path"
     }
 }
-# This mirror nests the skill under skills/, so the repository root is two levels up.
-$repoCodeRabbit = Get-Content (Join-Path $root '..' '..' '.coderabbit.yaml') -Raw
+# Repository files are read from the nearest directory above the skill that holds `.github`:
+# one level up here, two in the public mirror's skills/<skill> layout (R-D L12).
+$repoRoot = $root.Path
+while ($repoRoot -and -not (Test-Path -LiteralPath (Join-Path $repoRoot '.github') -PathType Container)) { $repoRoot = Split-Path $repoRoot -Parent }
+if (-not $repoRoot) { throw "no directory above $root holds .github; cannot locate the repository root" }
+$republished = $repoRoot -ne (Split-Path $root.Path -Parent)
+$repoCodeRabbit = Get-Content (Join-Path $repoRoot '.coderabbit.yaml') -Raw
 if (-not $repoCodeRabbit.Contains('labels: ["review-high", "review-high-manual"]')) {
     throw 'the repository CodeRabbit config must enable both the tier label and manual HIGH override'
 }
@@ -316,7 +321,63 @@ foreach ($check in '-s "$policy"', 'jq -e . "$policy"', 'has("high")', 'permissi
         throw "the shipped review-policy guard has lost a content check: $check"
     }
 }
-foreach ($needle in '.github/canonical-assets.json', '[ ! -f "$required" ]', '[ -f "$required" ]') {
+# The optional-files loop, EXECUTED in a fixture repo. `[ -f NuGet.config ]` is true for a
+# tracked lowercase nuget.config on a case-insensitive filesystem (Windows, macOS), so the
+# guard demanded a path the repo does not have. The check must be case-exact: it asks git
+# what is tracked. The second and third cases keep the guard strict (no weakening).
+$optionalLoop = [regex]::Match($guard, '(?s)for required in \.claude/ci-budget-approval\.json.*?\n\s*done\r?\n')
+if (-not $optionalLoop.Success) { throw 'review-policy-guard.yml: could not locate the optional-files loop' }
+# Git for Windows bash, not the WSL launcher Get-Command finds first on this box: the fixture
+# needs a Windows path and the host's real (case-insensitive) filesystem semantics.
+# On Windows there is no fallback: the bash Get-Command finds is the WSL launcher, which
+# cannot cd to the Windows path the fixture builds (R-D XL25).
+$gitBash = @((Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Git\bin\bash.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $gitBash -and $bash -and -not $IsWindows) { $gitBash = $bash.Source }
+# This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
+. (Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1')
+if (-not $gitBash) { Write-Host 'SKIP: no usable bash on this host; optional-files loop not executed' }
+else {
+    foreach ($case in @(
+        @{ Tracked = 'nuget.config'; High = @('nuget.config');  Ok = $true;  Why = 'tracked nuget.config, listed as nuget.config (the false positive on a case-insensitive fs)' },
+        @{ Tracked = 'nuget.config'; High = @();                Ok = $false; Why = 'tracked nuget.config missing from high' },
+        @{ Tracked = 'NuGet.config'; High = @();                Ok = $false; Why = 'tracked NuGet.config missing from high' },
+        @{ Tracked = 'NuGet.config'; High = @('NuGet.config');  Ok = $true;  Why = 'tracked NuGet.config, listed as NuGet.config' }
+    )) {
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ("guard-case-" + [guid]::NewGuid().ToString('N'))
+        # Cleanup is armed only once this run has created the directory (R-D L1), and goes
+        # through Remove-OwnedTempTree, which re-checks the path and prints it.
+        $created = $false
+        try {
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            $created = $true
+            $dirBash = $dir -replace '\\', '/'
+            $policyJson = (@{ high = @($case.High) } | ConvertTo-Json -Compress)
+            # The loop under test calls jq; a bash without it would make `! jq ...` true and
+            # the verdicts meaningless (R-D XL25).
+            $script = @"
+set -euo pipefail
+command -v jq >/dev/null 2>&1 || { echo SKIP_NO_JQ; exit 0; }
+cd '$dirBash'
+git init -q .
+mkdir -p .claude
+printf '%s' '$policyJson' > .claude/review-policy.json
+echo '<configuration/>' > '$($case.Tracked)'
+git add -A
+policy=.claude/review-policy.json
+$($optionalLoop.Value)
+echo GUARD_PASSED
+"@
+            $out = ($script -replace "`r", '') | & $gitBash -s 2>&1 | Out-String
+            if ($out -match 'SKIP_NO_JQ') { Write-Host 'SKIP: the bash on this host has no jq; optional-files loop not executed'; break }
+            if (($out -match 'GUARD_PASSED') -ne $case.Ok) {
+                throw "optional-files loop gave the wrong verdict for $($case.Why) (expected pass=$($case.Ok)):`n$out"
+            }
+        }
+        finally { if ($created) { Remove-OwnedTempTree $dir } }
+    }
+}
+
+foreach ($needle in '.github/canonical-assets.json', '[ ! -f "$required" ]', 'git ls-files | grep -xF -- "$required" >/dev/null') {
     if ($guard -notmatch [regex]::Escape($needle)) {
         throw "review-policy-guard.yml is missing a control-plane presence/high check: $needle"
     }
@@ -362,19 +423,39 @@ if ($guard -notmatch [regex]::Escape('python3 .github/scripts/assert_workflow_hy
     throw 'the guard no longer invokes assert_workflow_hygiene.py; the hygiene assertions would never run'
 }
 
-# The scheduled drift sweep is a workflow of the canonical (private) skills repository, not
-# of this mirror. Skip with a stated reason where it is absent rather than fail on a file
-# this repository deliberately does not own.
-$driftWorkflowPath = Join-Path $root '..' '..' '.github' 'workflows' 'canonical-asset-drift.yml'
+$driftWorkflowPath = Join-Path $repoRoot '.github' 'workflows' 'canonical-asset-drift.yml'
 if (Test-Path -LiteralPath $driftWorkflowPath) {
     $driftWorkflow = Get-Content -LiteralPath $driftWorkflowPath -Raw
     if (-not $driftWorkflow.Contains("steps.mirror_semantics.outcome == 'success'") -or
         -not $driftWorkflow.Contains('absent from the public mirror; nothing compared')) {
         throw 'drift issue closure must require a successful mirror comparison, and missing mirror assets must fail'
     }
+    # The issue step runs on the sweep alone (R-D L13): gating it on the mirror left the issue
+    # neither updated nor closed while the mirror was broken. Only CLOSING waits for the mirror.
+    $issueStep = [regex]::Match($driftWorkflow, '(?ms)^      - name: Update drift tracking issue\r?\n(?<body>.*?)(?=^      - |\z)').Groups['body'].Value
+    if (-not $issueStep) { throw "canonical-asset-drift.yml has lost its 'Update drift tracking issue' step" }
+    if ($issueStep -notmatch "(?m)^        if: always\(\) && steps\.sweep_json\.outcome == 'success'\s*$") {
+        throw 'the drift tracking issue step must run whenever the sweep produced its JSON, not only when the mirror passed'
+    }
+    if ($issueStep -notmatch '\$existing -and -not \$mirrorOk') {
+        throw 'the drift tracking issue must not be closed on a run whose mirror comparison failed'
+    }
+    # The mirror's review-tier.yml check compares the ORDERED lines (R-D M13); Compare-Object
+    # pairs lines anywhere in the file and only prints the difference.
+    if (-not $driftWorkflow.Contains('[string]::Equals(($canonicalCode -join "`n"), ($publishedCode -join "`n"), [StringComparison]::Ordinal)')) {
+        throw 'the review-tier.yml mirror check must compare the line sequence in order, ordinally'
+    }
+    # The review-high-manual advisory parses the YAML (R-D L14), not a first-match regex.
+    if ($driftWorkflow -match [regex]::Escape("Select-String -LiteralPath `$config -Pattern '^\s*labels:") -or
+        -not $driftWorkflow.Contains("yaml.safe_load") -or -not $driftWorkflow.Contains("get('auto_review')")) {
+        throw 'the review-high-manual advisory must read reviews.auto_review.labels with a YAML parser'
+    }
+}
+elseif ($republished) {
+    Write-Host "SKIP: canonical-asset-drift.yml is not part of this republished tree - $driftWorkflowPath"
 }
 else {
-    Write-Host "SKIP: canonical-asset-drift.yml not present in this tree - $driftWorkflowPath"
+    throw "canonical-asset-drift.yml is missing from $repoRoot"
 }
 foreach ($assertion in 'SHA_LEN', 'pull_request_target', 'workflow_run', 'write-all') {
     if ($hygiene -notmatch [regex]::Escape($assertion)) {
@@ -533,6 +614,14 @@ if ($mechanicalSync -match 'BYTE-IDENTICAL') {
 }
 if ($mechanicalSync -notmatch '(?s)line\s+endings\s+aside') {
     throw 'the mechanical-sync exception must state that parity is judged with line endings aside'
+}
+
+# Condition 1 is DERIVED from the inventory (R-D XM2). A restated list named two files the
+# inventory has no canonical for, omitted review-tier.yml, and omitted the manifest, which
+# every sync in an adopted repo must change -- voiding the exception there.
+if ($mechanicalSync -notmatch '(?s)`relative`\s+path\s+of\s+an\s+entry\s+in' -or
+    $mechanicalSync -notmatch '(?s)`\.github/canonical-assets\.json`\s+itself') {
+    throw 'the mechanical-sync exception must take its paths from the inventory and admit the manifest'
 }
 
 'scaffold-ci review control plane OK'

@@ -23,7 +23,8 @@ $cases = @(
     @{ Name='hash-anchor-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    &build_definition#v1 {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$false },
     @{ Name='hash-anchor-tag-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    &build_definition#v1 !!map {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$false },
     @{ Name='hash-tag-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    !<tag:example.org,2026:job#v1> {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Accepted=$false },
-    @{ Name='hash-anchor-block-positive'; Body="  build:`n    &build_definition#v1`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$true },
+    # PyYAML cannot read `#` in an anchor name, so the checker refuses the file rather than guess.
+    @{ Name='hash-anchor-block-refused'; Reason='cannot parse as YAML'; Body="  build:`n    &build_definition#v1`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$false },
     @{ Name='name-block-literal-positive'; Body="  build:`n    name: |`n      { example # literal`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$true },
     @{ Name='name-block-folded-positive'; Body="  build:`n    name: >-`n      { example # literal`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$true },
     @{ Name='tag-block-conditional'; Reason='job-level ''if:'''; Body="  build:`n    !!map`n    if: github.ref == 'refs/heads/main'`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$false }

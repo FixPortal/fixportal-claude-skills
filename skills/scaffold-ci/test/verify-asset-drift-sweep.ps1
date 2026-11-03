@@ -211,6 +211,20 @@ try {
     New-TierRepo 'repo-local' @('name: Review tier', 'on: pull_request_target', 'jobs: {}')
     New-TierRepo 'repo-tier-stale' ($tierCanonical | Where-Object { $_ -ne $jobsLine })
     New-TierRepo 'repo-no-branches' ($tierCanonical | Where-Object { $_ -notmatch '^\s*branches:' })
+    # The mask must not accept ANY inline list: a widened trigger would read `current`.
+    New-TierRepo 'repo-branch-list' ($tierCanonical -replace '^(\s*branches:\s*)\[main\]\s*$', '$1[main, prod]')
+    # ...and, where the checkout records origin/HEAD, the one name must be that branch.
+    function New-TierGitRepo([string] $Name, [string] $DefaultBranch, [string] $Branch) {
+        $repo = Join-Path $tierRoot $Name
+        New-Item -ItemType Directory -Path $repo -Force | Out-Null
+        & git init -q $repo 2>&1 | Out-Null
+        & git -C $repo symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$DefaultBranch"
+        if ($LASTEXITCODE -ne 0) { throw "could not record origin/HEAD in fixture $Name" }
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github/workflows') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $repo '.github/workflows/review-tier.yml') -Encoding utf8 -Value ($tierCanonical -replace '^(\s*branches:\s*)\[main\]\s*$', "`$1[$Branch]")
+    }
+    New-TierGitRepo 'repo-origin-match' 'release' 'release'
+    New-TierGitRepo 'repo-origin-mismatch' 'main' 'release'
 
     $exceptionsPath = Join-Path $root 'exceptions.json'
     @{ version = 1; localImplementations = @{ 'review-tier.yml' = @('repo-local') }; sanitisedRepublications = @('repo-mirror') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exceptionsPath
@@ -225,6 +239,9 @@ try {
         @{ Repo = 'repo-local'; Status = 'local' }
         @{ Repo = 'repo-tier-stale';   Status = 'drifted' }
         @{ Repo = 'repo-no-branches';  Status = 'drifted' }
+        @{ Repo = 'repo-branch-list';  Status = 'drifted' }
+        @{ Repo = 'repo-origin-match'; Status = 'current' }
+        @{ Repo = 'repo-origin-mismatch'; Status = 'drifted' }
     )) {
         $row = $tierResult | Where-Object Repo -eq $case.Repo
         if ($row.Status -ne $case.Status) {
@@ -253,19 +270,38 @@ try {
     $rejected = $false
     try { & $sweep -Root $tierRoot -ExceptionsPath (Join-Path $root 'missing.json') -Json | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'specified missing exception config must fail closed' }
-    $insideExceptions = Join-Path $skillRoot ('exceptions-' + [guid]::NewGuid().ToString('N') + '.json')
-    try {
-        @{ version = 1; localImplementations = @{}; sanitisedRepublications = @() } | ConvertTo-Json | Set-Content -LiteralPath $insideExceptions
+    # The location guard is exercised on a COPY of the sweep in a temp skill root, never by
+    # writing into the live skill directory (R-D L7). The guard is told the skill root by
+    # $PSScriptRoot, so the copy's root is $tempSkill.
+    $tempSkill = Join-Path $root '_skill'
+    New-Item -ItemType Directory -Path (Join-Path $tempSkill 'scripts') -Force | Out-Null
+    Copy-Item -LiteralPath $sweep, (Join-Path $skillRoot 'scripts/canonical-assets.json') -Destination (Join-Path $tempSkill 'scripts')
+    $tempSweep = Join-Path $tempSkill 'scripts' 'sweep-canonical-asset-drift.ps1'
+    $insideExceptions = Join-Path $tempSkill 'exceptions.json'
+    @{ version = 1; localImplementations = @{}; sanitisedRepublications = @() } | ConvertTo-Json | Set-Content -LiteralPath $insideExceptions
+    # R-D XL22: one directory under two names. The link's target is inside $root, so the
+    # final recursive cleanup stays inside this run's tree whether or not it follows the link.
+    $alias = Join-Path $root '_skill-alias'
+    New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) -Path $alias -Target $tempSkill | Out-Null
+    foreach ($case in @(
+        @{ Script = $tempSweep; Exceptions = $insideExceptions; Why = 'an in-skill exception file' }
+        @{ Script = $tempSweep; Exceptions = (Join-Path $alias 'exceptions.json'); Why = 'an in-skill exception file reached through a link alias' }
+        @{ Script = (Join-Path $alias 'scripts' 'sweep-canonical-asset-drift.ps1'); Exceptions = $insideExceptions; Why = 'the sweep run through a link alias of its own skill root' }
+    )) {
         $locationError = $null
-        try { & $sweep -Root $tierRoot -ExceptionsPath $insideExceptions -Json | Out-Null } catch { $locationError = $_.Exception.Message }
+        try { & $case.Script -Root $tierRoot -ExceptionsPath $case.Exceptions -Json | Out-Null } catch { $locationError = $_.Exception.Message }
         if ($locationError -ne 'Exception data must live outside the mounted skill directory.') {
-            throw "in-skill exception config must fail the location guard; got: $locationError"
+            throw "$($case.Why) must fail the location guard; got: $locationError"
         }
     }
-    finally { Remove-Item -LiteralPath $insideExceptions -Force -ErrorAction Stop }
-    @{ version = 1; localImplementations = @{ 'review-tier.yml' = @('repo-local') }; sanitisedRepublications = @('repo-mirror') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exceptionsPath
 
-    Remove-Item -LiteralPath (Join-Path $tierRoot 'repo-tier-stale'), (Join-Path $tierRoot 'repo-no-branches') -Recurse -Force
+    # The clean re-run gets a fresh sub-root holding only the repos that must pass, so no
+    # fixture is deleted mid-test (R-D L1).
+    @{ version = 1; localImplementations = @{ 'review-tier.yml' = @('repo-local') }; sanitisedRepublications = @('repo-mirror') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exceptionsPath
+    $tierRoot = Join-Path $root '_tier-clean'
+    New-TierRepo 'repo-custom-branch' ($tierCanonical -replace '^(\s*branches:\s*)\[main\]\s*$', '$1[release]')
+    New-TierRepo 'repo-local' @('name: Review tier', 'on: pull_request_target', 'jobs: {}')
+    New-TierGitRepo 'repo-origin-match' 'release' 'release'
     & $sweep -Root $tierRoot -ExceptionsPath $exceptionsPath -Json | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "a masked branch line and a declared local implementation must not fail the sweep; got exit $LASTEXITCODE" }
 

@@ -88,7 +88,11 @@ def definitions(path):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 sensitive = sensitive or bool(node.args.defaults) or any(
                     default is not None for default in node.args.kw_defaults
-                ) or any(arg.annotation is not None for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs) or node.returns is not None
+                ) or any(
+                    arg.annotation is not None
+                    for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs + [node.args.vararg, node.args.kwarg]
+                    if arg is not None
+                ) or node.returns is not None
             name = f"<module {index}:{type(node).__name__}>" if sensitive else node.name
         else:
             # Module-level statements are keyed by position and kind. A constant or an

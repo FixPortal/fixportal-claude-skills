@@ -40,9 +40,19 @@ if ($text -notmatch '(?is)PR-range scan and push-range scan in the selected prim
     throw 'Secret-scanning guidance must follow the selected primary workflow rather than hard-code ci.yml.'
 }
 $normalizedSkill = $text -replace '\s+', ' '
+# The audit runs the SCAFFOLD's checkers. Running the audited repository's own copy
+# executed repository-controlled code after classing it as drifted.
+if ($normalizedSkill -match "Run the repository's shipped ``assert_gate_coverage\.py``" -or
+    $normalizedSkill -notmatch 'never the repository''s copy') {
+    throw 'Gate-coverage guidance must run the scaffold-ci asset, never the audited repository copy.'
+}
+
+# The over-budget path measures the audited head too. Letting the approval select its
+# own ancestor run meant HEAD was never measured once an approval existed.
 if ($text -match 'List completed `ci\.yml` workflow runs' -or
-    $normalizedSkill -notmatch 'For a normal cost check.*exactly equals the audited SHA.*When evaluating an over-budget exception.*run_id') {
-    throw 'Cost evidence guidance must allow the committed approval to select its successful ancestor run.'
+    $normalizedSkill -match 'select the successful run matching its `run_id`' -or
+    $normalizedSkill -notmatch 'For a normal cost check.*exactly equals the audited SHA.*When evaluating an over-budget exception, select that same audited-head run.*max_minutes') {
+    throw 'Cost evidence guidance must measure the audited head on the over-budget path too, bounded by the approval max_minutes.'
 }
 if ($ciContract -notmatch '(?s)push.*mainline.*tags `v\*`') {
     throw 'scaffold-ci no longer declares the narrow mainline-and-tag push baseline'

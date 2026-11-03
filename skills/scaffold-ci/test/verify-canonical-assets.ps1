@@ -215,6 +215,40 @@ try {
         throw 'the variance asset must be listed with verbatim=false'
     }
 
+    # provenance is per asset: backdate every stamp, change ONE asset, regenerate. Only the
+    # changed asset may claim this HEAD; the rest keep the old stamp (2026-10-12 over-stamp).
+    $old = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    $parsed.canonical.commit = $old; $parsed.canonical.syncedAt = '2026-01-01'
+    foreach ($a in $parsed.assets) {
+        $a | Add-Member -NotePropertyName commit -NotePropertyValue $old -Force
+        $a | Add-Member -NotePropertyName syncedAt -NotePropertyValue '2026-01-01' -Force
+    }
+    [IO.File]::WriteAllText($manifestPath, ($parsed | ConvertTo-Json -Depth 5) + "`n", [Text.UTF8Encoding]::new($false))
+    & $generator -RepoRoot $gen | Out-Null
+    $restamped = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($restamped.canonical.commit -ne $old) { throw "a no-change regeneration must not move the top-level stamp; got $($restamped.canonical.commit)" }
+    Add-Content -LiteralPath (Join-Path $gen 'scripts' 'summarize-stryker.ps1') -Value '# one asset moves' -Encoding utf8
+    & $generator -RepoRoot $gen | Out-Null
+    $restamped = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    foreach ($a in $restamped.assets) {
+        $want = if ($a.path -eq 'scripts/summarize-stryker.ps1') { $head } else { $old }
+        if ($a.commit -ne $want) { throw "$($a.path) stamped $($a.commit); expected $want -- only a changed asset may claim the new sync" }
+    }
+    if ($restamped.canonical.commit -ne $head) { throw 'a run that changed an asset must move the top-level stamp to HEAD' }
+    $r = Invoke-Verifier $gen
+    if ($r.Code -ne 0) { throw "per-asset stamps must stay verifier-compatible; got $($r.Code)`n$($r.Output)" }
+
+    # A no-change run naming ANOTHER repository must not carry the old commits forward:
+    # they would be recorded under a repository that does not contain them (R-D XL23).
+    & $generator -RepoRoot $gen -CanonicalRepository 'example-org/public-mirror' | Out-Null
+    $renamed = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($renamed.canonical.repository -ne 'example-org/public-mirror' -or $renamed.canonical.commit -ne $head) {
+        throw "a run naming a new repository must stamp it with this HEAD; got $($renamed.canonical.repository)@$($renamed.canonical.commit)"
+    }
+    foreach ($a in $renamed.assets) {
+        if ($a.commit -ne $head) { throw "$($a.path) kept commit $($a.commit) under a new repository name; expected $head" }
+    }
+
     # deliberate-divergence flow: edit -> regenerate -> verifier green again, in one act
     $gateCopy = Join-Path $gen '.github' 'scripts' 'assert_gate_coverage.py'
     Add-Content -LiteralPath $gateCopy -Value '# local hardening, deliberately diverged' -Encoding utf8

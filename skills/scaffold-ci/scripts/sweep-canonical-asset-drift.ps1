@@ -91,25 +91,51 @@ $ErrorActionPreference = 'Stop'
 # canonical with nothing noticing. Its variance is declared
 # here rather than excusing the whole file:
 #
-#   Mask                  the trigger's `branches: [...]` line names the repository's
-#                         default branch, which need not be `main`. Masked on
-#                         BOTH sides, so a copy with no such line still reads as drifted.
+#   BranchMask            the trigger's `branches: [<one name>]` line names the
+#                         repository's default branch, which need not be `main`. {0} is
+#                         canonical's own `main` on the canonical side and the copy's
+#                         default branch (refs/remotes/origin/HEAD) on the copy side, so a
+#                         wrong name or an extra entry still reads as drifted, and so does
+#                         a copy with no such line.
 #   LocalImplementations  repositories that run their own tier classifier. A copy there
 #                         that lacks canonical lines reads `local`: named in the output,
 #                         never failed, and never compared for equivalence -- the
 #                         repository owns it.
 $DeclaredVariance = @{
     'review-tier.yml' = @{
-        Mask                 = '^\s*branches:\s*\[[^\]]*\]\s*$'
+        BranchMask           = '^\s*branches:\s*\[\s*{0}\s*\]\s*$'
         LocalImplementations = @()
     }
+}
+
+# The copy's default branch, or $null when the checkout records none (no origin/HEAD).
+function Get-DefaultBranch([string] $RepoPath) {
+    $ref = git -C $RepoPath symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and "$ref" -match '^[^/]+/(?<branch>.+)$') { return $Matches['branch'] }
+    return $null
+}
+
+# The path with every link on it resolved, segment by segment (~/.agents/notes/powershell-traps.md,
+# "Convert-Path and Resolve-Path do not resolve a junction"). Resolve-Path and GetFullPath return
+# the traversed path, so ~/.claude/skills/scaffold-ci and ~/.agents/skills/scaffold-ci -- one
+# directory under two names -- compared as different places.
+function Resolve-RealPath([string] $Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $result = [IO.Path]::GetPathRoot($full)
+    foreach ($segment in $full.Substring($result.Length).Split([char[]] @([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), [StringSplitOptions]::RemoveEmptyEntries)) {
+        $result = Join-Path $result $segment
+        if (-not (Test-Path -LiteralPath $result)) { continue }
+        $target = [IO.Directory]::ResolveLinkTarget($result, $true)
+        if ($target) { $result = $target.FullName }
+    }
+    return $result.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 }
 
 $skillRoot = Split-Path -Parent $PSScriptRoot
 $SanitisedRepublications = @()
 if ($ExceptionsPath) {
-    $resolvedExceptions = (Resolve-Path -LiteralPath $ExceptionsPath -ErrorAction Stop).Path
-    $resolvedSkill = [IO.Path]::GetFullPath($skillRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $resolvedExceptions = Resolve-RealPath (Resolve-Path -LiteralPath $ExceptionsPath -ErrorAction Stop).Path
+    $resolvedSkill = Resolve-RealPath $skillRoot
     if ($resolvedExceptions.StartsWith($resolvedSkill + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Exception data must live outside the mounted skill directory.'
     }
@@ -238,10 +264,17 @@ if ($repos.Count -eq 0) {
 $rows = foreach ($asset in $assets) {
     $assetName = Split-Path -Leaf $asset.Canonical
     $variance = $DeclaredVariance[$assetName]
-    $canonicalLines = Get-ContentLines $asset.Canonical $variance.Mask
+    $canonicalMask = if ($variance) { $variance.BranchMask -f [regex]::Escape('main') } else { $null }
+    $canonicalLines = Get-ContentLines $asset.Canonical $canonicalMask
 
     foreach ($repo in $repos) {
         $copyPath = Join-Path $repo.FullName $asset.Relative
+        $copyMask = $null
+        if ($variance) {
+            $branch = Get-DefaultBranch $repo.FullName
+            # shortcut: with no origin/HEAD recorded, any ONE name is accepted; a list still drifts.
+            $copyMask = $variance.BranchMask -f $(if ($branch) { [regex]::Escape($branch) } else { '[^\s,\]]+' })
+        }
 
         if (-not (Test-Path -LiteralPath $copyPath -PathType Leaf)) {
             [pscustomobject]@{
@@ -251,7 +284,7 @@ $rows = foreach ($asset in $assets) {
             continue
         }
 
-        $comparison = Compare-AgainstCanonical $canonicalLines (Get-ContentLines $copyPath $variance.Mask)
+        $comparison = Compare-AgainstCanonical $canonicalLines (Get-ContentLines $copyPath $copyMask)
         $status = $comparison.Status
         if ($status -eq 'drifted' -and $repo.Name -in $variance.LocalImplementations) { $status = 'local' }
         [pscustomobject]@{

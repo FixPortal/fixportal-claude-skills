@@ -51,6 +51,9 @@ These are the deltas an unaided agent gets wrong. Get them right:
    before NuGet restore/build/test. CSharpier is pinned by `scaffold-dotnet`; merge its
    entry into an existing tool manifest rather than replacing Stryker. CI checks only—it
    never runs `format`. Publish/deploy jobs depend on the backend gate and do not repeat it.
+   JS/TS formatting is likewise a separate, read-only gate: the Node job runs
+   `prettier --check` (via `npm run format`) right after install, never `prettier --write`;
+   CI never mutates source.
 7. **Required PR tests have a fixed cost envelope.** One test gets a 30-second hard
    ceiling, each substantive required job gets `timeout-minutes: 10`, and substantive PR
    work targets 15 aggregate runner-minutes per commit. Count every matrix leg. Never retry
@@ -213,6 +216,10 @@ jobs:
           cache-dependency-path: src/your-ui/package-lock.json
       - name: Install
         run: npm ci
+      # The scaffold-frontend and scaffold-typescript templates ship the `format` script
+      # (`prettier --check .`). A repo not yet normalized omits this step until it adds it.
+      - name: Format (read-only)
+        run: npm run format
       # - name: Generate types        # only if a generate:*-types script exists
       #   run: npm run generate:rest-types
       - name: Lint

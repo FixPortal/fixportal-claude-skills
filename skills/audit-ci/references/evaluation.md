@@ -15,12 +15,12 @@ canonical value from `scaffold-ci` and compare.
 | Dimension | What to check | Typical finding |
 |---|---|---|
 | **Primary workflow present** | The primary workflow is the exact workflow path replacing `.github/workflows/ci.yml` in the HIGH policy list (`ci.yml` wins when several workflows are HIGH); require build + test + lint per stack | gap: no CI at all; gap: several HIGH workflows and no `ci.yml` (ambiguous primary) |
-| **CI Gate** | Run the repository's shipped `assert_gate_coverage.py` against the primary workflow; require its `Gate coverage` job to execute that checker and require zero-authority `CI Gate` semantics from the current CI workflow contract | gap: a quality job is absent from `needs`; drift: missing `if: always()`, result aggregation, gate coverage, or zero permissions |
+| **CI Gate** | Run the scaffold's own `scaffold-ci/assets/assert_gate_coverage.py` against the primary workflow, never the repository's copy (a drifted copy is repository-controlled code); require the repo's `Gate coverage` job to execute its shipped checker and require zero-authority `CI Gate` semantics from the current CI workflow contract | gap: a quality job is absent from `needs`; drift: missing `if: always()`, result aggregation, gate coverage, or zero permissions |
 | **Action pins** | compare each `uses:` against `scaffold-ci`'s pin table (re-read it — pins drift and dependabot bumps them) | drift: stale `@v4` checkout, etc. |
 | **Third-party SHA pins** | third-party actions use a valid full commit SHA, not a floating tag. Cross-check the live upstream major tag **of the action's own repo**, dereferencing an annotated tag to its commit (`refs/tags/<tag>^{}` with lightweight-tag fallback). A valid immutable pin behind the moving tag is timestamped `freshness drift`: report it, but it does not change the repository verdict. A floating tag, nonexistent commit, wrong repository, or known revoked/compromised commit remains blocking structural drift. | structural drift: `raven-actions/actionlint@v2`; freshness drift: a valid older SHA under `# v2` |
 | **First-party pin style** | first-party `actions/*` take the major tag, not a SHA (the inverse of third-party) — except the **reviewed exception** in [`scaffold-ci/assets/secret-sweep.yml`](../../scaffold-ci/assets/secret-sweep.yml), whose full-history checkout is SHA-pinned. Compare that workflow with the shipped asset; do not report its matching checkout pin as drift. | drift: an ordinary workflow mixes `actions/checkout@<sha>` with `@v7` |
 | **actionlint step** | normally the first validation step after checkout; on a cold runner consuming private npm packages, `setup-node` and `NODE_AUTH_TOKEN` must come before actionlint so its transitive install can authenticate | gap: missing; drift: private-npm actionlint runs before authentication |
-| **Workflow hygiene** | compare `.github/scripts/assert_workflow_hygiene.py` with the shipped asset and run it over every local workflow; confirm `review-policy-guard.yml` invokes it | gap: guard never executes the parser; drift: local checker differs from the shipped asset |
+| **Workflow hygiene** | compare `.github/scripts/assert_workflow_hygiene.py` with the shipped asset and run the shipped asset (not the repository's copy) over every local workflow; confirm `review-policy-guard.yml` invokes it | gap: guard never executes the parser; drift: local checker differs from the shipped asset |
 | **Concurrency** | deploy repo → flat `cancel-in-progress: false`; no-deploy → `${{ github.ref != 'refs/heads/main' }}` | drift: flat `false` on a library repo; unconditional `true` |
 | **Triggers** | [push to mainline + tags `v*`](../../scaffold-ci/references/ci-workflow.md) + `pull_request` to mainline + bare `workflow_dispatch` | drift: push builds every branch or omits tags |
 | **Tag ancestry** | for every tag-fired publish/deploy path, apply the current ancestry assertion from `scaffold-ci/references/ci-workflow.md` | drift: a `v*` tag can publish an unreviewed commit |
@@ -42,11 +42,11 @@ canonical value from `scaffold-ci` and compare.
 
 **Do not grade what the house standard does not define.** `scaffold-ci` documents
 Stryker.NET mutation, not a JS/TS mutation sibling; a reusable-workflow delegation is
-not one of its ten control surfaces. When a repo adds something the standard is silent on
+not one of its documented control surfaces. When a repo adds something the standard is silent on
 (e.g. a `mutation-web.yml` StrykerJS run), **note it as an undocumented addition** —
 do not score it gap/drift/subtract against a standard that never mentioned it.
 
-Whenever `scaffold-ci` calls a file `shipped verbatim` or `copy-only`, path presence is not
+For shipped assets governed by `scaffold-ci`'s consumer manifest gate, path presence is not
 evidence: compare content with `scripts/compare-canonical-file.ps1`. Use semantic comparison
 only where the source reference explicitly permits adaptations such as repository cron or
 comments; list each permitted field rather than treating every difference as acceptable.
@@ -58,9 +58,10 @@ executable cross-check:
 2. List completed runs for the selected primary workflow through the Actions runs API
    with full pagination. Check the `gh` exit status before parsing. For a normal cost
    check, select a successful run whose `head_sha` exactly equals the audited SHA. When
-   evaluating an over-budget exception, read the committed approval from the audited
-   tree and select the successful run matching its `run_id`; verify that run's
-   `head_sha` matches the approval. A same-branch run at another SHA is stale evidence.
+   evaluating an over-budget exception, select that same audited-head run: the committed
+   approval bounds the audited head's own measurement through its `max_minutes`, it
+   does not replace it. A same-branch run at another SHA, including the run the approval
+   names, is stale evidence.
 3. List that run's jobs through the Actions jobs API with `filter=latest` and full
    pagination. Check the `gh` exit status before parsing each response. Preserve the
    response envelope's nonnegative `total_count`, append every page's jobs, and verify
@@ -85,6 +86,9 @@ executable cross-check:
    `gate-coverage` step `env:` and passes those exemptions into
    `assert_gate_coverage.py`, so a repo declaring `GATE_EXEMPT: docker` is scored
    against its own declared exemptions rather than an empty environment.
+   The workflow policy and required job names come from the checkout while the evidence measures
+   `<sha>`, so the result carries the checkout's own `CheckoutHeadSha`. When it is known and differs from
+   `<sha>`, report the two commits as a coverage gap; do not score them as one audited commit.
    The checker maps required CI Gate job display names to every expanded Actions job,
    sums measured durations, and excludes the lightweight gate-control jobs. Missing,
    failed, incomplete, or stale evidence fails closed. A required job that concludes
@@ -97,8 +101,11 @@ executable cross-check:
    When measured required work is above the scaffold's 15-minute target, the checker
    reads owner approval from the audited repository's **committed**
    `.claude/ci-budget-approval.json` (tiered HIGH, so changing it is itself reviewed):
-   `approved: true`, nonempty `owner`, valid `approved_at`, the `head_sha` and `run_id`
-   of one successful measured ancestor run, and a file committed in the audited tree.
+   `approved: true`, nonempty `owner`, valid `approved_at`, the `head_sha` (a full
+   object id on an ancestor of the audited head) and `run_id` of the successful run the
+   owner reviewed, a positive `max_minutes`, and a file committed in the audited tree.
+   The audited head's measured minutes must not exceed `max_minutes`, so a lane that has
+   grown past the approval fails closed until the owner re-approves it.
    **Never write that object yourself** — an approval the
    auditor authors is provenance-free and leaves no durable record; this skill is
    read-only and advisory, and cannot approve its own exception. Free-form text is not

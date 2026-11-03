@@ -25,6 +25,22 @@ try {
     $approvalRepo = Join-Path $tempRoot 'approval-repo'
     New-Item -ItemType Directory -Path (Join-Path $approvalRepo '.claude') -Force | Out-Null
     function Invoke-ApprovalGit { $output = & git @args 2>&1; if ($LASTEXITCODE -ne 0) { throw "approval fixture git failed: $output" } }
+    # Over-budget evidence (18 minutes over four jobs) measured at $sha.
+    function Write-OverBudgetEvidence([string] $sha, [string] $name) {
+        $value = Get-Content -LiteralPath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') -Raw | ConvertFrom-Json
+        $value.run.head_sha = $sha
+        $path = Join-Path $tempRoot "$name.json"
+        [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 10))
+        $path
+    }
+    # A refusal must come from the guard the case names. `catch { $failed = $true }`
+    # accepted ANY exception, so a case could pass on an unrelated throw.
+    function Assert-CostFails([string] $because, [string] $expected, [hashtable] $arguments) {
+        $message = $null
+        try { & $costCheck @arguments 2>$null | Out-Null } catch { $message = $_.Exception.Message }
+        if ($null -eq $message) { throw "$($because): the cost check passed" }
+        if ($message -notmatch $expected) { throw "$($because): refused for the wrong reason: $message" }
+    }
     Invoke-ApprovalGit -C $approvalRepo init --quiet
     Invoke-ApprovalGit -C $approvalRepo config user.email fixture@example.com
     Invoke-ApprovalGit -C $approvalRepo config user.name Fixture
@@ -32,13 +48,10 @@ try {
     Invoke-ApprovalGit -C $approvalRepo add seed.txt
     Invoke-ApprovalGit -C $approvalRepo -c commit.gpgsign=false commit --quiet -m baseline
     $approvalAncestorSha = (& git -C $approvalRepo rev-parse HEAD).Trim()
-    $approvalEvidencePath = Join-Path $tempRoot 'actions-cost-approved-ancestor.json'
-    $approvalEvidence = Get-Content -LiteralPath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') -Raw | ConvertFrom-Json
-    $approvalEvidence.run.head_sha = $approvalAncestorSha
-    [IO.File]::WriteAllText($approvalEvidencePath, ($approvalEvidence | ConvertTo-Json -Depth 10))
+    # The approval names the run the owner reviewed (on an ancestor) and the most minutes
+    # accepted; the EVIDENCE always measures the audited head itself.
     $approvalTemplate = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json
     $approvalTemplate.head_sha = $approvalAncestorSha
-    $approvalTemplate.run_id = $approvalEvidence.run.id
     $validApproval = Join-Path $tempRoot 'valid-approval-template.json'
     [IO.File]::WriteAllText($validApproval, ($approvalTemplate | ConvertTo-Json -Depth 10))
     $approvalPath = Join-Path $approvalRepo '.claude/ci-budget-approval.json'
@@ -46,6 +59,9 @@ try {
     Invoke-ApprovalGit -C $approvalRepo add .claude/ci-budget-approval.json
     Invoke-ApprovalGit -C $approvalRepo -c commit.gpgsign=false commit --quiet -m approval
     $approvalCommitSha = (& git -C $approvalRepo rev-parse HEAD).Trim()
+    $approvalEvidencePath = Write-OverBudgetEvidence $approvalCommitSha 'actions-cost-approved-head'
+    $ancestorEvidencePath = Write-OverBudgetEvidence $approvalAncestorSha 'actions-cost-approved-ancestor'
+    $laneJobs = @('Backend (.NET)', 'Frontend (UI)', 'Secrets')
     $cost = & $costCheck -EvidencePath (Join-Path $fixtures 'actions-cost-compliant.json') -ExpectedHeadSha $headSha `
         -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15
     if ($cost.Status -ne 'COMPLIANT' -or $cost.AggregateMinutes -ne 12 -or $cost.CountedJobs -ne 3) {
@@ -77,35 +93,97 @@ try {
     catch { $omittedLegFailed = $true }
     if (-not $omittedLegFailed) { throw 'An omitted matrix leg passed despite the jobs total_count mismatch.' }
 
+    # Each case mutates a baseline that PASSES and must be refused by its OWN guard. The
+    # cases ran over budget with no RepositoryRoot, so even the unmutated fixture threw
+    # and any guard could be deleted with every case still green. Every case is
+    # tried before failing, so a removed guard names all the cases it covered.
+    $evidenceArguments = @{ ExpectedHeadSha = $headSha; RequiredJobNames = $laneJobs; BudgetMinutes = 60 }
+    $baseline = & $costCheck -EvidencePath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') @evidenceArguments
+    if ($baseline.Status -ne 'COMPLIANT') { throw "The invalid-evidence baseline must pass before it is mutated: $($baseline | ConvertTo-Json -Compress)" }
+    $openCases = [Collections.Generic.List[string]]::new()
     foreach ($case in @(
-        @{ Name = 'missing total_count'; Mutate = { param($value) $value.PSObject.Properties.Remove('total_count') } },
-        @{ Name = 'negative total_count'; Mutate = { param($value) $value.total_count = -1 } },
-        @{ Name = 'string total_count'; Mutate = { param($value) $value.total_count = '4' } },
-        @{ Name = 'missing run id'; Mutate = { param($value) $value.run.PSObject.Properties.Remove('id') } },
+        @{ Name = 'missing total_count'; Expect = 'invalid jobs total_count'; Mutate = { param($value) $value.PSObject.Properties.Remove('total_count') } },
+        @{ Name = 'negative total_count'; Expect = 'invalid jobs total_count'; Mutate = { param($value) $value.total_count = -1 } },
+        @{ Name = 'string total_count'; Expect = 'invalid jobs total_count'; Mutate = { param($value) $value.total_count = '4' } },
+        @{ Name = 'missing run id'; Expect = 'omitted a valid run id'; Mutate = { param($value) $value.run.PSObject.Properties.Remove('id') } },
         # `run_attempt` was read only from jobs that carried it, and it was not in the
         # evidence contract - so on canonical evidence the mixed-attempt guard had nothing
         # to read and passed over the payload it was written to refuse. Both halves are
         # pinned: the field is REQUIRED, and two attempts in one payload are refused.
-        @{ Name = 'omitted run_attempt'; Mutate = { param($value) $value.jobs[0].PSObject.Properties.Remove('run_attempt') } },
-        @{ Name = 'mixed run attempts'; Mutate = { param($value) $value.jobs[0].run_attempt = 2 } },
+        @{ Name = 'omitted run_attempt'; Expect = 'omits run_attempt'; Mutate = { param($value) $value.jobs[0].PSObject.Properties.Remove('run_attempt') } },
+        @{ Name = 'mixed run attempts'; Expect = 'mixes run attempts'; Mutate = { param($value) $value.jobs[0].run_attempt = 2 } },
         # The job `id` is the counting identity and has no fallback. While `name|started_at`
         # stood behind it, evidence collected before SKILL.md step 3 required `id` silently
         # took the lossy path -- which is precisely the payload shape most likely to collapse
         # two legs. Missing, non-numeric and non-positive are all refused. (CodeRabbit, #135.)
-        @{ Name = 'omitted job id'; Mutate = { param($value) $value.jobs[1].PSObject.Properties.Remove('id') } },
-        @{ Name = 'null job id'; Mutate = { param($value) $value.jobs[1].id = $null } },
-        @{ Name = 'non-numeric job id'; Mutate = { param($value) $value.jobs[1].id = 'abc' } },
-        @{ Name = 'zero job id'; Mutate = { param($value) $value.jobs[1].id = 0 } },
-        @{ Name = 'negative job id'; Mutate = { param($value) $value.jobs[1].id = -3 } }
+        @{ Name = 'omitted job id'; Expect = 'omitted a valid Actions job id'; Mutate = { param($value) $value.jobs[1].PSObject.Properties.Remove('id') } },
+        @{ Name = 'null job id'; Expect = 'omitted a valid Actions job id'; Mutate = { param($value) $value.jobs[1].id = $null } },
+        @{ Name = 'non-numeric job id'; Expect = 'omitted a valid Actions job id'; Mutate = { param($value) $value.jobs[1].id = 'abc' } },
+        @{ Name = 'zero job id'; Expect = 'omitted a valid Actions job id'; Mutate = { param($value) $value.jobs[1].id = 0 } },
+        @{ Name = 'negative job id'; Expect = 'omitted a valid Actions job id'; Mutate = { param($value) $value.jobs[1].id = -3 } }
     )) {
         $invalidEvidence = Get-Content -LiteralPath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') -Raw | ConvertFrom-Json
         & $case.Mutate $invalidEvidence
         $invalidEvidencePath = Join-Path $tempRoot (($case.Name -replace ' ', '-') + '.json')
         [IO.File]::WriteAllText($invalidEvidencePath, ($invalidEvidence | ConvertTo-Json -Depth 10))
-        $invalidEvidenceFailed = $false
-        try { & $costCheck -EvidencePath $invalidEvidencePath -ExpectedHeadSha $headSha -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -ApprovalPath $validApproval 2>$null | Out-Null }
-        catch { $invalidEvidenceFailed = $true }
-        if (-not $invalidEvidenceFailed) { throw "Invalid Actions evidence failed open: $($case.Name)" }
+        $message = $null
+        try { & $costCheck -EvidencePath $invalidEvidencePath @evidenceArguments 2>$null | Out-Null }
+        catch { $message = $_.Exception.Message }
+        if ($null -eq $message) { $openCases.Add("$($case.Name): passed") }
+        elseif ($message -notmatch $case.Expect) { $openCases.Add("$($case.Name): refused for the wrong reason: $message") }
+    }
+    if ($openCases.Count) { throw "Invalid Actions evidence was not refused by its own guard:`n  $($openCases -join "`n  ")" }
+
+    # Each job belongs to exactly ONE required name. Otherwise a shorter required `Backend`
+    # claims the job `Backend (integration)` as one of its legs, and a required `Backend`
+    # absent from the evidence passes on another job's measurement.
+    function Write-JobEvidence([string] $name, [object[]] $jobList) {
+        $value = [pscustomobject]@{
+            run = [pscustomobject]@{ id = 4242; head_sha = $headSha; conclusion = 'success' }
+            total_count = $jobList.Count
+            jobs = $jobList
+        }
+        $path = Join-Path $tempRoot "$name.json"
+        [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 10))
+        $path
+    }
+    function New-EvidenceJob([string] $name, [long] $id, [string] $conclusion = 'success', [string] $started = '2026-08-26T10:00:00Z', [string] $completed = '2026-08-26T10:02:00Z') {
+        [pscustomobject]@{ id = $id; name = $name; started_at = $started; completed_at = $completed; conclusion = $conclusion; run_attempt = 1 }
+    }
+    $nestedNames = @('Backend', 'Backend (integration)')
+    $absorbedPath = Write-JobEvidence 'absorbed-shorter-name' @((New-EvidenceJob 'Backend (integration)' 2001))
+    Assert-CostFails 'A required job absent from the evidence was satisfied by a longer job name' "omitted job 'Backend'" `
+        @{ EvidencePath = $absorbedPath; ExpectedHeadSha = $headSha; RequiredJobNames = $nestedNames; BudgetMinutes = 60 }
+    $bothPresentPath = Write-JobEvidence 'nested-names-present' @((New-EvidenceJob 'Backend (unit)' 2001), (New-EvidenceJob 'Backend (integration)' 2002))
+    $bothPresent = & $costCheck -EvidencePath $bothPresentPath -ExpectedHeadSha $headSha -RequiredJobNames $nestedNames -BudgetMinutes 60
+    if ($bothPresent.CountedJobs -ne 2 -or $bothPresent.AggregateMinutes -ne 4) { throw "Nested required names were miscounted: $($bothPresent | ConvertTo-Json -Compress)" }
+
+    # The literal text AFTER an expression is part of the name. Cutting at the first
+    # expression reduced `Frontend (${{ matrix.node }}) tests` to `Frontend`, which claimed
+    # an unrelated `Frontend (22) lint` as one of its legs.
+    $templateNames = @('Frontend (${{ matrix.node }}) tests')
+    $templatePath = Write-JobEvidence 'template-suffix' @((New-EvidenceJob 'Frontend (22) tests' 2101), (New-EvidenceJob 'Frontend (22) lint' 2102))
+    $template = & $costCheck -EvidencePath $templatePath -ExpectedHeadSha $headSha -RequiredJobNames $templateNames -BudgetMinutes 60
+    if ($template.CountedJobs -ne 1 -or $template.AggregateMinutes -ne 2) { throw "A matrix name template claimed a job whose literal suffix differs: $($template | ConvertTo-Json -Compress)" }
+    $lintOnlyPath = Write-JobEvidence 'template-suffix-absent' @((New-EvidenceJob 'Frontend (22) lint' 2102))
+    Assert-CostFails 'A matrix name template was satisfied by a job with a different literal suffix' 'omitted job' `
+        @{ EvidencePath = $lintOnlyPath; ExpectedHeadSha = $headSha; RequiredJobNames = $templateNames; BudgetMinutes = 60 }
+
+    # A skipped required job contributes no minutes and is named in SkippedJobs, so it
+    # is not a COUNTED job. The timestamps are the real API shape for a job skipped
+    # by `if:` -- both present, completion one second BEFORE start (observed on
+    # a consumer CI run, 2026-11-01).
+    $skippedPath = Write-JobEvidence 'skipped-required-job' @(
+        (New-EvidenceJob 'Backend (.NET)' 2201),
+        (New-EvidenceJob 'Secrets' 2202 'skipped' '2026-08-26T10:41:30Z' '2026-08-26T10:41:29Z'))
+    $skipped = & $costCheck -EvidencePath $skippedPath -ExpectedHeadSha $headSha -RequiredJobNames @('Backend (.NET)', 'Secrets') -BudgetMinutes 60
+    if ($skipped.CountedJobs -ne 1 -or (@($skipped.SkippedJobs) -join ',') -ne 'Secrets' -or $skipped.AggregateMinutes -ne 2) {
+        throw "A skipped required job was counted as measured: $($skipped | ConvertTo-Json -Compress)"
+    }
+
+    # -ApprovalPath could only ever equal the committed path RepositoryRoot already names.
+    foreach ($script in $costCheck, $contractCheck) {
+        if ((Get-Command -Name $script).Parameters.ContainsKey('ApprovalPath')) { throw "$script still declares the redundant -ApprovalPath parameter." }
     }
 
     # Two required legs may share a display NAME and a start SECOND - GitHub permits two
@@ -127,26 +205,39 @@ try {
 
     $approved = & $costCheck -EvidencePath $approvalEvidencePath -ExpectedHeadSha $approvalCommitSha `
         -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo
-    if ($approved.Status -ne 'APPROVED_EXCEPTION' -or $approved.AggregateMinutes -ne 18 -or $approved.CountedJobs -ne 4) {
+    if ($approved.Status -ne 'APPROVED_EXCEPTION' -or $approved.AggregateMinutes -ne 18 -or $approved.CountedJobs -ne 4 -or
+        $approved.MeasuredHeadSha -ne $approvalCommitSha) {
         throw "Approved measured exception was misclassified: $($approved | ConvertTo-Json -Compress)"
     }
 
-    $unapprovedTreeFailed = $false
-    try {
-        & $costCheck -EvidencePath $approvalEvidencePath -ExpectedHeadSha $approvalAncestorSha `
-            -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo 2>$null | Out-Null
-    }
-    catch { $unapprovedTreeFailed = $_.Exception.Message -match 'not present in the audited commit tree' }
-    if (-not $unapprovedTreeFailed) { throw 'Approval from local HEAD was accepted when ExpectedHeadSha omitted it.' }
+    # The approved ANCESTOR run's evidence must not stand for the audited HEAD. It did:
+    # after one approval every later HEAD came back APPROVED_EXCEPTION on the old run's
+    # minutes, however much the lane had grown, with HEAD reported as measured.
+    Assert-CostFails 'An approved ancestor run stood in for the unmeasured audited HEAD' 'head_sha is stale' `
+        @{ EvidencePath = $ancestorEvidencePath; ExpectedHeadSha = $approvalCommitSha; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
 
+    Assert-CostFails 'Approval from local HEAD was accepted when ExpectedHeadSha omitted it' 'not present in the audited commit tree' `
+        @{ EvidencePath = $ancestorEvidencePath; ExpectedHeadSha = $approvalAncestorSha; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
+
+    function Write-ApprovalVariant([string] $path, [scriptblock] $change) {
+        $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json
+        & $change $value
+        [IO.File]::WriteAllText($path, ($value | ConvertTo-Json))
+    }
     foreach ($case in @(
-        @{ Name = 'malformed approval'; Mutate = { param($path) [IO.File]::WriteAllText($path, 'banana') } },
-        @{ Name = 'approval missing owner'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.PSObject.Properties.Remove('owner'); [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } },
-        @{ Name = 'approval missing date'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.PSObject.Properties.Remove('approved_at'); [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } },
-        @{ Name = 'approval invalid date'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.approved_at = 'banana'; [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } },
-        @{ Name = 'approval not approved'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.approved = $false; [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } },
-        @{ Name = 'approval stale SHA'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.head_sha = '2222222222222222222222222222222222222222'; [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } },
-        @{ Name = 'approval stale run'; Mutate = { param($path) $value = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json; $value.run_id = 9999; [IO.File]::WriteAllText($path, ($value | ConvertTo-Json)) } }
+        @{ Name = 'malformed approval'; Expect = 'malformed JSON'; Mutate = { param($path) [IO.File]::WriteAllText($path, 'banana') } },
+        @{ Name = 'approval missing owner'; Expect = 'omitted owner'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.PSObject.Properties.Remove('owner') } } },
+        @{ Name = 'approval missing date'; Expect = 'omitted approved_at'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.PSObject.Properties.Remove('approved_at') } } },
+        @{ Name = 'approval invalid date'; Expect = 'invalid approved_at'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.approved_at = 'banana' } } },
+        @{ Name = 'approval not approved'; Expect = 'not explicitly approved'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.approved = $false } } },
+        @{ Name = 'approval stale SHA'; Expect = 'ancestor of the audited HEAD'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.head_sha = '2222222222222222222222222222222222222222' } } },
+        @{ Name = 'approval head_sha not an object id'; Expect = 'identify the reviewed run head_sha'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.head_sha = '--output=pwned' } } },
+        @{ Name = 'approval invalid run_id'; Expect = 'run_id is missing or invalid'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.run_id = 'abc' } } },
+        # The bound on HEAD's own measurement. Without it an approval is permanent.
+        @{ Name = 'approval missing max_minutes'; Expect = 'omitted max_minutes'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.PSObject.Properties.Remove('max_minutes') } } },
+        @{ Name = 'approval zero max_minutes'; Expect = 'max_minutes must be a positive number'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.max_minutes = 0 } } },
+        @{ Name = 'approval string max_minutes'; Expect = 'max_minutes must be a positive number'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.max_minutes = '30' } } },
+        @{ Name = 'lane grew past the approval'; Expect = 'above the approved max_minutes'; Mutate = { param($path) Write-ApprovalVariant $path { param($v) $v.max_minutes = 17 } } }
     )) {
         $invalidApprovalPath = Join-Path $tempRoot (($case.Name -replace ' ', '-') + '.json')
         & $case.Mutate $invalidApprovalPath
@@ -154,20 +245,39 @@ try {
         Invoke-ApprovalGit -C $approvalRepo add .claude/ci-budget-approval.json
         Invoke-ApprovalGit -C $approvalRepo -c commit.gpgsign=false commit --quiet -m "invalid $($case.Name)"
         $invalidApprovalHead = (& git -C $approvalRepo rev-parse HEAD).Trim()
-        $approvalFailed = $false
-        try { & $costCheck -EvidencePath $approvalEvidencePath -ExpectedHeadSha $invalidApprovalHead -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo 2>$null | Out-Null }
-        catch { $approvalFailed = $true }
-        if (-not $approvalFailed) { throw "Invalid approval evidence failed open: $($case.Name)" }
+        # Measured AT the audited head, so only the approval itself can refuse it.
+        $invalidHeadEvidence = Write-OverBudgetEvidence $invalidApprovalHead (($case.Name -replace ' ', '-') + '-evidence')
+        Assert-CostFails "Invalid approval evidence ($($case.Name))" $case.Expect `
+            @{ EvidencePath = $invalidHeadEvidence; ExpectedHeadSha = $invalidApprovalHead; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
     }
     Invoke-ApprovalGit -C $approvalRepo rm .claude/ci-budget-approval.json
     Invoke-ApprovalGit -C $approvalRepo -c commit.gpgsign=false commit --quiet -m remove-approval
     New-Item -ItemType Directory -Path (Join-Path $approvalRepo '.claude') -Force | Out-Null
     Copy-Item -LiteralPath $validApproval -Destination $approvalPath
     $untrackedApprovalHead = (& git -C $approvalRepo rev-parse HEAD).Trim()
-    $untrackedApprovalFailed = $false
-    try { & $costCheck -EvidencePath $approvalEvidencePath -ExpectedHeadSha $untrackedApprovalHead -RequiredJobNames @('Backend (.NET)', 'Frontend (UI)', 'Secrets') -BudgetMinutes 15 -RepositoryRoot $approvalRepo 2>$null | Out-Null }
-    catch { $untrackedApprovalFailed = $true }
-    if (-not $untrackedApprovalFailed) { throw 'An untracked CI-budget approval passed the audit.' }
+    $untrackedEvidence = Write-OverBudgetEvidence $untrackedApprovalHead 'untracked-approval-evidence'
+    Assert-CostFails 'An untracked CI-budget approval passed the audit' 'not present in the audited commit tree' `
+        @{ EvidencePath = $untrackedEvidence; ExpectedHeadSha = $untrackedApprovalHead; RequiredJobNames = $laneJobs; BudgetMinutes = 15; RepositoryRoot = $approvalRepo }
+
+    # A SHA-256 repository writes 64-hex object ids, and the tree-entry pattern accepted
+    # only 40, so a valid committed approval there was refused as "not a regular file".
+    $sha256Repo = Join-Path $tempRoot 'approval-repo-sha256'
+    New-Item -ItemType Directory -Path (Join-Path $sha256Repo '.claude') -Force | Out-Null
+    Invoke-ApprovalGit -C $sha256Repo init --quiet --object-format=sha256
+    Invoke-ApprovalGit -C $sha256Repo config user.email fixture@example.com
+    Invoke-ApprovalGit -C $sha256Repo config user.name Fixture
+    Set-Content -LiteralPath (Join-Path $sha256Repo seed.txt) -Value baseline
+    Invoke-ApprovalGit -C $sha256Repo add seed.txt
+    Invoke-ApprovalGit -C $sha256Repo -c commit.gpgsign=false commit --quiet -m baseline
+    $sha256Ancestor = (& git -C $sha256Repo rev-parse HEAD).Trim()
+    if ($sha256Ancestor.Length -ne 64) { throw "the SHA-256 fixture produced a $($sha256Ancestor.Length)-character id; the case would be vacuous" }
+    Write-ApprovalVariant (Join-Path $sha256Repo '.claude/ci-budget-approval.json') { param($v) $v.head_sha = $sha256Ancestor }
+    Invoke-ApprovalGit -C $sha256Repo add .claude/ci-budget-approval.json
+    Invoke-ApprovalGit -C $sha256Repo -c commit.gpgsign=false commit --quiet -m approval
+    $sha256Head = (& git -C $sha256Repo rev-parse HEAD).Trim()
+    $sha256Evidence = Write-OverBudgetEvidence $sha256Head 'sha256-approval-evidence'
+    $sha256Result = & $costCheck -EvidencePath $sha256Evidence -ExpectedHeadSha $sha256Head -RequiredJobNames $laneJobs -BudgetMinutes 15 -RepositoryRoot $sha256Repo
+    if ($sha256Result.Status -ne 'APPROVED_EXCEPTION') { throw "A committed approval in a SHA-256 repository was refused: $($sha256Result | ConvertTo-Json -Compress)" }
 
     New-Item -ItemType Directory -Path (Join-Path $tempRoot '.github/workflows') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $tempRoot '.github/workflows/ci.yml') -Value 'name: ci'
@@ -197,7 +307,9 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $repo '.github/canonical-assets.json') -Value '{}'
     Set-Content -LiteralPath (Join-Path $repo '.claude/ci-budget-approval.json') -Value '{}'
-    Set-Content -LiteralPath (Join-Path $repo '.coderabbit.yaml') -Value 'reviews:`n  auto_review:`n    enabled: false'
+    # Double-quoted: single quotes wrote a literal backtick-n, not newlines.
+    Set-Content -LiteralPath (Join-Path $repo '.coderabbit.yaml') -Value "reviews:`n  auto_review:`n    enabled: false"
+    if ([IO.File]::ReadAllText((Join-Path $repo '.coderabbit.yaml')).Contains('`n')) { throw 'the .coderabbit.yaml fixture holds a literal backtick-n instead of newlines' }
     Copy-Item (Join-Path $scaffoldRoot 'assets/assert_gate_coverage.py') (Join-Path $repo '.github/scripts/assert_gate_coverage.py')
     Copy-Item (Join-Path $scaffoldRoot 'assets/assert_workflow_hygiene.py') (Join-Path $repo '.github/scripts/assert_workflow_hygiene.py')
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy-guard.yml') (Join-Path $repo '.github/workflows/review-policy-guard.yml')
@@ -406,7 +518,73 @@ jobs:
     try { & $contractCheck -RepositoryRoot $repo -ScaffoldRoot $scaffoldRoot -ExpectedHeadSha $headSha 2>$null | Out-Null }
     catch { $missingContractEvidenceFailed = $true }
     if (-not $missingContractEvidenceFailed) { throw 'The scaffold contract passed without measured Actions evidence.' }
-    & $contractCheck @contractArguments | Out-Null
+    $contractResult = & $contractCheck @contractArguments
+    # Job names come from this checkout while the evidence measures ExpectedHeadSha, so
+    # the result records the checkout's own HEAD.
+    if ($contractResult.CheckoutHeadSha -ne $repoApprovalAncestor) {
+        throw "The scaffold contract did not record the checkout HEAD: '$($contractResult.CheckoutHeadSha)' vs '$repoApprovalAncestor'"
+    }
+    function Assert-ContractFails([string] $because, [string] $expected) {
+        $message = $null
+        try { & $contractCheck @contractArguments 2>$null | Out-Null } catch { $message = "$_" }
+        if ($null -eq $message) { throw "$($because): the contract passed" }
+        if ($message -notmatch $expected) { throw "$($because): failed for the wrong reason: $message" }
+    }
+
+    # The audited repository's OWN gate scripts must never run. A canonical-compare
+    # failure is recorded rather than thrown, and the drifted copies then executed inside
+    # the auditor's environment. The scaffold's copies run instead.
+    $gateScriptPath = Join-Path $repo '.github/scripts/assert_gate_coverage.py'
+    $hygieneScriptPath = Join-Path $repo '.github/scripts/assert_workflow_hygiene.py'
+    $repoCodeSentinel = Join-Path $tempRoot 'audited-repo-code-ran.txt'
+    $hostileScript = "open(r'$repoCodeSentinel', 'a').write('ran')`n"
+    [IO.File]::WriteAllText($gateScriptPath, $hostileScript)
+    [IO.File]::WriteAllText($hygieneScriptPath, $hostileScript)
+    Assert-ContractFails 'Drifted gate scripts' 'Scaffold asset drift: \.github/scripts/assert_gate_coverage\.py'
+    Copy-Item (Join-Path $scaffoldRoot 'assets/assert_gate_coverage.py') $gateScriptPath -Force
+    Copy-Item (Join-Path $scaffoldRoot 'assets/assert_workflow_hygiene.py') $hygieneScriptPath -Force
+    if (Test-Path -LiteralPath $repoCodeSentinel) { throw "The audit executed the audited repository's own drifted gate script." }
+
+    # A CRASHING hygiene checker prints a traceback with no ::error line, and the failure
+    # read "Workflow hygiene failed: " with nothing after it. Both copies crash, so
+    # the case holds whichever copy the audit runs.
+    $crashScaffold = Join-Path $tempRoot 'crash-scaffold'
+    Copy-Item -LiteralPath $scaffoldRoot -Destination $crashScaffold -Recurse
+    $crasher = "raise RuntimeError('hygiene-crash-marker')`n"
+    [IO.File]::WriteAllText((Join-Path $crashScaffold 'assets/assert_workflow_hygiene.py'), $crasher)
+    [IO.File]::WriteAllText($hygieneScriptPath, $crasher)
+    $crashMessage = $null
+    $crashArguments = $contractArguments.Clone()
+    $crashArguments.ScaffoldRoot = $crashScaffold
+    try { & $contractCheck @crashArguments 2>$null | Out-Null } catch { $crashMessage = "$_" }
+    Copy-Item (Join-Path $scaffoldRoot 'assets/assert_workflow_hygiene.py') $hygieneScriptPath -Force
+    if ($crashMessage -notmatch 'Workflow hygiene failed: .*hygiene-crash-marker') {
+        throw "A crashing hygiene checker was reported without its output: $crashMessage"
+    }
+    # TWO independent defects in one tree must BOTH be reported, with a non-zero exit. The
+    # checker stopped at its first throw, so an operator fixing one finding found the next
+    # only on the following run.
+    $hygienePath = Join-Path $repo '.github/scripts/assert_workflow_hygiene.py'
+    $hygieneOriginal = [IO.File]::ReadAllText($hygienePath)
+    [IO.File]::WriteAllText($hygienePath, $hygieneOriginal + "# drift`n")
+    $alwaysPublish = $release.Replace("      - run: gh release create", "      - if: always()`n        run: gh release create")
+    if ($alwaysPublish -eq $release) { throw 'the always() publish fixture mutated nothing; the case would be vacuous' }
+    [IO.File]::WriteAllText($releasePath, $alwaysPublish.Replace("`r`n", "`n"))
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $twoFailureOutput = (& pwsh -NoProfile -File $contractCheck -RepositoryRoot $repo -ScaffoldRoot $scaffoldRoot `
+            -ActionsEvidencePath $costEvidence -ExpectedHeadSha $headSha 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    $twoFailureExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedPreference
+    [IO.File]::WriteAllText($hygienePath, $hygieneOriginal)
+    [IO.File]::WriteAllText($releasePath, $release.Replace("`r`n", "`n"))
+    if ($twoFailureExit -eq 0) { throw 'A tree with two contract failures exited zero.' }
+    # pwsh on a CI runner word-wraps the error record into "      | " gutter lines, so
+    # flatten ANSI, the gutter and whitespace before matching.
+    $twoFailureOutput = $twoFailureOutput -replace '\x1b\[[0-9;]*m', '' -replace '\s*\|\s+', ' ' -replace '\s+', ' '
+    foreach ($expected in 'Scaffold asset drift: .github/scripts/assert_workflow_hygiene.py', "job 'deliver' in 'release.yml' has a publish/deploy step that runs regardless") {
+        if (-not $twoFailureOutput.Contains($expected)) { throw "Two-failure run did not report '$expected'. Output: $twoFailureOutput" }
+    }
     if ($env:PRIVILEGED_TRIGGER_NO_CHECKOUT -ne 'caller-sentinel') {
         throw "The scaffold contract did not restore the caller's PRIVILEGED_TRIGGER_NO_CHECKOUT environment value."
     }
@@ -426,11 +604,27 @@ jobs:
     catch { $branchAndTagFailed = $true }
     if (-not $branchAndTagFailed) { throw 'A tag-capable branch-and-tag job skipped ancestry validation.' }
     [IO.File]::WriteAllText($releasePath, $release.Replace("`r`n", "`n"))
-    $mainlineNameGate = $release.Replace("  ship:`n", "  ship:`n    if: github.ref_name == 'main'`n")
+    $shipLacksAncestry = "job 'ship' in 'release\.yml' must have exactly one ancestry assertion"
+    $mainlineNameGate = $release.Replace("  ship:`n", "  ship:`n    if: github.ref_name == 'main' && github.ref_type == 'branch'`n")
     $mainlineNameGate = Remove-FirstShipAncestry $mainlineNameGate
     [IO.File]::WriteAllText($releasePath, $mainlineNameGate.Replace("`r`n", "`n"))
     try { & $contractCheck @contractArguments | Out-Null }
     catch { throw "A github.ref_name mainline-only job was incorrectly treated as tag-capable: $_" }
+    # `ref_name == 'main'` ALONE is also true for a TAG named `main`, so it does not prove
+    # a branch-only job.
+    $refNameOnly = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: github.ref_name == 'main'`n")
+    [IO.File]::WriteAllText($releasePath, $refNameOnly.Replace("`r`n", "`n"))
+    Assert-ContractFails 'A ref_name-only mainline job (true for a tag named main) skipped ancestry validation' $shipLacksAncestry
+    # A NEGATED mainline comparison has no `||` and is true on every tag.
+    $negatedGate = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: `${{ !(github.ref == 'refs/heads/main') }}`n")
+    [IO.File]::WriteAllText($releasePath, $negatedGate.Replace("`r`n", "`n"))
+    Assert-ContractFails 'A negated mainline guard skipped ancestry validation' $shipLacksAncestry
+    # ...but a negated FUNCTION call is not a negated group: `!cancelled()` beside the
+    # mainline comparison is still branch-only and must not be inspected as tag-fired.
+    $notCancelledGate = Remove-FirstShipAncestry $release.Replace("  ship:`n", "  ship:`n    if: `${{ !cancelled() && github.ref == 'refs/heads/main' }}`n")
+    [IO.File]::WriteAllText($releasePath, $notCancelledGate.Replace("`r`n", "`n"))
+    try { & $contractCheck @contractArguments | Out-Null }
+    catch { throw "A !cancelled() mainline-only job was incorrectly treated as tag-capable: $_" }
     $tagIgnoreOnly = $release.Replace("      - 'v*'", "    tags-ignore: ['v*']")
     $tagIgnoreOnly = Remove-FirstShipAncestry $tagIgnoreOnly
     [IO.File]::WriteAllText($releasePath, $tagIgnoreOnly.Replace("`r`n", "`n"))
@@ -440,7 +634,7 @@ jobs:
     if (-not $tagIgnoreFailed) { throw 'A tags-ignore-only publish path without ancestry validation passed.' }
     # GitHub does not evaluate paths/paths-ignore for tag pushes, so a push block carrying
     # ONLY a path filter fires on every tag -- yet it read as "filtered" and skipped the
-    # ancestry inspection. (CodeRabbit, public mirror PR #124.)
+    # ancestry inspection. (code review.)
     $pathsOnly = $release.Replace("    branches:`n      - main`n    tags:`n      - 'v*'`n", "    paths: ['src/**']`n")
     if ($pathsOnly -eq $release) { throw 'the paths-only push fixture mutated nothing; the case would be vacuous' }
     $pathsOnly = Remove-FirstShipAncestry $pathsOnly
@@ -461,18 +655,12 @@ jobs:
     if (-not $alwaysJobFailed) { throw 'A mainline-or-always() job without ancestry validation passed.' }
     [IO.File]::WriteAllText($releasePath, $release.Replace("`r`n", "`n"))
     $approvedContractArguments = $contractArguments.Clone()
-    $repoApprovalEvidencePath = Join-Path $tempRoot 'repo-approval-evidence.json'
-    $repoApprovalEvidence = Get-Content -LiteralPath (Join-Path $fixtures 'actions-cost-over-budget-matrix.json') -Raw | ConvertFrom-Json
-    $repoApprovalEvidence.run.head_sha = $repoApprovalAncestor
-    [IO.File]::WriteAllText($repoApprovalEvidencePath, ($repoApprovalEvidence | ConvertTo-Json -Depth 10))
-    $repoApproval = Get-Content -LiteralPath $validApproval -Raw | ConvertFrom-Json
-    $repoApproval.head_sha = $repoApprovalAncestor
-    $repoApproval.run_id = $repoApprovalEvidence.run.id
-    [IO.File]::WriteAllText((Join-Path $repo '.claude/ci-budget-approval.json'), ($repoApproval | ConvertTo-Json -Depth 10))
+    Write-ApprovalVariant (Join-Path $repo '.claude/ci-budget-approval.json') { param($v) $v.head_sha = $repoApprovalAncestor }
     Invoke-ApprovalGit -C $repo add .claude/ci-budget-approval.json
     Invoke-ApprovalGit -C $repo -c commit.gpgsign=false commit --quiet -m approve-budget
     $approvedContractArguments.ExpectedHeadSha = (& git -C $repo rev-parse HEAD).Trim()
-    $approvedContractArguments.ActionsEvidencePath = $repoApprovalEvidencePath
+    # Measured at the audited head; the approval names the ancestor run it reviewed.
+    $approvedContractArguments.ActionsEvidencePath = Write-OverBudgetEvidence $approvedContractArguments.ExpectedHeadSha 'repo-approval-evidence'
     $approvedContract = & $contractCheck @approvedContractArguments
     if ($approvedContract.Status -ne 'APPROVED_EXCEPTION') {
         throw "Approved exception was not propagated to the scaffold contract: $($approvedContract.Status)"
@@ -592,6 +780,37 @@ jobs:
 
     $reusableCaller = Join-Path $repo '.github/workflows/reusable-caller.yml'
     $reusableDeploy = Join-Path $repo '.github/workflows/_deploy.yml'
+    # A MAIN-GATED caller does not make its callee tag-reachable. The callee was queued
+    # as tag-fired before the caller's mainline skip ran, so it failed for lacking an
+    # ancestry assertion it can never need.
+    @'
+name: Reusable caller
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/_deploy.yml
+'@ | Set-Content -LiteralPath $reusableCaller
+    @'
+name: Deploy
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: docker push example/image
+'@ | Set-Content -LiteralPath $reusableDeploy
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "A main-gated caller made its reusable callee tag-reachable: $_" }
     @'
 name: Reusable caller
 on:
@@ -691,6 +910,29 @@ jobs:
     Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy.example.json') (Join-Path $repo '.claude/review-policy.json') -Force
     $guardPath = Join-Path $repo '.github/workflows/review-policy-guard.yml'
     $guard = Get-Content -LiteralPath $guardPath -Raw
+
+    # A primary workflow whose filename ends another filename on the same guard line.
+    # Normalising `guard.yml` back to `ci.yml` by raw substring also rewrote
+    # `review-policy-guard.yml`, so a correctly adapted guard read as drift.
+    $guardNamedPrimary = Join-Path $repo '.github/workflows/guard.yml'
+    [IO.File]::WriteAllText($guardNamedPrimary, $workflow.Replace('.github/workflows/ci.yml', '.github/workflows/guard.yml').Replace("`r`n", "`n"))
+    $guardPolicy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json
+    $guardPolicy.high = @($guardPolicy.high | ForEach-Object { if ($_ -eq '.github/workflows/ci.yml') { '.github/workflows/guard.yml' } else { $_ } })
+    $guardPolicy | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $policyPath
+    $guardLf = $guard.Replace("`r`n", "`n")
+    $adaptedForGuardPrimary = @($guardLf -split "`n" | ForEach-Object {
+            if ($_ -match '^\s*\.github/workflows/') { $_.Replace('.github/workflows/ci.yml', '.github/workflows/guard.yml') } else { $_ }
+        }) -join "`n"
+    if ($adaptedForGuardPrimary -eq $guardLf -or $adaptedForGuardPrimary -notmatch 'workflows/guard\.yml \.github/workflows/review-policy-guard\.yml') {
+        throw 'the guard.yml primary fixture does not put both names on one guard line; the case would be vacuous'
+    }
+    [IO.File]::WriteAllText($guardPath, $adaptedForGuardPrimary)
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "a primary workflow named guard.yml failed the audit (normalisation rewrote review-policy-guard.yml?): $_" }
+    # Moved aside, not deleted: a .off file is no workflow.
+    Move-Item -LiteralPath $guardNamedPrimary -Destination "$guardNamedPrimary.off"
+    Copy-Item (Join-Path $scaffoldRoot 'assets/review-policy.example.json') $policyPath -Force
+    [IO.File]::WriteAllText($guardPath, $guardLf)
 
     # Permitted differences are normalised in the FIELDS that carry them -- the trigger
     # branches and the workflow paths -- not by a global text replace. Replacing every

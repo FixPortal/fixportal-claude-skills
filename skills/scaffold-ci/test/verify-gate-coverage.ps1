@@ -27,9 +27,11 @@ if (-not $python) {
 $oldExempt = $env:GATE_EXEMPT
 $oldConditionalExempt = $env:GATE_CONDITIONAL_EXEMPT
 $oldFileExempt = $env:GATE_FILE_EXEMPT
+$oldStepExempt = $env:GATE_STEP_EXEMPT
 $env:GATE_EXEMPT = ''
 $env:GATE_CONDITIONAL_EXEMPT = ''
 $env:GATE_FILE_EXEMPT = ''
+$env:GATE_STEP_EXEMPT = ''
 
 function Invoke-Gate([string] $yaml, [switch] $Bom) {
     $workflow = Join-Path $root 'ci.yml'
@@ -502,7 +504,8 @@ jobs:
         #     actually takes, so accepting them let a gate stay green over a failed lane.
         #     The gate step's own `if:` has already decided that an upstream job failed;
         #     a second test inside the body can only re-decide it the wrong way.
-        'a test guarding the exit with ||'               = '[ -z "$x" ] || exit 1'
+        # Quoted: a bare leading `[` is a YAML flow sequence, so the file would not parse at all.
+        'a test guarding the exit with ||'               = '''[ -z "$x" ] || exit 1'''
         'a test guarding the exit with &&'               = 'test -n "$x" && exit 1'
         # The `if <test>; then exit 1; fi` house forms were carried as a stated residual
         # for exactly as long as a repo still shipped one. They exit ZERO when the test
@@ -2735,8 +2738,28 @@ jobs:
     if ($bashEnvPayload.Code -ne 0) {
         throw "a BASH_ENV: line inside a run body must not trip the env-key guard:`n$($bashEnvPayload.Output)"
     }
-    # ...while a real env key still fails.
+    # ...while a real env key on the gate job still fails.
     $bashEnvKey = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      BASH_ENV: /tmp/override
+    steps:
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+        run: exit 1
+'@
+    if ($bashEnvKey.Code -eq 0 -or $bashEnvKey.Output -notmatch 'BASH_ENV') {
+        throw "a real BASH_ENV env key must still fail:`n$($bashEnvKey.Output)"
+    }
+    # A feeder job's env does not reach the gate job's shell, so it must not turn the gate red.
+    $bashEnvFeeder = Invoke-Gate @'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -2752,23 +2775,24 @@ jobs:
       - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
-    if ($bashEnvKey.Code -eq 0 -or $bashEnvKey.Output -notmatch 'BASH_ENV') {
-        throw "a real BASH_ENV env key must still fail:`n$($bashEnvKey.Output)"
+    if ($bashEnvFeeder.Code -ne 0) {
+        throw "a feeder-only BASH_ENV must not fail the gate:`n$($bashEnvFeeder.Output)"
     }
     # A QUOTED env key is the same key -- every other key this checker reads admits quotes.
+    # It sits on the gate job: a feeder job's env does not reach the gate's shell (R-D M7).
     foreach ($key in '"BASH_ENV"', "'BASH_ENV'") {
         $quotedBashEnv = Invoke-Gate @"
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ${key}: /tmp/override
     steps:
       - run: echo build
   ci-gate:
     if: always()
     needs: [build]
     runs-on: ubuntu-latest
+    env:
+      ${key}: /tmp/override
     steps:
       - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
@@ -2782,11 +2806,11 @@ jobs:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env: { BASH_ENV: /tmp/override }
   ci-gate:
     if: always()
     needs: [build]
     runs-on: ubuntu-latest
+    env: { BASH_ENV: /tmp/override }
     steps:
       - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
@@ -2910,14 +2934,14 @@ jobs:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env: { PATH: /tmp/bin,
-           BASH_ENV: /tmp/override }
     steps:
       - run: echo build
   ci-gate:
     if: always()
     needs: [build]
     runs-on: ubuntu-latest
+    env: { PATH: /tmp/bin,
+           BASH_ENV: /tmp/override }
     steps:
       - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
@@ -3165,9 +3189,12 @@ jobs:
         }
     }
 
-    # success(), failure() and cancelled() depend on the run, so they must NOT fold -- doing
-    # so would be the fail-OPEN direction. `success() && <coverage>` is a step that does not
-    # run when an upstream job failed, which is exactly when the gate must fail.
+    # success(), failure() and cancelled() read the GATE JOB'S OWN status -- its earlier
+    # steps -- not the upstream results, so they must NOT fold: on a healthy gate job
+    # success() is true and this step does run. It is refused because the coverage must
+    # hold whatever the gate job's own status is (status_reachable_atoms): with the gate
+    # job cancelled, or an earlier gate step failed, `success() && <coverage>` skips and
+    # the upstream failure is masked.
     $successGate = Invoke-Gate @'
 jobs:
   build:
@@ -3691,13 +3718,21 @@ jobs:
         }
     }
 
+    # The multi-line bodies are PARENTHESISED. Inside `@(...)` the comma binds tighter
+    # than `+`, so `@('a' + "`n" + 'b', $true)` read as `'a' + "`n" + ('b', $true)` -- one
+    # string, "a`nb True" -- and every such row collapsed to a single element whose
+    # expected result was $null. The refused body `exit 1 True` then satisfied the
+    # refusal branch, so the suite stayed green with the positive pwsh cases never run.
+    # The Count assertion is what makes a
+    # collapsed row fail instead of pass.
     foreach ($case in @(
         @('exit 1', $true),
-        @('Write-Host "upstream failed"' + "`n" + 'exit 1', $true),
-        @('exit 0' + "`n" + 'throw "unreachable"', $false),
+        @(('Write-Host "upstream failed"' + "`n" + 'exit 1'), $true),
+        @(('exit 0' + "`n" + 'throw "unreachable"'), $false),
         @('exit 0', $false),
         @('exit 256', $false)
     )) {
+        if ($case.Count -ne 2) { throw "pwsh failure-form fixture row collapsed to $($case.Count) element(s): $case" }
         $pwshFailure = Invoke-Gate @"
 jobs:
   build:
@@ -3738,13 +3773,14 @@ jobs:
     # accepted only when the effective shell resolves there -- the `shell: pwsh` cases
     # above and the defaults.run.shell cases below.
     foreach ($case in @(
-        @('Write-Host "upstream failed"' + "`n" + 'exit 1', 'windows-latest', $true),
+        @(('Write-Host "upstream failed"' + "`n" + 'exit 1'), 'windows-latest', $true),
         @('throw "upstream failed"', 'windows-latest', $false),
         @('throw "upstream failed"', 'ubuntu-latest', $false),
-        @('Write-Output "x"' + "`n" + 'exit 255', 'windows-latest', $true),
-        @('Write-Host "upstream failed"' + "`n" + 'exit 1', 'ubuntu-latest', $true),
+        @(('Write-Output "x"' + "`n" + 'exit 255'), 'windows-latest', $true),
+        @(('Write-Host "upstream failed"' + "`n" + 'exit 1'), 'ubuntu-latest', $true),
         @('Write-Host "all is well"', 'windows-latest', $false)
     )) {
+        if ($case.Count -ne 3) { throw "no-shell fixture row collapsed to $($case.Count) element(s): $case" }
         $noShell = Invoke-Gate @"
 jobs:
   build:
@@ -4009,12 +4045,269 @@ jobs:
         }
     }
 
+    # ── remediation: adversarial reviews 20261031T213036Z (R-D),
+    # 20261101T004730Z (S*) and 20261101T004738Z (M*/c02-*). Each case
+    # names the finding it pins. The red side of every case was observed on 5a62825 with the
+    # same fixture before the fix landed; the recorded direction is in the commit body.
+    function New-GateFilesRepo([hashtable] $files, [string] $policyJson, [string] $yaml) {
+        $repo = Join-Path $root ('repo-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $repo '.claude') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $repo '.github' 'workflows') -Force | Out-Null
+        $policyJson | Set-Content -LiteralPath (Join-Path $repo '.claude' 'review-policy.json') -Encoding utf8
+        foreach ($relative in $files.Keys) {
+            $full = $repo
+            foreach ($segment in ($relative -split '/')) { $full = Join-Path $full $segment }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force | Out-Null
+            $files[$relative] | Set-Content -LiteralPath $full -Encoding utf8
+        }
+        $yaml | Set-Content -LiteralPath (Join-Path $repo '.github' 'workflows' 'ci.yml') -Encoding utf8
+        Invoke-GateFile -Repo $repo
+    }
+    function Assert-Gate([pscustomobject] $result, [bool] $accepted, [string] $needle, [string] $why) {
+        if (($result.Code -eq 0) -ne $accepted) { throw "${why}:`n$($result.Output)" }
+        if ($needle -and $result.Output -notmatch $needle) { throw "${why} (expected '$needle' in the output):`n$($result.Output)" }
+    }
+    $gateIf = "always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))"
+    # A gate job whose single step runs $body (indented into a `run: |` block); $jobExtra
+    # and $buildExtra are inserted verbatim at the respective job level.
+    function New-GateYaml([string] $body, [string] $jobExtra = '', [string] $shell = '', [string] $buildBody = "      - run: echo build`n", [string] $buildExtra = '') {
+        $runBlock = ($body -split "`n" | ForEach-Object { '          ' + $_ }) -join "`n"
+        $shellLine = if ($shell) { "        shell: $shell`n" } else { '' }
+        return "jobs:`n  build:`n    runs-on: ubuntu-latest`n$buildExtra    steps:`n$buildBody  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n$jobExtra    steps:`n      - if: $gateIf`n$shellLine        run: |`n$runBlock`n"
+    }
+    $policyNone = '{"version":1,"high":[".github/workflows/ci.yml"],"low":[]}'
+    $policyScripts = '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}'
+    $policyWorkflows = '{"version":1,"high":[".github/workflows/**"],"low":[]}'
+
+    # R-D H1: an EMPTY run: header is a plain multi-line scalar, folded to ONE command.
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "run: \|`n          exit 1", "run:`n          echo upstream failed`n          exit 1")) $false 'plain multi-line' 'R-D H1: a plain multi-line run: body folds to one command and must be refused'
+    # ...but ONE line under an empty header is just the command on the next line (code review).
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "run: \|`n          exit 1", "run:`n          exit 1")) $true '' 'R-D H1: a single-line plain run: body is one command and must pass'
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "run: \|`n          exit 1", "run:`n          echo upstream failed")) $false 'not a recognised failing form' 'R-D H1: a single-line plain run: body is still checked as a command'
+
+    # R-D H3 / tax M35: block-scalar text outside run: is TEXT, not structure -- in both directions.
+    Assert-Gate (Invoke-Gate ("env:`n  NOTES: |`n    defaults:`n      run:`n        shell: pwsh`n" + (New-GateYaml 'throw "upstream failed"'))) $false 'not a recognised failing form' 'R-D H3: a fake defaults/shell inside an env block scalar must not unlock throw'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - uses: actions/github-script@v7`n        with:`n          script: |`n            env:`n              BASH_ENV: /tmp/x`n")) $true '' 'R-D H3: BASH_ENV text inside a with: block scalar is not an env key'
+    Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 scripts/gate.py`n" -buildExtra "    env:`n      NOTES: |`n        working-directory: `${{ inputs.dir }}`n")) $true '' 'R-D H3: a working-directory line inside an env block scalar is text, not an unsupported expression'
+
+    # R-D XL2: a defaults: nested under strategy.matrix.include is matrix data, not the job default.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'throw "upstream failed"' -jobExtra "    strategy:`n      matrix:`n        include:`n          - os: ubuntu-latest`n            defaults:`n              run:`n                shell: pwsh`n")) $false 'not a recognised failing form' 'R-D XL2: matrix include data must not be read as defaults.run.shell'
+
+    # R-D M4 / S1: anchors and aliases on env:/defaults: are resolved, not skipped.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env: &shared`n      BASH_ENV: /tmp/x`n")) $false 'BASH_ENV' 'R-D M4: an anchored env: must still surface BASH_ENV'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env: *shared`n" -buildExtra "    env: &shared`n      BASH_ENV: /tmp/x`n")) $false 'BASH_ENV' 'S1: an aliased env: must still surface BASH_ENV'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults: &d`n      run:`n        shell: `"bash -n {0}`"`n")) $false 'unsupported shell' 'R-D M4: an anchored defaults: must still surface the noexec shell'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env: &shared`n      HARMLESS: 1`n")) $true '' 'R-D M4: an anchored env: with harmless keys must pass'
+
+    # R-D XM1 / S2: a flow defaults: on the line after its key, at job and workflow scope.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults:`n      {run: {shell: `"bash -n {0}`"}}`n")) $false '' 'R-D XM1: a next-line flow defaults must not read as no default'
+    Assert-Gate (Invoke-Gate ("defaults:`n  {run: {shell: `"bash -n {0}`"}}`n" + (New-GateYaml 'exit 1'))) $false '' 'S2: a next-line flow defaults at workflow scope must not read as no default'
+
+    # S13: an unquoted flow scalar is read to the comma or brace, not the first space.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults: {run: {shell: bash -e}}`n")) $false 'unsupported shell' 'S13: `bash -e` must not truncate to `bash`'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    defaults: {run: {shell: bash}}`n")) $true '' 'S13: a plain flow `bash` default must still pass'
+
+    # R-D M3: a flow-style working-directory default qualifies a feeder script.
+    Assert-Gate (New-GateRepo $policyNone @('sub/scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 scripts/gate.py`n" -buildExtra "    defaults: {run: {working-directory: sub}}`n")) $false 'not tiered' 'R-D M3: a flow defaults.run.working-directory must locate the feeder script'
+
+    # R-D M5: flow-style steps carry run: text no line scan reads.
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps: [{run: python3 scripts/gate.py}]`n  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n    steps:`n      - if: $gateIf`n        run: exit 1`n") $false 'flow-style `steps:`' 'R-D M5: a flow-style steps: must fail closed'
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') "jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - {run: python3 scripts/gate.py}`n  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n    steps:`n      - if: $gateIf`n        run: exit 1`n") $false 'flow-mapping step' 'R-D M5: a flow-mapping step item must fail closed'
+
+    # R-D M6: a flow-style jobs: in a delegated reusable workflow is refused, not skipped.
+    $reusableGate = "jobs:`n  build:`n    uses: ./.github/workflows/reuse.yml`n  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n    steps:`n      - if: $gateIf`n        run: exit 1`n"
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = "on: workflow_call`njobs: {inner: {runs-on: ubuntu-latest, steps: [{run: python3 scripts/gate.py}]}}`n"; 'scripts/gate.py' = '# probe' } $policyWorkflows $reusableGate) $false "flow-style or empty 'jobs'" 'R-D M6: a flow jobs: mapping in a reusable workflow must fail closed'
+
+    # tax M13: an escaped double-quoted key is `shell` to GitHub and nothing to a key regex.
+    Assert-Gate (Invoke-Gate ("jobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo build`n  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n    steps:`n      - if: $gateIf`n        `"sh\x65ll`": `"bash -n {0}`"`n        run: exit 1`n")) $false 'escaped double-quoted key' 'tax M13: an escaped key must fail closed'
+
+    # R-D M1: with no shell key the body must read the same under bash AND pwsh quoting.
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo "foo\`"' + "`nexit 1`n#" + '"'))) $false 'not a recognised failing form' 'R-D M1: a body pwsh reads as one string must be refused with no shell key'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo "Upstream results: $RESULTS"' + "`nexit 1"))) $true '' 'R-D M1: the house gate body must still pass with no shell key'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'echo "::error::upstream failed" >&2 && exit 1')) $true '' 'R-D M1: the house one-liner must still pass with no shell key'
+
+    # tax M15: message arguments are plain words; an expression argument is refused.
+    Assert-Gate (Invoke-Gate (New-GateYaml ("echo ([Environment]::Exit(0))`nexit 1"))) $false 'not a recognised failing form' 'tax M15: a pwsh expression inside an echo argument must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo ::error::upstream failed $RESULTS >&2' + "`nexit 1"))) $true '' 'tax M15: plain-word echo arguments must still pass'
+    # A braced variable NAME is a plain read under both shells; an expanding brace form is not.
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo len=${#x} ${y}' + "`nexit 1"))) $true '' 'tax M15: ${name} and ${#name} echo arguments must still pass'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo ${x@P}' + "`nexit 1"))) $false 'not a recognised failing form' 'tax M15: a ${x@P} prompt expansion in an echo argument must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo ${x:-$(id)}' + "`nexit 1"))) $false 'not a recognised failing form|command subexpression' 'tax M15: a ${x:-...} default expansion in an echo argument must be refused'
+
+    # tax c02-C5: an explicit pwsh gate may say `echo "..."`; a bare echo argument stays refused.
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo "upstream failed"' + "`nexit 1") -shell pwsh)) $true '' 'tax c02-C5: a quoted echo under shell: pwsh must be accepted'
+    Assert-Gate (Invoke-Gate (New-GateYaml ('echo $x' + "`nexit 1") -shell pwsh)) $false '' 'tax c02-C5: an unquoted echo argument under shell: pwsh stays refused'
+
+    # R-D M2 / tax M16: every start-up route, as env keys and as gate-job body writes.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env:`n      SHELLOPTS: noexec`n")) $false 'SHELLOPTS' 'R-D M2: SHELLOPTS on the gate job must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env:`n      BASH_FUNC_exit%%: '() { return 0; }'`n")) $false 'BASH_FUNC_' 'R-D M2: an imported bash function on the gate job must be refused'
+    # Case-sensitive and anchored on the refused NAME: every start-up refusal also prints `BASH_ENV/ENV` in its fixed explanation.
+    Assert-Gate (Invoke-Gate ("env:`n  ENV: /tmp/x`n" + (New-GateYaml 'exit 1'))) $false '(?-i)\bENV can neutralise' 'R-D M2: a workflow-level ENV must be refused'
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "    steps:`n      - if: always\(\)", "    steps:`n      - run: echo `"ENV=/tmp/x`" >> `"`$GITHUB_ENV`"`n      - if: always()")) $false '(?-i)\bENV can neutralise' 'R-D M2: writing ENV through GITHUB_ENV from the gate job must be refused'
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "    steps:`n      - if: always\(\)", "    steps:`n      - shell: pwsh`n        run: Add-Content `$PROFILE 'function exit {}'`n      - if: always()")) $false 'PROFILE' 'R-D M2: a pwsh profile write from the gate job must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -jobExtra "    env:`n      ENVIRONMENT: prod`n")) $true '' 'R-D M2: an env key merely starting with ENV must still pass'
+
+    # R-D M7 / tax M19: a feeder-only BASH_ENV does not reach the gate; a gate STEP env does.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildExtra "    env:`n      BASH_ENV: /tmp/feeder-only`n")) $true '' 'R-D M7: a feeder-only BASH_ENV must not redden the gate'
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "        run: \|", "        env:`n          BASH_ENV: /tmp/x`n        run: |")) $false 'BASH_ENV' 'R-D M7: a gate step-level BASH_ENV must still be refused'
+
+    # R-D M8: a conditional-exempt feeder may depend on a conditional job.
+    $env:GATE_EXEMPT = 'prep'
+    $env:GATE_CONDITIONAL_EXEMPT = 'secrets'
+    try {
+        $chainExempt = Invoke-Gate @'
+jobs:
+  prep:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo prep
+  secrets:
+    if: github.event_name == 'pull_request'
+    needs: [prep]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo secrets
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  ci-gate:
+    if: always()
+    needs: [build, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - if: always() && (needs.build.result != 'success' || (needs.secrets.result != 'success' && needs.secrets.result != 'skipped'))
+        run: exit 1
+'@
+    } finally { $env:GATE_EXEMPT = ''; $env:GATE_CONDITIONAL_EXEMPT = '' }
+    Assert-Gate $chainExempt $true '' 'R-D M8: a conditional-exempt feeder depending on a conditional job must pass the chain check'
+
+    # R-D M9: the bare contains() refusal names the policy, not a false "aggregates nothing".
+    $bareContains = Invoke-Gate ((New-GateYaml 'exit 1') -replace [regex]::Escape("- if: $gateIf"), "- if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')")
+    Assert-Gate $bareContains $false 'refused by policy' 'R-D M9: the bare contains() refusal must say it is policy'
+    if ($bareContains.Output -match 'reports success unconditionally') { throw "R-D M9: the refusal must not claim the gate reports success unconditionally:`n$($bareContains.Output)" }
+
+    # tax M14: `!` binds tighter than a comparison, so `!1 == 2` cannot fold to true.
+    Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace [regex]::Escape("- if: $gateIf"), "- if: always() && !1 == 2 && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))")) $false '' 'tax M14: a negated comparison must not fold to true and credit coverage'
+
+    # S6 / tax M17: falsy literals on a feeder step are always-skipped; 1 is not.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ 0 }}`n        run: echo build`n")) $false 'always-skipped' 'S6: if: ${{ 0 }} on a feeder step must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ null }}`n        run: echo build`n")) $false 'always-skipped' 'S6: if: ${{ null }} on a feeder step must be refused'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ 1 }}`n        run: echo build`n")) $true '' 'S6: if: ${{ 1 }} on a feeder step must pass'
+
+    # tax M18: a script path that is only PRINTED is not an invocation.
+    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py', 'sub/Makefile') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub && make`n          echo `"see scripts/report.py`"`n")) $true '' 'tax M18: an echoed script path beside a cd must not redden the check'
+    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"see scripts/report.py`"`n")) $true '' 'tax M18: an echoed script path must not be required HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('sub/scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub`n          python3 scripts/gate.py`n")) $false 'directory change' 'tax M18: a real invocation after a cd must still be refused'
+    # ...and a grouping or process substitution in the echo arguments EXECUTES the script (code review).
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: Write-Host (python scripts/gate.py)`n")) $false 'not tiered' 'tax M18: a pwsh Write-Host (...) grouping runs the script and must tier it HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo <(python scripts/gate.py)`n")) $false 'not tiered' 'tax M18: a bash echo <(...) process substitution runs the script and must tier it HIGH'
+
+    # R-D L3 / tax M20: with: inputs named if / continue-on-error are values, not step controls.
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - uses: some/action@v1`n        with:`n          if: false`n")) $true '' 'R-D L3: a with: input named if must not read as an always-skipped step'
+    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - uses: some/action@v1`n        with:`n          continue-on-error: true`n")) $true '' 'R-D L3: a with: input named continue-on-error must not read as a tolerated step'
+
+    # S12: a tolerated feeder step is refused unless named in GATE_STEP_EXEMPT; a stale entry is refused.
+    $tolerantStep = New-GateYaml 'exit 1' -buildBody "      - id: lint-report`n        continue-on-error: true`n        run: echo build`n"
+    Assert-Gate (Invoke-Gate $tolerantStep) $false 'GATE_STEP_EXEMPT' 'S12: a tolerated feeder step must be refused and point at GATE_STEP_EXEMPT'
+    $env:GATE_STEP_EXEMPT = 'build/lint-report'
+    try {
+        $tolerantExempt = Invoke-Gate $tolerantStep
+        $staleStepExempt = Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - id: other`n        run: echo build`n")
+    } finally { $env:GATE_STEP_EXEMPT = '' }
+    Assert-Gate $tolerantExempt $true '' 'S12: a tolerated feeder step named in GATE_STEP_EXEMPT must pass'
+    Assert-Gate $staleStepExempt $false 'GATE_STEP_EXEMPT' 'S12: a GATE_STEP_EXEMPT entry naming no tolerated step must be refused'
+
+    # tax M37: a local reusable-workflow feeder gets the feeder checks inside the callee.
+    $reuseHead = "on: workflow_call`njobs:`n  inner:`n"
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = $reuseHead + "    if: github.event_name == 'pull_request'`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo x`n" } $policyWorkflows $reusableGate) $false "job-level 'if:'" 'tax M37: a conditional job inside a reusable-workflow feeder must be refused'
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = $reuseHead + "    continue-on-error: true`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo x`n" } $policyWorkflows $reusableGate) $false 'continue-on-error' 'tax M37: a tolerated job inside a reusable-workflow feeder must be refused'
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = $reuseHead + "    runs-on: ubuntu-latest`n    steps:`n      - continue-on-error: true`n        run: echo x`n" } $policyWorkflows $reusableGate) $false 'tolerated' 'tax M37: a tolerated step inside a reusable-workflow feeder must be refused'
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = $reuseHead + "    runs-on: ubuntu-latest`n    steps:`n      - run: echo x`n" } $policyWorkflows $reusableGate) $true '' 'tax M37: an unconditional reusable-workflow feeder must still pass'
+
+    # Code review: only defaults.run.working-directory scopes a step. A callee's
+    # `working-directory` INPUT declaration and a matrix key of that name are data.
+    $policyWorkflowsScripts = '{"version":1,"high":[".github/workflows/**","scripts/**"],"low":[]}'
+    Assert-Gate (New-GateFilesRepo @{ '.github/workflows/reuse.yml' = "on:`n  workflow_call:`n    inputs:`n      working-directory:`n        type: string`njobs:`n  inner:`n    runs-on: ubuntu-latest`n    steps:`n      - run: python3 scripts/gate.py`n"; 'scripts/gate.py' = '# probe' } $policyWorkflowsScripts $reusableGate) $true '' 'a working-directory input on a reusable workflow must not read as a directory'
+    Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 scripts/gate.py`n" -buildExtra "    strategy:`n      matrix:`n        working-directory: [a, b]`n")) $true '' 'a matrix key named working-directory must not read as a directory'
+
+    # R-D H4: a prefixed path whose `..` is balanced still names the file that runs.
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 `$GITHUB_WORKSPACE/x/../scripts/gate.py`n")) $false 'not tiered' 'R-D H4: a balanced climb must still tier the suffix HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('scripts/probe.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 scripts/../../scripts/probe.py`n")) $true '' 'R-D H4: a prefix that escapes the checkout must not recover the suffix'
+
+    # R-D XL1: a bash line continuation inside a path is folded before matching.
+    Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          python3 scripts/ga\`n          te.py`n")) $false 'not tiered' 'R-D XL1: a continuation-split script path must still be tiered HIGH'
+
+    # S7 (checker half): `npm run <name>` is resolved through package.json scripts.
+    $npmFiles = @{ 'package.json' = '{"scripts":{"lint:ratchet":"node scripts/lintRatchet.mjs"}}'; 'scripts/lintRatchet.mjs' = 'process.exit(1)' }
+    Assert-Gate (New-GateFilesRepo $npmFiles $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint:ratchet`n")) $false 'lintRatchet' 'S7: a script reached through npm run must be tiered HIGH'
+    Assert-Gate (New-GateFilesRepo $npmFiles $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint:ratchet`n")) $true '' 'S7: a HIGH-tiered npm run script must pass'
+
+    # tax M36 (owner decision): interpreter targets GATE_SCRIPT cannot see are resolved, and an
+    # unresolvable repo-local target is refused.
+    $discover = "      - run: python3 -m unittest discover -s ci -p 'test_gate.py' -v`n"
+    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody $discover)) $false 'ci/test_gate.py' 'M36: unittest discover targets must be tiered HIGH'
+    Assert-Gate (New-GateRepo '{"version":1,"high":["ci/**"],"low":[]}' @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody $discover)) $true '' 'M36: HIGH-tiered unittest discover targets must pass'
+    Assert-Gate (New-GateRepo $policyNone @('other.txt') (New-GateYaml 'exit 1' -buildBody $discover)) $false 'discover start directory' 'M36: a missing discover start directory must be refused'
+    # Code review: path-qualified interpreters, Windows-spelled and quoted targets, a cd before a
+    # root-level name, and shell redirections.
+    $policyCi = '{"version":1,"high":["ci/**"],"low":[]}'
+    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: .venv/bin/python -m unittest discover -s ci`n")) $false 'ci/test_gate.py' 'M36: a path-qualified interpreter must still be read'
+    Assert-Gate (New-GateRepo $policyNone @('ci/gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: python .\ci\gate.py`n")) $false 'ci/gate.py' 'M36: a Windows-spelled target must keep its separators'
+    Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: bash -c `"python3 gate.py`"`n")) $false 'gate.py' 'M36: a target inside a quoted bash -c must be read'
+    Assert-Gate (New-GateRepo $policyNone @('sub/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub`n          python3 gate.py`n")) $false 'directory change' 'M36: a cd before a root-level python target must be refused'
+    Assert-Gate (New-GateRepo $policyCi @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pytest ci 2>&1`n")) $true '' 'M36: a redirection must not be read as a pytest path'
+    Assert-Gate (New-GateRepo $policyCi @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m unittest discover -s ci > out.txt`n")) $true '' 'M36: a redirection must not be read as the discover start directory'
+    # Code review round 2: a quoted interpreter path, a workspace-rooted target, an unsupported
+    # working directory, a bash-escaped space, a trailing comment, and a redirection attached to the target.
+    Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: '& `"/opt/Python 3/bin/python`" gate.py'`n")) $false 'gate.py' 'M36: a quoted interpreter path must still be read'
+    Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 `"`$GITHUB_WORKSPACE/gate.py`"`n")) $false 'gate.py' 'M36: a workspace-rooted target must resolve at the root'
+    Assert-Gate (New-GateRepo $policyNone @('sub/gate.py') (New-GateYaml 'exit 1' -buildBody "      - working-directory: `${{ matrix.path }}`n        run: python3 gate.py`n")) $false 'working-directory expression' 'M36: an unsupported working directory must travel with an interpreter reference'
+    Assert-Gate (New-GateRepo $policyNone @('gate script.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate\ script.py`n")) $false 'gate script.py' 'M36: a bash-escaped space must stay inside the target'
+    Assert-Gate (New-GateRepo $policyCi @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          python3 -m pytest ci # run tests`n")) $true '' 'M36: a shell comment must not be read as pytest paths'
+    Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate.py>out.txt`n")) $false 'gate.py' 'M36: a redirection attached to the target must be split off'
+    # Code review: a Windows trailing separator before an option is not a bash escaped space.
+    Assert-Gate (New-GateRepo $policyCi @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: python -m pytest ci\ -q`n")) $true '' 'M36: ci\ -q must not join into one path'
+    # Code review round 3: a python target behind npm run, a comment inside a package script, and a
+    # workspace-rooted target under a working directory.
+    $npmPython = @{ 'package.json' = '{"scripts":{"gate":"python3 gate.py"}}'; 'gate.py' = '# probe' }
+    Assert-Gate (New-GateFilesRepo $npmPython $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $false 'gate.py' 'M36: a python target behind npm run must be tiered HIGH'
+    $npmComment = @{ 'package.json' = '{"scripts":{"gate":"node x.js # python3 -m pytest ci"}}'; 'ci/test_gate.py' = '# probe' }
+    Assert-Gate (New-GateFilesRepo $npmComment $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $true '' 'M36: a commented-out python command in a package script must not be read'
+    $rootedFiles = @{ 'gate.py' = '# probe'; 'sub/gate.py' = '# probe' }
+    Assert-Gate (New-GateFilesRepo $rootedFiles '{"version":1,"high":[".github/workflows/ci.yml","gate.py"],"low":[]}' (New-GateYaml 'exit 1' -buildBody "      - working-directory: sub`n        run: python3 `"`$GITHUB_WORKSPACE/gate.py`"`n")) $true '' 'M36: a workspace-rooted target must not also resolve under working-directory'
+    # Code review: unittest's -k value is a filter, not a start directory or a test name.
+    Assert-Gate (New-GateRepo '{"version":1,"high":["ci/**"],"low":[]}' @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m unittest discover -s ci -k smoke`n")) $true '' 'M36: discover -k must not be read as the start directory'
+    Assert-Gate (New-GateRepo '{"version":1,"high":["ci/**"],"low":[]}' @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m unittest -k smoke ci.test_gate`n")) $true '' 'M36: unittest -k must not be read as a test name'
+    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pytest ci -q`n")) $false 'ci/test_gate.py' 'M36: pytest directory targets must be tiered HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate.py`n")) $false 'gate.py' 'M36: a root-level python script must be tiered HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('ci/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m ci.gate`n")) $false 'ci/gate.py' 'M36: a repo-local -m module must be tiered HIGH'
+    Assert-Gate (New-GateRepo $policyNone @('ci/other.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m ci.gate`n")) $false 'repository content' 'M36: a -m module inside a repo package that does not resolve must be refused'
+    Assert-Gate (New-GateRepo $policyNone @('other.txt') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pip install --user pyyaml`n")) $true '' 'M36: an installed tool module must pass'
+    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"python3 -m unittest discover -s missing`"`n")) $true '' 'M36: a printed interpreter command must not be read'
+
+    # R-D L2: pwsh's sl / chdir aliases are directory changes.
+    Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          sl sub`n          python3 scripts/gate.py`n")) $false 'directory change' 'R-D L2: `sl` must be detected as a directory change'
+
+    # tax c02-R9: a stale third positional argument is a usage error, not a silent pass.
+    $extraArgWorkflow = Join-Path $root 'extra-arg.yml'
+    (New-GateYaml 'exit 1') | Set-Content -LiteralPath $extraArgWorkflow -Encoding utf8
+    $extraArgOutput = & $python.Source -S $script $extraArgWorkflow ci-gate stale-topology.json 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -or $extraArgOutput -notmatch 'usage:') { throw "tax c02-R9: a third positional argument must be a usage error:`n$extraArgOutput" }
+
+    # tax c02-R10: the checker's own comment shows the house skeleton WITH its status override.
+    if ((Get-Content -LiteralPath $script -Raw) -notmatch [regex]::Escape("if: always() && (contains(needs.*.result, 'failure') || ...)   <- the actual gate")) {
+        throw 'tax c02-R10: the house-skeleton comment in assert_gate_coverage.py must show the always() && (...) shape the checker accepts'
+    }
+
     'assert_gate_coverage.py OK - quoted keys, sequence forms, fail-closed parsing, conditional feeders, the gate''s own always()/aggregation semantics, cancellation coverage, and gate scripts tiered HIGH'
 }
 finally {
     $env:GATE_EXEMPT = $oldExempt
     $env:GATE_CONDITIONAL_EXEMPT = $oldConditionalExempt
     $env:GATE_FILE_EXEMPT = $oldFileExempt
+    $env:GATE_STEP_EXEMPT = $oldStepExempt
     if ($root.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

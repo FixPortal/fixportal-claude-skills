@@ -3,8 +3,7 @@ param(
     [Parameter(Mandatory)] [string] $RepositoryRoot,
     [Parameter(Mandatory)] [string] $ScaffoldRoot,
     [string] $ActionsEvidencePath,
-    [string] $ExpectedHeadSha,
-    [string] $ApprovalPath
+    [string] $ExpectedHeadSha
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +50,7 @@ function Assert-CanonicalFile([string] $relativePath, [string] $assetName, [stri
         # branch lists and workflow paths -- never across the whole file. A global replace
         # let any other line that swapped the token pass as canonical, and it also fired
         # inside words: mainline `develop` turned the comment "per developer" into "per
-        # mainer", so no adapted guard could ever pass. (CodeRabbit, public mirror PR #124.)
+        # mainer", so no adapted guard could ever pass. (code review.)
         # Both alternatives anchored: unanchored, the workflow-path branch also matched
         # comment lines that merely mention a path. (Gitar, #276.)
         $fieldLine = '^\s*(?:branches:|\.github/workflows/)'
@@ -60,7 +59,13 @@ function Assert-CanonicalFile([string] $relativePath, [string] $assetName, [stri
             if ($line -match $fieldLine) {
                 foreach ($difference in $PermittedDifference) {
                     $parts = $difference -split '=>', 2
-                    if ($parts.Count -eq 2) { $line = $line.Replace($parts[1], $parts[0]) }
+                    # WHOLE TOKENS only. A raw substring replace with primary workflow
+                    # `guard.yml` also rewrote `review-policy-guard.yml` on the same line
+                    #. A token is a run of name characters, so `-` and `.` bind.
+                    if ($parts.Count -eq 2) {
+                        $canonicalToken = $parts[0]
+                        $line = [regex]::Replace($line, '(?<![\w.-])' + [regex]::Escape($parts[1]) + '(?![\w.-])', { param($m) $canonicalToken })
+                    }
                 }
             }
             $line
@@ -293,12 +298,18 @@ $jobs = Get-JobBlocks $ci
 $ciPushBlock = [regex]::Match($ci, '(?m)^  push:\s*\r?\n(?<body>(?:^ {4,}.*(?:\r?\n|$))*)').Groups['body'].Value
 $mainlineBranch = [regex]::Match($ciPushBlock, '(?m)^    branches:\s*\[(?<branch>[^],]+)').Groups['branch'].Value.Trim().Trim("'").Trim('"')
 
-Assert-CanonicalFile '.github/scripts/assert_gate_coverage.py' 'assert_gate_coverage.py'
-Assert-CanonicalFile '.github/scripts/assert_workflow_hygiene.py' 'assert_workflow_hygiene.py'
+# Everything above is a prerequisite: without a policy, a primary workflow and its jobs
+# nothing below can be evaluated, so those still throw at once. Every check below is
+# independent and records into $failures instead, so one run reports every defect rather
+# than the first; the script still throws (non-zero exit) at the end if any were found.
+$failures = [Collections.Generic.List[string]]::new()
+
+try { Assert-CanonicalFile '.github/scripts/assert_gate_coverage.py' 'assert_gate_coverage.py' } catch { $failures.Add($_.Exception.Message) }
+try { Assert-CanonicalFile '.github/scripts/assert_workflow_hygiene.py' 'assert_workflow_hygiene.py' } catch { $failures.Add($_.Exception.Message) }
 $guardDifferences = @()
 if ($mainlineBranch -and $mainlineBranch -cne 'main') { $guardDifferences += "main=>$mainlineBranch" }
 $guardDifferences += "ci.yml=>$([IO.Path]::GetFileName($primaryWorkflow))"
-Assert-CanonicalFile '.github/workflows/review-policy-guard.yml' 'review-policy-guard.yml' $guardDifferences
+try { Assert-CanonicalFile '.github/workflows/review-policy-guard.yml' 'review-policy-guard.yml' $guardDifferences } catch { $failures.Add($_.Exception.Message) }
 
 $python = if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
 $gateCoverage = @($jobs['gate-coverage']) -join "`n"
@@ -322,12 +333,18 @@ foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
     [Environment]::SetEnvironmentVariable($name, $gateExemptions[$name])
 }
 try {
-    & $python (Join-Path $repository '.github/scripts/assert_gate_coverage.py') $ciPath | Out-Null
+    # The SCAFFOLD's checker, never the audited repository's copy. The canonical compare
+    # above records drift instead of throwing, so running the repo's own file executed
+    # whatever a drifted (or hostile) repository put there inside the auditor's
+    # environment. A canonical copy is byte-identical, so nothing is lost.
+    $gateOutput = @(& $python (Join-Path $scaffold 'assets/assert_gate_coverage.py') $ciPath 2>&1)
     if ($LASTEXITCODE -ne 0) {
         $declared = ($gateExemptions.GetEnumerator() | ForEach-Object { "$($_.Key)='$($_.Value)'" }) -join ' '
-        throw "CI Gate coverage or semantics failed (repo exemptions: $(if ($declared) { $declared } else { 'none declared' }))."
+        $detail = (@($gateOutput | Select-Object -Last 5) | ForEach-Object { "$_" }) -join ' | '
+        $failures.Add("CI Gate coverage or semantics failed (repo exemptions: $(if ($declared) { $declared } else { 'none declared' })): $detail")
     }
 }
+catch { $failures.Add($_.Exception.Message) }
 finally {
     foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
         [Environment]::SetEnvironmentVariable($name, $previousExemptions[$name])
@@ -335,11 +352,12 @@ finally {
 }
 
 if ($gateCoverageCommands -notcontains "python3 .github/scripts/assert_gate_coverage.py $primaryWorkflow") {
-    throw 'Gate coverage does not execute the shipped checker.'
+    $failures.Add('Gate coverage does not execute the shipped checker.')
 }
 $gate = @($jobs['ci-gate']) -join "`n"
-if ($gate -notmatch '(?m)^    permissions:\s*\{\}\s*$') { throw 'CI Gate must have zero permissions.' }
+if ($gate -notmatch '(?m)^    permissions:\s*\{\}\s*$') { $failures.Add('CI Gate must have zero permissions.') }
 
+try {
 $guardText = Get-Content -LiteralPath (Join-Path $repository '.github/workflows/review-policy-guard.yml') -Raw
 
 # The hygiene checker reads its opt-ins from the PROCESS ENVIRONMENT, and the guard
@@ -364,27 +382,40 @@ foreach ($name in $hygieneNames) {
 }
 Push-Location $repository
 try {
-    $hygieneOutput = @(& $python '.github/scripts/assert_workflow_hygiene.py' 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "Workflow hygiene failed: $(($hygieneOutput | Where-Object { "$_" -match '::error' }) -join ' | ')" }
+    # The scaffold's checker, run from the repository root it reads (see gate coverage above).
+    $hygieneOutput = @(& $python (Join-Path $scaffold 'assets/assert_workflow_hygiene.py') 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        # A crash prints a traceback with no ::error line, which left the message empty
+        #. Fall back to the output's last lines.
+        $hygieneErrors = @($hygieneOutput | Where-Object { "$_" -match '::error' })
+        if (-not $hygieneErrors.Count) { $hygieneErrors = @($hygieneOutput | Select-Object -Last 5) }
+        if (-not $hygieneErrors.Count) { $hygieneErrors = @("exit code $LASTEXITCODE with no output") }
+        throw "Workflow hygiene failed: $($hygieneErrors -join ' | ')"
+    }
 }
 finally {
     Pop-Location
     foreach ($name in $hygieneNames) { [Environment]::SetEnvironmentVariable($name, $previousHygiene[$name]) }
 }
+}
+catch { $failures.Add($_.Exception.Message) }
+# A missing guard file was already recorded above; there is nothing more to derive from it.
+if ($guardText) {
 $requiredLoop = [regex]::Match($guardText, '(?s)for required in (?<paths>.*?)\s*; do')
 $requiredHigh = @([regex]::Matches($requiredLoop.Groups['paths'].Value, '\.github/[^\s\\]+|\.claude/[^\s\\]+|\.coderabbit\.yaml') |
     ForEach-Object Value | Select-Object -Unique)
-if (-not $requiredLoop.Success -or -not $requiredHigh.Count) { throw 'Cannot derive required HIGH paths from the guard workflow.' }
+if (-not $requiredLoop.Success -or -not $requiredHigh.Count) { $failures.Add('Cannot derive required HIGH paths from the guard workflow.') }
 foreach ($path in $requiredHigh) {
     # The canonical prose names `ci.yml`; a repo that renamed its primary workflow needs
     # the entry for the file it actually has. Substitute, then assert the HIGH glob
     # resolves to a tracked file -- nothing did that before, so a HIGH entry could name
     # a path that did not exist and read as protection.
     $expected = if ($path -eq '.github/workflows/ci.yml') { $primaryWorkflow } else { $path }
-    if (@($policy.high) -notcontains $expected) { throw "Merge-barrier path is not HIGH: $expected" }
+    if (@($policy.high) -notcontains $expected) { $failures.Add("Merge-barrier path is not HIGH: $expected"); continue }
     if ($expected -notmatch '[*?]' -and -not (Test-Path -LiteralPath (Join-Path $repository $expected))) {
-        throw "HIGH merge-barrier path does not exist in the repository: $expected"
+        $failures.Add("HIGH merge-barrier path does not exist in the repository: $expected")
     }
+}
 }
 
 $requiredTimeout = [int] [regex]::Match($ciContract, 'each substantive required job gets `timeout-minutes: (?<minutes>\d+)`').Groups['minutes'].Value
@@ -393,35 +424,51 @@ $testSeconds = [int] [regex]::Match($ciContract, 'One test gets a (?<seconds>\d+
 if (-not $requiredTimeout -or -not $aggregateBudget -or -not $testSeconds) { throw 'Cannot derive executable CI time limits from scaffold-ci.' }
 $requiredJobs = @(Get-Needs $jobs['ci-gate'] | Where-Object { $_ -ne 'gate-coverage' })
 $controlJobs = @('ci-gate', 'gate-coverage')
-foreach ($entry in $jobs.GetEnumerator() | Where-Object { $_.Key -notin $controlJobs }) {
-    Get-Timeout $entry.Value $entry.Key | Out-Null
+foreach ($entry in $jobs.GetEnumerator() | Where-Object { $_.Key -notin $controlJobs -and $_.Key -notin $requiredJobs }) {
+    try { Get-Timeout $entry.Value $entry.Key | Out-Null } catch { $failures.Add($_.Exception.Message) }
 }
+$unknownRequired = $false
 foreach ($jobId in $requiredJobs) {
-    if (-not $jobs.Contains($jobId)) { throw "CI Gate needs unknown job '$jobId'." }
-    $timeout = Get-Timeout $jobs[$jobId] $jobId
-    if ($null -ne $timeout -and $timeout -gt $requiredTimeout) { throw "Required job '$jobId' exceeds $requiredTimeout minutes." }
+    if (-not $jobs.Contains($jobId)) { $failures.Add("CI Gate needs unknown job '$jobId'."); $unknownRequired = $true; continue }
+    try {
+        $timeout = Get-Timeout $jobs[$jobId] $jobId
+        if ($null -ne $timeout -and $timeout -gt $requiredTimeout) { $failures.Add("Required job '$jobId' exceeds $requiredTimeout minutes.") }
+    }
+    catch { $failures.Add($_.Exception.Message) }
     $jobCommands = @(Get-RunSteps $jobs[$jobId] | ForEach-Object { Get-StepCommands $_ })
     if ($jobCommands | Where-Object { $_ -match '^dotnet (?:restore|build|test)\s+' }) {
-        Assert-DotNetJob $jobs[$jobId] $jobId $testSeconds
+        try { Assert-DotNetJob $jobs[$jobId] $jobId $testSeconds } catch { $failures.Add($_.Exception.Message) }
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($ActionsEvidencePath)) { throw 'Required-lane Actions cost evidence is missing.' }
-if ([string]::IsNullOrWhiteSpace($ExpectedHeadSha)) { throw 'Required-lane expected head SHA is missing.' }
-$requiredJobNames = @($requiredJobs | ForEach-Object { Get-JobName $jobs[$_] $_ })
-$costEvidence = & (Join-Path $PSScriptRoot 'test-required-lane-cost.ps1') -EvidencePath $ActionsEvidencePath `
-    -ExpectedHeadSha $ExpectedHeadSha -RequiredJobNames $requiredJobNames -BudgetMinutes $aggregateBudget `
-    -RepositoryRoot $repository -ApprovalPath $ApprovalPath
+$costEvidence = $null
+if ([string]::IsNullOrWhiteSpace($ActionsEvidencePath)) { $failures.Add('Required-lane Actions cost evidence is missing.') }
+elseif ([string]::IsNullOrWhiteSpace($ExpectedHeadSha)) { $failures.Add('Required-lane expected head SHA is missing.') }
+elseif (-not $unknownRequired) {
+    try {
+        $requiredJobNames = @($requiredJobs | ForEach-Object { Get-JobName $jobs[$_] $_ })
+        $costEvidence = & (Join-Path $PSScriptRoot 'test-required-lane-cost.ps1') -EvidencePath $ActionsEvidencePath `
+            -ExpectedHeadSha $ExpectedHeadSha -RequiredJobNames $requiredJobNames -BudgetMinutes $aggregateBudget `
+            -RepositoryRoot $repository
+    }
+    catch { $failures.Add($_.Exception.Message) }
+}
 
 $extendedLimit = [int] [regex]::Match($ciContract, 'weekly/manual jobs capped at (?<minutes>\d+) minutes').Groups['minutes'].Value
 if (-not $extendedLimit) { $extendedLimit = [int] [regex]::Match($ciContract, 'timeout-minutes: (?<minutes>45)').Groups['minutes'].Value }
 foreach ($workflow in Get-ChildItem -LiteralPath (Join-Path $repository '.github/workflows') -File | Where-Object { $_.FullName -ne $ciPath -and $_.Extension -in '.yml', '.yaml' }) {
     $text = Get-Content -LiteralPath $workflow.FullName -Raw
     if ($text -notmatch '(?im)^name:\s*Extended tests\s*$') { continue }
-    foreach ($entry in (Get-JobBlocks $text).GetEnumerator()) {
-        $timeout = Get-Timeout $entry.Value $entry.Key
-        if ($null -ne $timeout -and $timeout -gt $extendedLimit) { throw "Extended job '$($entry.Key)' exceeds $extendedLimit minutes." }
+    try {
+        foreach ($entry in (Get-JobBlocks $text).GetEnumerator()) {
+            try {
+                $timeout = Get-Timeout $entry.Value $entry.Key
+                if ($null -ne $timeout -and $timeout -gt $extendedLimit) { $failures.Add("Extended job '$($entry.Key)' exceeds $extendedLimit minutes.") }
+            }
+            catch { $failures.Add($_.Exception.Message) }
+        }
     }
+    catch { $failures.Add("$($workflow.Name): $($_.Exception.Message)") }
 }
 
 # Reused, not re-derived. This was a second copy of the extraction above, feeding the
@@ -448,7 +495,7 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
     # Only a BRANCH or TAG filter narrows the refs a push block fires for. GitHub does not
     # evaluate paths/paths-ignore for tag pushes, so a block carrying only a path filter
     # fires on every tag exactly as a bare one does -- it used to read as "filtered" and
-    # skip the inspection. (CodeRabbit, public mirror PR #124.)
+    # skip the inspection. (code review.)
     $hasTagFilter = $push -match '(?m)^    tags(?:-ignore)?:\s*(?:\[.*\]\s*|)$'
     $bareBlockPush = [regex]::IsMatch($workflowText, '(?m)^  push:\s*(?:#.*)?$') -and
         $push -notmatch '(?m)^    (?:branches|branches-ignore|tags|tags-ignore):'
@@ -457,18 +504,11 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
         [regex]::IsMatch($workflowText, '(?m)^on:\s*\[[^\]]*\brelease\b[^\]]*\]\s*$')
     $tagReachable = $workflowItem.InheritedTag -or $hasTagFilter -or $bareBlockPush -or $flowPush -or $releaseTrigger
     if (-not $tagReachable) { continue }
-    if (-not $mainline) { throw 'Cannot derive the default branch for tag ancestry.' }
-    foreach ($entry in (Get-JobBlocks $workflowText).GetEnumerator()) {
+    if (-not $mainline) { $failures.Add('Cannot derive the default branch for tag ancestry.'); break }
+    try { $workflowJobs = Get-JobBlocks $workflowText } catch { $failures.Add("$($workflow.Name): $($_.Exception.Message)"); continue }
+    foreach ($entry in $workflowJobs.GetEnumerator()) {
+      try {
         $jobText = @($entry.Value) -join "`n"
-        $localCall = [regex]::Match($jobText, '(?m)^    uses:\s*(?:\./|\$/)\.github/workflows/(?<file>[^@\s]+)')
-        if ($localCall.Success) {
-            $calledPath = Join-Path $repository ('.github/workflows/' + $localCall.Groups['file'].Value)
-            if (-not (Test-Path -LiteralPath $calledPath -PathType Leaf)) { throw "Tag-fired reusable workflow '$($workflow.Name)' calls missing local workflow '$calledPath'." }
-            $calledFile = Get-Item -LiteralPath $calledPath
-            if ($queuedTagWorkflows.Add($calledFile.FullName)) {
-                $workflowQueue.Add([pscustomobject]@{ File = $calledFile; InheritedTag = $true })
-            }
-        }
         # A job gated to the mainline branch cannot run on a tag ref, so requiring a tag
         # ancestry assertion on it fails a workflow that is already correct -- the
         # false-positive half of this control.
@@ -485,13 +525,32 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
         # a conjunction containing the comparison -- any `||` means some other disjunct
         # may admit a tag, so the job stays under inspection. (CodeRabbit, public mirror
         # PR #124.)
-        # ponytail: a `||` scan, not an expression parser -- `!(github.ref == ...)` and
-        # similar negations still read as branch-only; parse the expression if that bites.
+        # A NEGATED group defeats the comparison too: `!(github.ref == 'refs/heads/main')`
+        # has no `||` and is true on every tag, so any `!(` keeps the job under inspection
+        #. `!cancelled()` and `!=` are not groups and still pass.
+        # `github.ref_name == '<mainline>'` alone is ALSO true for a tag named after the
+        # mainline, so it counts only beside `github.ref_type == 'branch'`.
+        # shortcut: `||` and `!(` scans, not an expression parser; parse it if a new shape bites.
+        $branchTypeGate = "github\.ref_type\s*==\s*['`"]branch['`"]"
         $jobCondition = [regex]::Match($jobText, '(?m)^    if:\s*(?<condition>.*?)\s*$').Groups['condition'].Value
-        $mainlineNameGate = $mainline -and $jobCondition -match ("github\.ref_name\s*==\s*['`"]" + [regex]::Escape($mainline) + "['`"]")
+        $mainlineNameGate = $mainline -and $jobCondition -match $branchTypeGate -and
+            $jobCondition -match ("github\.ref_name\s*==\s*['`"]" + [regex]::Escape($mainline) + "['`"]")
         if (($mainlineNameGate -or $jobCondition -match "github\.ref\s*==\s*['`"]refs/heads/") -and
-            $jobCondition -notmatch '\|\|' -and
-            $jobText -notmatch '(?i)refs/tags|ref_type|startsWith\s*\(\s*github\.ref') { continue }
+            $jobCondition -notmatch '\|\|' -and $jobCondition -notmatch '!\s*\(' -and
+            ($jobText -replace $branchTypeGate, '') -notmatch '(?i)refs/tags|ref_type|startsWith\s*\(\s*github\.ref') { continue }
+        # Queued only from a job that can still run on a tag. Queuing before the mainline
+        # skip marked a main-gated caller's callee tag-reachable, and it then failed for
+        # lacking an ancestry assertion it never needs. This sits AFTER the negation and ref_name
+        # predicate on purpose: moved ahead of a loose predicate, it would spread a bypass.
+        $localCall = [regex]::Match($jobText, '(?m)^    uses:\s*(?:\./|\$/)\.github/workflows/(?<file>[^@\s]+)')
+        if ($localCall.Success) {
+            $calledPath = Join-Path $repository ('.github/workflows/' + $localCall.Groups['file'].Value)
+            if (-not (Test-Path -LiteralPath $calledPath -PathType Leaf)) { throw "Tag-fired reusable workflow '$($workflow.Name)' calls missing local workflow '$calledPath'." }
+            $calledFile = Get-Item -LiteralPath $calledPath
+            if ($queuedTagWorkflows.Add($calledFile.FullName)) {
+                $workflowQueue.Add([pscustomobject]@{ File = $calledFile; InheritedTag = $true })
+            }
+        }
         # A `uses:` job calls a reusable workflow and has no steps of its own, so neither
         # the publish detector nor the ancestry check can see anything. Requiring the
         # assertion inside the called workflow is the only place it can live.
@@ -537,22 +596,40 @@ for ($workflowIndex = 0; $workflowIndex -lt $workflowQueue.Count; $workflowIndex
             if ($next -lt 0) { throw "Tag-fired job '$($entry.Key)' in '$($workflow.Name)' has an incomplete ancestry assertion: $token" }
             $position = $next
         }
+      }
+      catch { $failures.Add($_.Exception.Message) }
     }
 }
 
 $secretJobId = [regex]::Match($securityContract, 'One `(?<id>[A-Za-z0-9_-]+)` job in `ci\.yml`').Groups['id'].Value
-if (-not $secretJobId -or -not $jobs.Contains($secretJobId)) { throw 'Cannot locate the scaffold-ci private secret job.' }
-$secretRuns = @(Get-RunSteps $jobs[$secretJobId])
 $canonicalGitleaks = @([regex]::Matches($securityContract, '(?m)^\s*(?<command>"\$RUNNER_TEMP/gitleaks"\s+(?:git|dir)\s+.+)$') |
     ForEach-Object { $_.Groups['command'].Value.Trim() } | Select-Object -Unique)
+if (-not $secretJobId -or -not $jobs.Contains($secretJobId)) { $failures.Add('Cannot locate the scaffold-ci private secret job.') }
 # Three now: the pull_request range, the push range, and the checked-out tree. The
 # range scan was one command reading `github.event.pull_request.base.sha`, which renders
 # empty on every non-pull_request event and collapsed to a zero-commit scan that exited
 # 0. Deriving the count from the reference keeps this honest if the set changes again.
-if ($canonicalGitleaks.Count -ne 3) { throw "Expected three canonical Gitleaks invocations in scaffold-ci, derived $($canonicalGitleaks.Count)." }
-foreach ($command in $canonicalGitleaks) {
-    $invocation = '(?m)^\s*(?:-\s*run:\s*)?' + [regex]::Escape($command) + '\s*$'
-    if (-not ($secretRuns | Where-Object { $_ -match $invocation })) { throw "Private secret job is missing canonical scan: $command" }
+elseif ($canonicalGitleaks.Count -ne 3) { $failures.Add("Expected three canonical Gitleaks invocations in scaffold-ci, derived $($canonicalGitleaks.Count).") }
+else {
+    $secretRuns = @(Get-RunSteps $jobs[$secretJobId])
+    foreach ($command in $canonicalGitleaks) {
+        $invocation = '(?m)^\s*(?:-\s*run:\s*)?' + [regex]::Escape($command) + '\s*$'
+        if (-not ($secretRuns | Where-Object { $_ -match $invocation })) { $failures.Add("Private secret job is missing canonical scan: $command") }
+    }
 }
 
-[pscustomobject]@{ Status = $costEvidence.Status; Repository = $repository; CostEvidence = $costEvidence }
+# Same contract as before for callers: a failing audit throws (non-zero exit under
+# -File), a passing one returns the status object. The message now lists EVERY failure,
+# one per line, instead of only the first.
+if ($failures.Count) {
+    throw "Scaffold contract failed $($failures.Count) check(s):`n" + (($failures | ForEach-Object { "  - $_" }) -join "`n")
+}
+# Required job NAMES are read from this checkout while the evidence measures
+# ExpectedHeadSha, so the checkout's own HEAD is recorded beside them.
+$checkoutHead = (& git -C $repository rev-parse HEAD 2>$null)
+[pscustomobject]@{
+    Status = $costEvidence.Status
+    Repository = $repository
+    CheckoutHeadSha = if ($LASTEXITCODE -eq 0 -and $checkoutHead) { ([string] $checkoutHead).Trim() } else { $null }
+    CostEvidence = $costEvidence
+}
