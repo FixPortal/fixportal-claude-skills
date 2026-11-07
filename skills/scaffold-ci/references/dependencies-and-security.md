@@ -169,7 +169,7 @@ durable policy.
 
 | Visibility | Required state |
 |---|---|
-| Public | Enable free Code Security and CodeQL default setup, secret scanning, and push protection. Enable free public Code Quality with AI findings disabled. |
+| Public | Enable free Code Security and CodeQL default setup, secret scanning, and push protection. Enable Code Quality with AI findings disabled under the estate's accepted policy and dated pricing observations below. |
 | Private or internal | Disable paid Code Security and all secret scanning. Do not attach a paid security configuration. Keep paid Code Quality disabled. Keep Dependabot alerts and automated security fixes enabled. |
 
 For a public repository, prefer attaching the existing public security configuration over
@@ -183,10 +183,12 @@ $repo = gh repo view --json nameWithOwner --jq .nameWithOwner
 gh api -X PATCH "repos/$repo/code-scanning/default-setup" -f state=configured
 ```
 
-Code Quality is free on PUBLIC repositories and paid on private/internal ones, so
-visibility is the policy input, not an approval record.
+The estate's accepted policy enables Code Quality on public repositories and keeps it
+off on private/internal repositories. Visibility is the policy input, not a new
+approval requirement for public findings reads. The pricing premise below is based
+on dated estate observations rather than a verified universal public exemption.
 
-UNVERIFIED: that public Code Quality is free. The maintainer verified it against the organization's
+UNVERIFIED: that public Code Quality has a universal pricing exemption. The maintainer observed no charge against the organization's
 own billing and UI on 2026-09-09, and the estate has run it on all eight public
 repositories since 2026-08-14 with `ai_findings_option: disabled`. GitHub's published docs
 do NOT state a public exemption — its changelog calls Code Quality a purchasable product
@@ -194,6 +196,10 @@ from GA on 2026-07-20, billed as a base subscription plus metered per-committer 
 its enablement flow shows a costs dialog. Refuted if GitHub's billing documentation, or
 the organization's own bill, shows a charge attributable to Code Quality on a public
 repository; in that case restore the charge-approval gate at every visibility.
+Re-observed 2026-10-11: the organization's Licensing page showed 0 consumed Code Quality
+licenses and $0.00 estimated, while `dynamic/github-code-quality/codeql` ran that day on
+one of the estate's public repositories. The billing docs page (checked the same day)
+still lists no public exemption, so the observation, not the docs, carries this premise.
 
 Before any Code Quality change, inspect the organization's Code Quality **Repository
 access** selection and enforcement. A repository-level setup call does not configure
@@ -214,7 +220,7 @@ gh api -X PATCH "repos/$repo/code-quality/setup" -f state=not-configured
 On a public repository, enable it with Code Quality AI findings disabled, and create no
 automatic Copilot review ruleset. AI findings stay disabled at every visibility: they are
 Copilot-generated review comments with no dismissal API, which is why `ai-findings-ledger`
-exists, and free coverage is not a reason to turn them on:
+exists, and the accepted public coverage policy is not a reason to turn them on:
 
 ```powershell
 $repo = gh repo view --json nameWithOwner --jq .nameWithOwner

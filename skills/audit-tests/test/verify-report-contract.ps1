@@ -77,6 +77,25 @@ try {
     Add-Content -LiteralPath $unsettledSections -Value "`n## Unsettled — host evidence required`n- **Critical** — first section.`n`n## Evidence notes`nResolved.`n`n## Unsettled — host evidence required`n- **High** — second section."
     Assert-Fails { & $validator -Path $unsettledSections | Out-Null } 'lower than the 1 High Unsettled' 'Counters must cover every Unsettled section.'
 
+    # Items outside the mandated `- **<Tier>** —` form must be rejected, not counted: an ordered
+    # item and a `**Critical path**` bullet both must not slip past (or inflate) the counters.
+    $orderedItem = Write-Report 'unsettled-ordered.md' 'Critical tier verified; host evidence pending' 'A, B, C, D, E, F, G, H' 'A, B, C, D, E, F, H' 'G' 0 0
+    Add-Content -LiteralPath $orderedItem -Value "`n## Unsettled — host evidence required`n1. **Critical** — downstream check needs host access."
+    Assert-Fails { & $validator -Path $orderedItem | Out-Null } 'mandated form' 'An ordered Unsettled item must be rejected, not silently uncounted.'
+
+    $lookalikeTier = Write-Report 'unsettled-lookalike.md' 'Critical tier verified; host evidence pending' 'A, B, C, D, E, F, G, H' 'A, B, C, D, E, F, H' 'G' 1 0
+    Add-Content -LiteralPath $lookalikeTier -Value "`n## Unsettled — host evidence required`n- **Critical path** — downstream check needs host access."
+    Assert-Fails { & $validator -Path $lookalikeTier | Out-Null } 'mandated form' 'A `**Critical path**` bullet must not be counted as a Critical item.'
+
+    $indentedTier = Write-Report 'unsettled-indented.md' 'Critical tier verified; host evidence pending' 'A, B, C, D, E, F, G, H' 'A, B, C, D, E, F, H' 'G' 0 0
+    Add-Content -LiteralPath $indentedTier -Value "`n## Unsettled — host evidence required`n  - Critical — host evidence required."
+    Assert-Fails { & $validator -Path $indentedTier | Out-Null } 'mandated form' 'An indented tier-looking Unsettled item must be rejected, not skipped.'
+
+    # ...and the conforming shape, with nested detail and a Medium item, stays valid.
+    $conforming = Write-Report 'unsettled-conforming.md' 'Critical tier verified; host evidence pending' 'A, B, C, D, E, F, G, H' 'A, B, C, D, E, F, H' 'G' 0 1
+    Add-Content -LiteralPath $conforming -Value "`n## Unsettled — host evidence required`n- **High** — downstream check needs host access.`n  - detail line`n  - High latency was observed on the slow lane.`n- **Medium** — informational."
+    & $validator -Path $conforming | Out-Null
+
     'audit-tests report contract OK'
 }
 finally {

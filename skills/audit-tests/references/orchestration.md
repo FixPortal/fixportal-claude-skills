@@ -68,21 +68,35 @@ decide validity.
    targets committed HEAD only or includes the named working-tree changes; a fix
    pass always needs a clean base.
 4. Stack detection: `*.sln` / `*.slnx` / `*.csproj` → .NET. `package.json` +
-   `vitest.config.*` / `vite.config.*` → frontend. `pyproject.toml` + `uv.lock` →
-   Python (uv), the `scaffold-python` layout. .NET plus frontend → hybrid (run both
-   conventions). None of these → stop and say so; do not guess.
+   `vitest.config.*` + `tsconfig.json`, with no `react` / `react-dom` in
+   `dependencies` / `devDependencies`, no `vite.config.*` and no `workspaces` field
+   in the root `package.json` → Node TypeScript (Vitest), the `scaffold-typescript`
+   layout; this rule is evaluated BEFORE the frontend rule.
+   `package.json` + `vitest.config.*` / `vite.config.*` → frontend; a repo with
+   `vite.config.*`, with a `react` dependency, or whose root `package.json` declares
+   `workspaces`, stays frontend (per-package classification for workspaces is not
+   defined by this skill). A plain-JavaScript Vitest repo (`vitest.config.*`, no
+   `tsconfig.json`) also stays frontend, unchanged.
+   `pyproject.toml` + `uv.lock` → Python (uv), the `scaffold-python` layout. .NET plus
+   frontend, or .NET plus Node TypeScript (Vitest) → hybrid (run both conventions).
+   Python (uv) beside any other supported stack is likewise hybrid; a half no row
+   covers is reported as `no instrument covers this stack (<label>)` below, never
+   dropped silently.
+   None of these → stop and say so; do not guess.
 
    **Say WHICH thing is true when you stop.** A repo this skill cannot audit is not a
    repo with no test-quality gap: unlocked Python, Go, a Jest frontend and a plain Node
    service all land here, and every one can hold exactly the defects this audit exists
    to find. Report `no instrument covers this stack (<label>)` — never `n/a`, and never
-   a clean row. Step 4 only classifies .NET, Vitest/Vite frontend, Python (uv), hybrid,
-   or none, so `<label>` comes from the MANIFEST that was actually found, named plainly:
-   `pyproject.toml` without `uv.lock`, or `requirements.txt` → `Python (not uv)`, `go.mod` → `Go`, `package.json` with a
-   Jest config → `Jest frontend`, `package.json` with neither Vite nor Jest → `Node`,
-   `Cargo.toml` → `Rust`, and anything else → `unknown stack (<the manifest filenames
-   seen>)`. Naming the manifests rather than guessing a framework keeps the row
-   falsifiable: a reader can check what was on disk. A sweep that renders both the same way claims coverage it does not have,
+   a clean row. Step 4 only classifies .NET, Node TypeScript (Vitest), Vitest/Vite
+   frontend, Python (uv), hybrid, or none, so `<label>` comes from the MANIFEST that
+   was actually found, named plainly: `pyproject.toml` without `uv.lock`, or
+   `requirements.txt` → `Python (not uv)`, `go.mod` → `Go`, `package.json` with a
+   Jest config → `Jest frontend`, `package.json` with neither Vite nor Jest nor
+   Vitest → `Node`, `Cargo.toml` → `Rust`, and anything else →
+   `unknown stack (<the manifest filenames seen>)`. Naming the manifests rather than
+   guessing a framework keeps the row falsifiable: a reader can check what was on
+   disk. A sweep that renders both the same way claims coverage it does not have,
    and the repos most likely to be unaudited are then the least likely to be noticed.
    The limit is the instrument's conventions (xUnit/NSubstitute/AwesomeAssertions,
    Vitest), not a judgement that other stacks need no auditing.
@@ -135,7 +149,7 @@ Prompt = full text of `references/axis-brief.md` with `<AXIS>` and
 Repository root: <toplevel>
 Audit mode: <full | delta>
 Evidence scope: <entire repository | changed paths plus impacted surface>
-Stack: <.NET | frontend | Python (uv) | hybrid — from Phase 0>
+Stack: <.NET | Node TypeScript (Vitest) | frontend | Python (uv) | hybrid — from Phase 0>
 Test project paths: <from Phase 0>
 Knowledge graph: <toplevel>\graphify-out\ exists — consult it before walking the tree.   [omit this line if absent]
 Glob ** is unreliable both for dot-directories AND for middle-anchored patterns like **\<name>\** — enumerate both by literal path or Get-ChildItem -Recurse -Directory; an empty ** result is never evidence of absence.
@@ -443,31 +457,38 @@ A report-only run ENDS HERE. Say where the report is; stop.
    with that fact quoted, and if the second attempt cannot demonstrate it
    either, stop and hand the item back as needing a different test design. A
    test that cannot fail is worse than the gap it claims to close.
-5. Full local gate before any push. .NET: build + all tests, then every
+5. Full local gate before any push. .NET, in CI's order: `dotnet tool restore`,
+   read-only `dotnet csharpier check .`, `dotnet restore`, Release
+   `dotnet build <solution> --configuration Release --no-restore`, then the
+   repository's own test invocation from `ci.yml`. Also run every
    repository-configured formatter, analyzer, and lint command. Build and tests
-   alone never authorize a push. If a category has no configured command, skip
+   alone never authorize a push. In a repo carrying `.github/ai-smells/`, run
+   `pwsh -File .github/ai-smells/pr-detect.ps1 -RepoPath . -Base origin/main -Head HEAD -OutFile <scratch>.json`
+   and fix or justify every hit. If a category has no configured command, skip
    only that category and record the configuration inspected and its absence;
    an unavailable local tool is not absence evidence. Frontend: `npx tsc -b
-   --noEmit`, `npx eslint .`, `npx vitest run`, plus `npx vite build` if an
-   SSR-rendered component was touched. All green, no exceptions. Red → iterate
-   in the worktree; stuck → stop, no push.
+   --noEmit` (only when a `tsconfig.json` exists), `npx eslint .`,
+   `npx vitest run`, plus `npx vite build` if an
+   SSR-rendered component was touched. Node TypeScript (Vitest): the repository's
+   own `typecheck`, `lint`, `format` (check-only), `test` and `build` scripts.
+   Python (uv): `uv run ruff check`, `uv run ruff format --check`, `uv run mypy`
+   (with explicit paths when the repository configures no mypy `files` and has no CI equivalent)
+   and `uv run pytest`, or the repository's own CI equivalents. All
+   green, no exceptions. Red → iterate in the worktree; stuck → stop, no push.
 6. `finishing-a-development-branch` option 2 → PR-gate sentinel → push →
-   `gh pr create` per the push-vs-PR org rules. PR body emoji-free.
+   `gh pr create --repo <owner>/<repo>` using the active runtime's contribution rules and the repository's protected-mainline policy. PR body emoji-free.
 
-   **Sentinel key.** `finishing-gate.sh` looks for
-   `ftdb-<basename of "git -C $CWD rev-parse --show-toplevel">`, where `$CWD` is
-   the working directory of the tool call that runs `gh pr create`. Inside a
-   worktree, `--show-toplevel` returns the WORKTREE path — so the key is the
-   worktree dir name (`reviewer-passes`), NOT the repo name.
-   `pr-gate-sentinel.ps1` derives its default the same way from its own CWD.
+   **Sentinel key.** `finishing-gate.sh` looks for `ftdb-<owner>/<repo>`: the
+   `--repo` named on the `gh pr create` command first, otherwise the owner/repo
+   parsed from `origin`. It is NOT the directory or worktree name (the directory
+   basename is only a fallback when the gate cannot source `pr-review-policy.sh`).
+   `pr-gate-sentinel.ps1` derives its default from `origin` the same way.
 
-   So: **write the sentinel from the same working directory you will run
-   `gh pr create` from**, and the bare no-arg form is correct —
-   `pwsh -File ~/.claude/hooks/pr-gate-sentinel.ps1`. The two only
-   disagree when the sentinel is written from one directory and the PR created
-   from another. If you cannot guarantee that, pin `-Repo` to the basename of
-   the toplevel as seen from the PR-creating CWD. If it blocks anyway, the error
-   names the key it wanted — write that exact value.
+   So the bare no-arg form is correct from inside the repo or its worktree —
+   `pwsh -File ~/.claude/hooks/pr-gate-sentinel.ps1`. If the sentinel is written
+   from a directory whose `origin` differs from the PR's repo, pin
+   `-Repo <owner>/<repo>`. If it blocks anyway, the error names the key it
+   wanted — write that exact value.
 7. Windows trap: `Set-Location` OUT of the worktree before any later
    `git worktree remove`.
 

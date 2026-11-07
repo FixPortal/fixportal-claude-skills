@@ -81,7 +81,7 @@ For every test file you inspect:
   it violates the active injected-clock rule or uses BCL date types where the
   domain convention requires NodaTime `LocalDate`.
 - Inspect available recent CI run job/step durations and TRX per-test durations (on
-  Python (uv), `pytest --durations`) before
+  Python (uv), `uv run --locked pytest --durations=0 --durations-min=0`; a stale `uv.lock` makes that fail, so record duration evidence as unavailable rather than letting `uv run` rewrite the lockfile) before
   declaring the suite economically suitable for PR CI. Apply
   `scaffold-tests/references/ci-test-budgets.md` — resolved as a SIBLING of this skill's
   own directory: with `audit-tests` at `<skills-root>/audit-tests`, that file is
@@ -143,7 +143,7 @@ Rules for populating it:
 - Fields required on **every** finding, regardless of `findingKind`, and never blanked: `id`, `axis`, `findingKind`, `why`, `confidence`. The per-kind rules below (and the `n-a` rule) govern every other field.
 - `id` — prefix with your axis letter and number sequentially (`A1`, `A2`, ... or `H1`, `H2`, ...). Never reuse a number.
 - `axis` — the value of `<AXIS>` as given to you.
-- `findingKind` — one of `behaviour` | `suite-hygiene` | `measurement` | `n-a`. Decide this first; it determines which of the fields below you fill in.
+- `findingKind` — exactly one of `behaviour` | `suite-hygiene` | `measurement` | `n-a`. Decide this first; it determines which of the fields below you fill in. Any other value (including `invariant`, `defect`, `gap`) is rejected. `invariant` is a **field**, not a kind: a property that must always hold is `findingKind: "behaviour"` with the `invariant` field populated and `behaviour` left `""`.
 - `evidence` — a `file:line`. **Required for every `findingKind` except `n-a`** — that is the one and only exception to "required," and it exists so nobody manufactures a finding to fill this field. If you cannot point at a line for a `behaviour`, `suite-hygiene`, or `measurement` finding, you do not have the finding yet: go find the line or drop the finding.
 - `why` — the reasoning behind your verdict: `coverageVerdict` for `behaviour` findings, the one-sentence description of the actual defect for `suite-hygiene` (paired with the bare enum in `suiteDefect` — the description lives here, not there), the gap being flagged for `measurement`, or the N/A determination for `n-a`. Always required, in particular for `missing` and `unknown` `coverageVerdict`s.
 - `confidence` — required on every finding, `high|medium|low`, never blanked (no empty variant, even for `n-a`): your confidence in the finding itself — the behaviour/invariant and its `coverageVerdict` for `behaviour`, the defect and its `correction` for `suite-hygiene`, the observation for `measurement`, and the N/A determination for `n-a`.

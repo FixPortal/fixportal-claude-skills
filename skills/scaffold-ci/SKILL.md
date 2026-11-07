@@ -20,7 +20,7 @@ Reconcile CI with the house standard; preserve working automation. Read `~/.agen
 | Final normalization | [Common mistakes](references/common-mistakes.md) |
 | Before changing policy rationale: dated measurements and rollout incidents | [Policy provenance](references/provenance.md) |
 
-Copy shipped `assets/` and `templates/`. After changes, run `scripts/sweep-canonical-asset-drift.ps1`.
+Copy shipped `assets/` and `templates/`. Run `scripts/sweep-canonical-asset-drift.ps1`.
 Estate sweeps use `-ExceptionsPath` with caller-owned JSON outside this skill;
 [Supporting files](references/supporting-files.md) defines the schema. No path grants
 no exemptions; missing or invalid specified data fails closed.
@@ -34,7 +34,7 @@ Local asset edits fail the consumer manifest gate; see `references/ci-workflow.m
 4. Run actionlint first after checkout in substantive jobs; zero-authority gate-control jobs are exempt.
 5. Keep Stryker outside per-commit CI: every mutation workflow has manual dispatch plus one staggered weekly UTC schedule.
 6. PR cost envelope: 30 seconds per test, 10 minutes per substantive required job, and a 15 aggregate runner-minute target. Route extended coverage to weekly/manual jobs capped at 45 minutes; cap each mutation job at 30 minutes.
-7. Never mutate GitHub settings or create secrets without approval. Public repositories enable free deterministic Code Quality, AI findings disabled; private/internal keep it off.
+7. GitHub settings/secrets require approval. Code Quality: public enabled, AI findings disabled; private/internal off. Dated pricing evidence and limits: see the dependencies and security reference.
 
 ## Load-bearing checks
 
@@ -52,3 +52,5 @@ Local asset edits fail the consumer manifest gate; see `references/ci-workflow.m
 Parse changed YAML/JSON; run actionlint, shipped tests, and `git add --dry-run .claude/review-policy.json`. Verify approved server-setting changes took effect. Commit or push only when requested.
 
 Supporting files: [Script and test inventory](references/supporting-files.md).
+
+Tests: [test/ inventory](references/validation.md).

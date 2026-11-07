@@ -160,8 +160,13 @@ $globalJsonWithoutSdkRepo = Join-Path ([IO.Path]::GetTempPath()) ("performance-g
 $manifestDirectory = Join-Path ([IO.Path]::GetTempPath()) ("performance-manifest-" + [guid]::NewGuid())
 $boundaryRepo = Join-Path ([IO.Path]::GetTempPath()) ("performance-managed-boundary-" + [guid]::NewGuid())
 $tools = Join-Path $fixture 'tools'
+# This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
+. (Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1')
+# A fixture root is registered only after its creation succeeded; cleanup deletes nothing else.
+$ownedFixtures = [System.Collections.Generic.List[string]]::new()
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
+    $ownedFixtures.Add($fixture)
     New-Item -ItemType Directory -Path (Join-Path $fixture 'src' 'Library') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $fixture 'bench' 'Benchmarks') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $fixture 'BenchmarkDotNet.Artifacts' 'results') -Force | Out-Null
@@ -268,18 +273,21 @@ exit 7
     Assert-That (-not (($inventory.markers.file -join "`n") -match '(?i)(^|[\\/])(bin|obj|\.git|\.?worktrees|node_modules|\.?venv)([\\/]|$)')) 'Expected pruned decoys to be excluded.'
 
     New-Item -ItemType Directory -Path $notARepo | Out-Null
+    $ownedFixtures.Add($notARepo)
     $outsideResult = Invoke-Inventory -Repository $notARepo
     $outside = $outsideResult.stdout | ConvertFrom-Json
     Assert-That ($outside.completeness -eq 'partial') 'Expected a non-repository directory to be partial.'
     Assert-That ($outside.warnings.Count -gt 0) 'Expected non-repository warning evidence.'
 
     New-Item -ItemType Directory -Path $limitRepo | Out-Null
+    $ownedFixtures.Add($limitRepo)
     1..65 | ForEach-Object { Set-Content -LiteralPath (Join-Path $limitRepo "file$_.cs") -Value 'class Filler { }' }
     $limitResult = Invoke-Inventory -Repository $limitRepo
     $limit = $limitResult.stdout | ConvertFrom-Json
     Assert-That ((@($limit.warnings | Where-Object { $_ -match 'Source-marker scan stopped: maximum file count 64 reached' }).Count -eq 1)) 'Expected fixed source-marker file ceiling warning.'
 
     New-Item -ItemType Directory -Path $markerLimitRepo | Out-Null
+    $ownedFixtures.Add($markerLimitRepo)
     Set-Content -LiteralPath (Join-Path $markerLimitRepo 'Markers.cs') -Value @(1..501 | ForEach-Object { 'class Marker { DbContext Context; }' })
     $markerLimitResult = Invoke-Inventory -Repository $markerLimitRepo
     Assert-That ($markerLimitResult.exitCode -eq 0) "Expected marker-capped inventory to exit successfully: $($markerLimitResult.stderr)"
@@ -289,6 +297,7 @@ exit 7
     Assert-That ((@($markerLimit.warnings | Where-Object { $_ -match 'Marker scan stopped: maximum marker count 500 reached' }).Count -eq 1)) 'Expected one marker ceiling warning.'
 
     New-Item -ItemType Directory -Path $directoryRepo | Out-Null
+    $ownedFixtures.Add($directoryRepo)
     1..65 | ForEach-Object { New-Item -ItemType Directory -Path (Join-Path $directoryRepo "directory$_") | Out-Null }
     & git -C $directoryRepo init -q
     $directoryResult = Invoke-Inventory -Repository $directoryRepo
@@ -298,6 +307,7 @@ exit 7
     Assert-That $directories.projectInventoryComplete 'Expected the project-aware pass not to share the small source-directory ceiling.'
 
     New-Item -ItemType Directory -Path $projectTruncationRepo | Out-Null
+    $ownedFixtures.Add($projectTruncationRepo)
     $deepProjectDirectory = $projectTruncationRepo
     1..34 | ForEach-Object {
         $deepProjectDirectory = Join-Path $deepProjectDirectory ("d{0:D2}" -f $_)
@@ -311,6 +321,7 @@ exit 7
     Assert-That ((@($projectTruncation.stoppingConditions | Where-Object { $_ -match 'project inventory' }).Count -eq 1)) 'Expected project-inventory truncation to be a stopping condition.'
 
     New-Item -ItemType Directory -Path $projectScaleRepo | Out-Null
+    $ownedFixtures.Add($projectScaleRepo)
     1..70 | ForEach-Object { Set-Content -LiteralPath (Join-Path $projectScaleRepo ("{0:D3}-source.cs" -f $_)) -Value 'class Filler { }' }
     Set-Content -LiteralPath (Join-Path $projectScaleRepo 'Scale.slnx') -Value '<Solution />'
     Set-Content -LiteralPath (Join-Path $projectScaleRepo 'Library.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
@@ -327,6 +338,7 @@ exit 7
     Assert-That $projectScale.projectInventoryComplete 'Expected complete project inventory when only source-marker scanning is capped.'
 
     New-Item -ItemType Directory -Path (Join-Path $globalJsonWithoutSdkRepo 'src') -Force | Out-Null
+    $ownedFixtures.Add($globalJsonWithoutSdkRepo)
     Set-Content -LiteralPath (Join-Path $globalJsonWithoutSdkRepo 'global.json') -Value '{"test":{"runner":"Microsoft.Testing.Platform"}}'
     Set-Content -LiteralPath (Join-Path $globalJsonWithoutSdkRepo 'src' 'Worker.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
     & git -C $globalJsonWithoutSdkRepo init -q
@@ -339,6 +351,7 @@ exit 7
     Assert-That ($globalJsonWithoutSdkInventory.targetFrameworks -contains 'net10.0') 'Expected project inventory to remain usable without global.json sdk configuration.'
 
     New-Item -ItemType Directory -Path $manifestDirectory | Out-Null
+    $ownedFixtures.Add($manifestDirectory)
     $canonicalBoundaryExclusions = @('unsafe', 'System.Runtime.Intrinsics', 'DllImport', 'LibraryImport', 'PInvoke', 'native binaries', 'native-dependent packages', 'custom native allocators', 'undocumented runtime switches', 'runtime-private APIs', 'reflection/runtime patching')
     $validManifest = [ordered]@{
         schemaVersion = 1
@@ -369,7 +382,7 @@ exit 7
         '## 13. Artifact ledger',
         '## 14. Remediation manifest'
     )
-    $reportContractText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\references\report-contract.md') -Raw
+    $reportContractText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..' 'references' 'report-contract.md') -Raw
     foreach ($heading in $reportHeadings) {
         if (-not $reportContractText.Contains("`n$heading`n") -and -not $reportContractText.Contains("`n$heading`r`n")) {
             throw "report-contract.md must state the exact validator heading '$heading'."
@@ -564,11 +577,23 @@ exit 7
     # nobody had to evidence - and there was nowhere in the schema to put one.
     $unevidencedDisposition = $unavailableWorkload | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $unevidencedDisposition.workloads[0].PSObject.Properties.Remove('harnessDispositionBasis')
+    # Completed AFTER the 2026-09-06T14:37:07Z cutover, so the basis is mandatory.
+    $unevidencedDisposition.audit.completedUtc = '2026-10-01T09:05:00Z'
     $unevidencedPath = Join-Path $manifestDirectory 'unevidenced-disposition.manifest.json'
     $unevidencedDisposition | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $unevidencedPath -NoNewline
     $unevidencedResult = Invoke-Manifest -ManifestPath $unevidencedPath
     Assert-That ($unevidencedResult.exitCode -ne 0 -and $unevidencedResult.stderr -match [regex]::Escape('harnessDispositionBasis')) `
         "a non-Promote disposition must state its basis: $($unevidencedResult.stderr)"
+
+    # R13: a v2 manifest published BEFORE the cutover has no basis and must stay valid
+    # (published manifests are never rewritten). The fixture's own 2026-08-26 completion
+    # predates the cutover.
+    $legacyNoBasis = $unavailableWorkload | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $legacyNoBasis.workloads[0].PSObject.Properties.Remove('harnessDispositionBasis')
+    $legacyNoBasisPath = Join-Path $manifestDirectory 'legacy-no-basis.manifest.json'
+    $legacyNoBasis | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $legacyNoBasisPath -NoNewline
+    $legacyNoBasisResult = Invoke-Manifest -ManifestPath $legacyNoBasisPath
+    Assert-That ($legacyNoBasisResult.exitCode -eq 0) "a pre-cutover v2 manifest without a basis must stay valid: $($legacyNoBasisResult.stderr)"
 
     $extraHeadingReportPath = Join-Path $manifestDirectory 'extra-heading.md'
     (@('# Performance audit') + $reportHeadings[0..11] + @('## main...origin/main') + $reportHeadings[12..13]) | Set-Content -LiteralPath $extraHeadingReportPath
@@ -759,6 +784,7 @@ exit 7
     }
 
     New-Item -ItemType Directory -Path (Join-Path $boundaryRepo 'src') -Force | Out-Null
+    $ownedFixtures.Add($boundaryRepo)
     Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Product.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
     Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Worker.cs') -Value 'class Worker { }'
     Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'MultiHunk.cs') -Value @(
@@ -988,6 +1014,54 @@ exit 7
     $scopedOutput = $scoped.stdout | ConvertFrom-Json
     Assert-That ($scoped.exitCode -eq 0 -and $scopedOutput.passed) "Expected ProductPath scope to exclude changes outside src: $($scoped.stderr)"
 
+    # A ProductPath that matches nothing must be an invocation error (exit 2), never a
+    # pass over an empty scope.
+    & git -C $boundaryRepo reset --hard -q HEAD
+    $emptyScope = Invoke-ManagedBoundary -Repository $boundaryRepo -ProductPath @('no-such-dir')
+    Assert-That ($emptyScope.exitCode -eq 2 -and $emptyScope.stderr -match 'matches no tracked file') `
+        "Expected a ProductPath matching nothing to exit 2, got $($emptyScope.exitCode): $($emptyScope.stderr)"
+
+    # CX16: a work-tree root passed with a trailing separator is still the root.
+    $trailing = Invoke-ManagedBoundary -Repository ($boundaryRepo + [IO.Path]::DirectorySeparatorChar)
+    Assert-That ($trailing.exitCode -eq 0) "Expected a trailing separator on RepositoryPath to be accepted: $($trailing.stderr)"
+
+    # R21: a plain interpolated string with simple holes is not lexically ambiguous, and
+    # its hole contents are scanned as code. A nested quote in a hole stays ambiguous.
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Interp.cs') -Value 'class I { string s = $"count {name} {{literal}}"; }'
+    & git -C $boundaryRepo add .
+    $interpPlain = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $interpPlainOutput = $interpPlain.stdout | ConvertFrom-Json
+    Assert-That ($interpPlain.exitCode -eq 0 -and @($interpPlainOutput.warnings | Where-Object { $_.rule -eq 'lexical-review' }).Count -eq 0) `
+        'Expected a plain interpolated string with simple holes to raise no lexical-review warning.'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Interp.cs') -Value 'class I { string s = $"{NativeLibrary.Load(p)}"; }'
+    & git -C $boundaryRepo add .
+    $interpHole = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $interpHoleOutput = $interpHole.stdout | ConvertFrom-Json
+    Assert-That (@($interpHoleOutput.violations | Where-Object { $_.rule -eq 'native-interop' }).Count -eq 1) `
+        'Expected native interop inside an interpolation hole to be a violation.'
+    Set-Content -LiteralPath (Join-Path $boundaryRepo 'src' 'Interp.cs') -Value 'class I { string s = $"{(a ? "x" : "y")}"; }'
+    & git -C $boundaryRepo add .
+    $interpQuote = Invoke-ManagedBoundary -Repository $boundaryRepo
+    $interpQuoteOutput = $interpQuote.stdout | ConvertFrom-Json
+    Assert-That (@($interpQuoteOutput.warnings | Where-Object { $_.rule -eq 'lexical-review' }).Count -eq 1) `
+        'Expected a quote nested in an interpolation hole to stay lexically ambiguous.'
+    & git -C $boundaryRepo reset --hard -q HEAD
+    Remove-Item -LiteralPath (Join-Path $boundaryRepo 'src' 'Interp.cs') -Force -ErrorAction SilentlyContinue
+
+    # R09: git C-quotes a path holding a quote, so `bad".dll` arrives as `"bad\".dll"` and
+    # matched no extension test. NTFS cannot hold such a file, so the entry is made in the
+    # index only (hash-object + update-index) and marked skip-worktree, which makes
+    # `git diff <base>` report it as Added - the same record Linux/macOS would produce.
+    # The blob holds a NUL so git treats it as binary and emits no `+++` header; a text blob
+    # would trip the unreadable-header cross-check and hide the defect.
+    $quotedBlob = ("MZ`0bin" | & git -C $boundaryRepo hash-object -w --stdin)
+    & git -C $boundaryRepo -c core.protectNTFS=false update-index --add --cacheinfo "100644,$quotedBlob,bad`"q.dll"
+    & git -C $boundaryRepo -c core.protectNTFS=false update-index --skip-worktree 'bad"q.dll'
+    $quoted = Invoke-ManagedBoundary -Repository $boundaryRepo
+    & git -C $boundaryRepo -c core.protectNTFS=false update-index --force-remove 'bad"q.dll'
+    Assert-That ($quoted.exitCode -eq 2 -and $quoted.stderr -match 'C-quoted path') `
+        "Expected a git C-quoted path to fail closed (exit 2), got $($quoted.exitCode): $($quoted.stdout) $($quoted.stderr)"
+
     if (-not $IsWindows) {
         $caseVariant = $boundaryRepo.ToUpperInvariant()
         $caseSensitiveScope = Invoke-ManagedBoundary -Repository $boundaryRepo -ProductPath @($caseVariant)
@@ -997,34 +1071,9 @@ exit 7
     Write-Host 'PASS: inventory and manifest contracts verified.'
 }
 finally {
-    if (Test-Path -LiteralPath $fixture) {
-        Remove-Item -LiteralPath $fixture -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $notARepo) {
-        Remove-Item -LiteralPath $notARepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $limitRepo) {
-        Remove-Item -LiteralPath $limitRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $markerLimitRepo) {
-        Remove-Item -LiteralPath $markerLimitRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $directoryRepo) {
-        Remove-Item -LiteralPath $directoryRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $projectTruncationRepo) {
-        Remove-Item -LiteralPath $projectTruncationRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $projectScaleRepo) {
-        Remove-Item -LiteralPath $projectScaleRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $globalJsonWithoutSdkRepo) {
-        Remove-Item -LiteralPath $globalJsonWithoutSdkRepo -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $manifestDirectory) {
-        Remove-Item -LiteralPath $manifestDirectory -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $boundaryRepo) {
-        Remove-Item -LiteralPath $boundaryRepo -Recurse -Force
+    # Each registered root is re-validated and printed by the helper before deletion.
+    foreach ($ownedFixture in $ownedFixtures) {
+        try { Remove-OwnedTempTree -Path $ownedFixture }
+        catch { Write-Warning "fixture cleanup refused: $($_.Exception.Message)" }
     }
 }

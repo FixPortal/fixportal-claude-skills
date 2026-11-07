@@ -148,6 +148,15 @@ if (-not $RunRoot) {
     $RunRoot = Join-Path ([IO.Path]::GetTempPath()) (Join-Path 'adversarial-review' $stamp)
 }
 New-Item -ItemType Directory -Path $RunRoot -Force | Out-Null
+# Each chunk is a separate process, started in this process's directory rather than at
+# PowerShell's location, so every path it is handed must already be absolute: a relative
+# -ManifestPath could otherwise load a same-named roster from the wrong directory.
+$here = (Get-Location).ProviderPath
+$RunRoot = (Resolve-Path -LiteralPath $RunRoot).Path
+if ($ManifestPath) { $ManifestPath = [IO.Path]::GetFullPath($ManifestPath, $here) }
+# run-review.ps1 resolves a relative -PreamblePath against its own directory (briefs/system-preamble.txt).
+if ($PreamblePath -and -not [IO.Path]::IsPathRooted($PreamblePath)) { $PreamblePath = [IO.Path]::GetFullPath($PreamblePath, $PSScriptRoot) }
+$ContextPath = @($ContextPath | ForEach-Object { $_ -split ';' } | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_, $here) })
 $RunId = Split-Path -Leaf $RunRoot
 
 Write-Host "Batch review: $($chunks.Count) chunks, batch-size $BatchSize"
@@ -242,6 +251,7 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +ch
     $psi = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
     foreach ($arg in $a) { $psi.ArgumentList.Add([string]$arg) }
     $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = $using:here
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -249,12 +259,14 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +ch
     $stdout = $proc.StandardOutput.ReadToEndAsync()
     $stderr = $proc.StandardError.ReadToEndAsync()
     $finished = $proc.WaitForExit($timeoutMs)
+    $killConfirmed = $null
     if (-not $finished) {
         # Only the exit-between-wait-and-kill race is expected; any other failure to
         # kill the tree would leave a wedged spine running, so it must surface.
         try { $proc.Kill($true) }
         catch [System.InvalidOperationException] { Write-Verbose "chunk $($c.id) exited before it could be stopped" }
-        [void]$proc.WaitForExit($drainMs)
+        # Kill() is asynchronous: only this wait says the process actually went.
+        $killConfirmed = $proc.WaitForExit($drainMs)
     }
     $sw.Stop()
     $exit = if ($finished) { $proc.ExitCode } else { $null }
@@ -276,6 +288,7 @@ $results = $chunks | ForEach-Object -ThrottleLimit $BatchSize -ErrorVariable +ch
 
     [pscustomobject]@{
         chunkId = $c.id; label = $c.label; exitCode = $exit; timedOut = (-not $finished)
+        killConfirmed = $killConfirmed; drained = $drained
         pooledCount = $pooledCount
         elapsedSec = [int]($sw.Elapsed.TotalSeconds); workDir = $chunkDir
         hasMetrics = (Test-Path -LiteralPath (Join-Path $chunkDir 'metrics.json'))
@@ -293,6 +306,7 @@ $unreported = @($chunks | Where-Object { $_.id -notin $reportedChunks })
 foreach ($m in $unreported) {
     $results += [pscustomobject]@{
         chunkId = $m.id; label = $m.label; exitCode = $null; timedOut = $false
+        killConfirmed = $null; drained = $null
         pooledCount = $null
         elapsedSec = $null; workDir = (Join-Path $RunRoot $m.id)
         hasMetrics = $false
@@ -303,7 +317,11 @@ if ($chunkTimeoutErrors.Count -gt 0) {
 }
 $wedged = @($results | Where-Object { $_.timedOut })
 if ($wedged) {
-    Write-Warning ("$($wedged.Count) chunk(s) hit the ${ChunkTimeoutSeconds}s chunk timeout and were stopped: " +
+    # "Stopped" only when the exit was observed and the output pipes closed; otherwise a
+    # process may still be running, and saying so is the only trace the summary leaves.
+    $unconfirmed = @($wedged | Where-Object { -not ($_.killConfirmed -and $_.drained) } | ForEach-Object { $_.chunkId })
+    $outcome = if ($unconfirmed) { "were sent a stop, NOT confirmed to have exited for: $($unconfirmed -join ', ')" } else { 'were stopped' }
+    Write-Warning ("$($wedged.Count) chunk(s) hit the ${ChunkTimeoutSeconds}s chunk timeout and ${outcome}: " +
         "$(@($wedged | ForEach-Object { $_.chunkId }) -join ', '). The stall is outside the spine's bounded rounds " +
         '(check target resolution, e.g. gh pr diff). They contribute no metrics.')
 }

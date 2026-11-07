@@ -28,7 +28,7 @@ Apply this visibility policy before classifying findings:
 
 | Repository visibility | Paid-product policy | Expected configuration |
 |---|---|---|
-| Public | Use GitHub's free public CodeQL, Secret Protection and Code Quality coverage. | Attach the public security configuration with Code Security and Secret Protection enabled. Enable CodeQL default setup, secret scanning, repository push protection, non-provider patterns, validity checks, extended metadata, generic-secret detection, and private vulnerability reporting where GitHub exposes them. Keep Code Quality enabled on public repositories. |
+| Public | Use GitHub's free public CodeQL and Secret Protection, plus Code Quality under the estate's accepted public policy and dated billing observations. | Attach the public security configuration with Code Security and Secret Protection enabled. Enable CodeQL default setup, secret scanning, repository push protection, non-provider patterns, validity checks, extended metadata, generic-secret detection, and private vulnerability reporting where GitHub exposes them. Keep Code Quality enabled on public repositories. |
 | Private or internal | No paid Code Security, Secret Protection or Code Quality. | Leave repositories unattached from paid security configurations, disable effective `code_security` and all secret-scanning features, and keep Code Quality disabled unless paid use is explicitly approved. Keep Dependency Graph, Dependabot alerts, and Dependabot security updates enabled. |
 
 Derive identity and policy inputs live for each repository with
@@ -65,14 +65,16 @@ default for public repositories. No paid security configuration should be the
 default for, or attached to, private/internal repositories.
 
 Apply the Code Quality capability and UI-evidence rules in
-`references/github-evidence.md`. Public Code Quality is free and expected to be enabled;
-private/internal Code Quality is paid and expected to be disabled unless paid use is
+`references/github-evidence.md`. Public Code Quality is expected enabled under the
+estate's accepted policy; its pricing premise rests on dated billing observations,
+not a verified universal exemption (see [the shared pricing evidence](../scaffold-ci/references/dependencies-and-security.md#github-security-surfaces--visibility-policy)).
+Private/internal Code Quality is paid and expected to be disabled unless paid use is
 explicitly approved (`code_quality_paid_approved` with a `VERIFIED_APPROVED` access
 reading, which `classify-security-evidence.ps1` accepts). Do not invent a paid-
 authorization gap for public Code Quality.
 
 Establish organization Repository access and enforcement before any Code Quality
-mutation. Free is not the same as readable: access and enforcement stay UI-only whatever
+mutation. Pricing does not prove readability: access and enforcement stay UI-only whatever
 they cost, so they can still be unverified, and `classify-security-evidence.ps1` still
 reports `Code Quality org access is UNVERIFIED` as a gap. The compliant shapes are
 **Selected repositories** holding exactly the public repositories with **Enforce access**
@@ -160,6 +162,8 @@ Inventory each repository before changing anything:
   the public repository alert endpoint first. Use a successful `200`; otherwise use the
   organization endpoint when the owner is an organization and filter by exact
   `repository.full_name`. Declare UI-only/UNKNOWN only after every available route fails.
+  Pass `hide_secret=true` on every alert list call: the default returns the literal
+  secret value, and the audit never needs it.
 - Organization/public repository security advisories.
 - Latest default-branch Actions checks and security-product configuration.
 - Rulesets and branch protection as a separate control surface when in scope.
@@ -277,3 +281,11 @@ Classify each repository:
 Report the initial/final count matrix, finding-to-disposition ledger, API
 mutations, commit and PR references, scan URLs and SHA proof, policy-disabled
 products, residual items, and exact reason automation stopped.
+
+## Report location
+
+Save the report to `<vault>/Claude/Estate Audit/<estate>/<YYYY-MM-DD>-github-<topic>.md`
+(for example `<vault>/Claude/Estate Audit/my-estate/2026-10-12-github-security-controls.md`),
+where `<estate>` is the estate root's folder name. Never overwrite an existing file.
+
+Tests: [test/ inventory](references/validation.md).

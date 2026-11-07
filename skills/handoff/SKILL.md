@@ -5,6 +5,9 @@ description: Use when work must cross a session boundary and context will be los
 
 # Handoff
 
+Resolve `<skills-home>` to the canonical shared skills directory from the active
+runtime instructions; do not infer it from a plugin cache or a host-only skill.
+
 ## Overview
 
 Context does not survive a session boundary, and the artefacts normally left
@@ -19,9 +22,8 @@ from durable artefacts; `handoff` writes the brief before the context is lost. `
 one thing: a brief a *different* session — possibly a different agent entirely —
 can pick up cold, plus one resume line to invoke it with.
 
-Canonical in ~/.agents/skills/, junctioned into ~/.claude/skills/,
-~/.gemini/config/skills/, ~/.gemini/antigravity-cli/skills/, ~/.pi/skills/,
-and ~/.pi/agent/skills/ — keep it
+Canonical in ~/.agents/skills/, junctioned into ~/.claude/skills/ and into each
+other runtime's skills root where that runtime is installed — keep it
 host-agnostic and MCP-free.
 
 ## Modes
@@ -303,3 +305,5 @@ read <workdir>\repo\.claude\handoff\2026-09-16-fix-envelope-mapper-9f2c41ab.md a
   otherwise produce a name a second agent in this repo could produce too. The brief you
   overwrite is one nobody gets to read again, and the agent relying on it finds out by
   resuming the wrong task.
+
+Tests: [test/ inventory](references/validation.md).

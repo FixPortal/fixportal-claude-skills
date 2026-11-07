@@ -1,6 +1,6 @@
 ---
 name: audit-skills
-description: Use when the user wants their authored agent skills audited across Claude Code, Codex, Kimi Code, Antigravity, or PI for relevance, stale references, weak triggers, runtime incompatibility, cross-home drift, or what a skill body discloses to a third-party model vendor that mounts it.
+description: Use when the user wants their authored agent skills audited across Claude Code, Codex, Kimi Code, Antigravity, or PI for relevance, stale references, weak triggers, runtime incompatibility, or cross-home drift.
 ---
 
 # Audit Skills
@@ -13,9 +13,6 @@ description: Use when the user wants their authored agent skills audited across 
 - You conflated Antigravity IDE with Antigravity CLI or ignored Kimi-native overlays.
 - You are about to synthesize without diffing the returned worker set against the
   dispatched owned set. A silently capped subagent leaves no error in your context.
-- You graded exposure Good without naming the scope it was clean over, or reasoned
-  that a workspace sandbox contains it (it does not — skills load from the
-  runtime home, not the working directory).
 - Two subagents' findings use different severity words.
 - You graded Axes 1 and 2 without running `guidance_drift.py`, or graded them
   from a page that drifted from its snapshot.
@@ -25,13 +22,14 @@ description: Use when the user wants their authored agent skills audited across 
 ## Overview
 
 Sweep the skills the user **authors and can edit**, and produce a candid,
-trend-aware findings report across five axes: **reach** (trigger reliability),
+trend-aware findings report across four axes: **reach** (trigger reliability),
 **implementation** (structure against the official skill guidance),
 **correctness of references** (every path/file/command/package/constant the
 skill names actually resolves today, plus adherence to the user's own active
-runtime instructions), **utility** (evidence that the skill still earns its
-place in the active inventory), and **exposure** (what the skill body discloses
-when a third-party runtime mounts it and ships it to a model vendor).
+runtime instructions), and **utility** (evidence that the skill still earns its
+place in the active inventory). Vendor disclosure is deliberately not graded:
+the owner does not treat skill or transcript content reaching a model vendor as
+a concern (decided 2026-10-11).
 
 **Report only. Never edit a skill body.** Editing a skill is a separate,
 deliberate act governed by the skill-writing Iron Law (a skill edit needs a RED
@@ -112,11 +110,6 @@ scope". You have the tools. Use them.
   - `~/.pi/skills/*/SKILL.md` **and** `~/.pi/agent/skills/*/SKILL.md` (PI — two
     roots, both live, and it mounts a hand-picked subset rather than the whole
     canonical set, so enumerate it instead of assuming parity with `~/.agents`)
-- Record, per surface, which model vendor the runtime is configured against —
-  `~/.pi/agent/settings.json` for PI, the equivalent config for each other
-  runtime. Axis 5 needs to know which homes are third-party, and a runtime
-  repointed at a new vendor changes the exposure verdict without changing a
-  single skill body.
 - The six surface groups above span seven roots, because PI has two roots. The Antigravity CLI root is **not** flat
   Markdown — globbing `*.md` there returns only its CLI-native router skill and
   hides every canonical skill junctioned into it, so the audit reports false
@@ -209,10 +202,10 @@ scope". You have the tools. Use them.
 Use the runtime's native parallel-agent capability when available. Give each worker the
 contents of `audit-brief.md` (in this skill's directory), the path(s) to its one
 skill (across every surface where it exists), the full description inventory,
-that skill's utility evidence, the per-surface vendor map, the guidance
+that skill's utility evidence, the guidance
 `suspended_axes`, and whether its listing description is dropped. Each
-subagent reads only its skill, verifies every reference, scores the five axes,
-runs its own exposure sweep, detects its own cross-home drift, and returns the
+subagent reads only its skill, verifies every reference, scores the four axes,
+detects its own cross-home drift, and returns the
 structured JSON the brief specifies. Run the same contract sequentially if
 delegation is unavailable.
 
@@ -296,9 +289,7 @@ Use these plain names in worker JSON and reports; output does not require emoji.
 Reach/Implementation/Correctness use the defect scale: Broken, Reliability, Polish, and Good.
 Utility uses the lifecycle scale: Good `keep`, Polish
 `insufficient-evidence`, Reliability `narrow`/`merge`/`archive`, and Broken `retire`. Never read
-a Utility grade as defect severity. Exposure uses the disclosure scale: Broken
-credential material, Reliability identity and topology, Polish attribution, Good generic —
-defined in [references/exposure-classes.md](references/exposure-classes.md).
+a Utility grade as defect severity.
 
 Write the report as CRLF to
 `<vault>\Claude\SkillAudits\SkillAudit-YYYY-MM-DD.md`, where `<vault>` is the
@@ -316,14 +307,9 @@ The report must contain:
   description; which runtimes and history roots were searched, and
   `reach probe: not run` (Axis 1 graded from the description prose).
 - Scorecard with columns
-  `Skill | Reach | Impl | Correctness | Utility | Exposure | Top issue`.
+  `Skill | Reach | Impl | Correctness | Utility | Top issue`.
 - Findings grouped under Broken, Reliability, and Polish; each names the skill,
   exact evidence, and precise unapplied fix.
-- Exposure with columns `Skill | Class | Evidence | Exported by | Fix`, plus one
-  line naming which surfaces were treated as third-party this run and on what
-  configuration evidence. Omit the table when every owned skill graded Good, but
-  never omit the scope line — a clean exposure result is only meaningful
-  alongside the scope it was clean over.
 - Cross-skill findings for overlap, gaps, drift, and reinvention where present.
 - Lifecycle recommendations with columns
   `Skill | Disposition | Confidence | Evidence`.
@@ -335,3 +321,5 @@ The report must contain:
 In chat return only the verdict, scorecard, top fixes, and report path. Consult
 [references/report-contract.md](references/report-contract.md) only for
 illustrative formatting and presentation traps; it does not own execution rules.
+
+Tests: [test/ inventory](references/validation.md).

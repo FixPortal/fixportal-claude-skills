@@ -39,3 +39,5 @@ Before converting any controller, read [the complete conversion contract](refere
 - [ ] Newly introduced OpenAPI and Scalar are development-only; existing surfaces keep their gating.
 - [ ] Required endpoint classes are registered.
 - [ ] Build and parity tests pass.
+
+Tests: [test/ inventory](references/validation.md).

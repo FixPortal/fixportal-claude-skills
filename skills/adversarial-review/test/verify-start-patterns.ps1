@@ -49,6 +49,39 @@ $fencedHeadings = @(Get-ReviewHeadingLineNumbers -Lines @('````powershell', '###
 if ($fencedHeadings.Count -ne 1 -or $fencedHeadings[0] -ne 5) {
     $failures += 'a shorter closing fence must not end a longer opening fence'
 }
+# A line that merely starts with an inline ``` span is not a fence (CommonMark: a backtick info
+# string holds no backtick), and an unclosed fence must not hide every later heading.
+$inline = @(Get-ReviewHeadingLineNumbers -Lines @('### A', '```x``` is inline code', '### B') -Pattern '^### ')
+if (($inline -join ',') -ne '0,2') { $failures += "an inline triple-backtick span opened a fence and hid a later heading (got $($inline -join ','))" }
+$unclosed = @(Get-ReviewHeadingLineNumbers -Lines @('### A', '```powershell', 'x', '### B') -Pattern '^### ')
+if (($unclosed -join ',') -ne '0,3') { $failures += "an unclosed fence hid every later heading (got $($unclosed -join ','))" }
+
+# A reply wrapped in a ```markdown fence, whole or per finding, is markdown, not a code sample.
+$wrapperParser = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Expand-WrapperFences' }, $true)
+if ($null -eq $wrapperParser) { $failures += 'Expand-WrapperFences was not found in run-review.ps1' }
+else {
+    . ([scriptblock]::Create($wrapperParser.Extent.Text))
+    function Get-WrappedHeadings([string[]] $Lines) {
+        $expanded = Expand-WrapperFences $Lines '^### '
+        @(Get-ReviewHeadingLineNumbers -Lines $expanded -Pattern '^### ' | ForEach-Object { $expanded[$_] }) -join '|'
+    }
+    $shapes = @(
+        @{ Name = 'whole reply in a markdown fence'; Lines = @('```markdown', '### A', 'a', '### B', 'b', '```'); Want = '### A|### B' }
+        @{ Name = 'whole reply in a bare fence'; Lines = @('```', '### A', 'a', '```'); Want = '### A' }
+        @{ Name = 'one markdown fence per finding'; Lines = @('Gaps', '', '```markdown', '### A', '```', '', '```markdown', '### B', '```'); Want = '### A|### B' }
+        @{ Name = 'markdown wrapper with a nested code block'; Lines = @('```markdown', '### A', '```powershell', 'x', '```', '### B', '```'); Want = '### A|### B' }
+        @{ Name = 'a markdown example inside a plain finding stays fenced'; Lines = @('### A', 'fix it like so:', '```markdown', '### <short title>', '```', 'done'); Want = '### A' }
+        @{ Name = 'a quoted heading in a code sample stays hidden'; Lines = @('### A', '```text', '### quoted', '```'); Want = '### A' }
+        @{ Name = 'leading and trailing code samples are not a wrapper'; Lines = @('```', 'code', '```', '### A', '```', 'more', '```'); Want = '### A' }
+    )
+    foreach ($shape in $shapes) {
+        $got = Get-WrappedHeadings $shape.Lines
+        if ($got -ne $shape.Want) { $failures += "[wrapper] $($shape.Name): got '$got', want '$($shape.Want)'" }
+    }
+}
+if ($source -notmatch '\$lines = Expand-WrapperFences') {
+    $failures += 'Strip-Preamble must unwrap wrapper fences before it scans and slices the reply'
+}
 
 # --- Phase 1: findings are '### ' headings -----------------------------------
 $p1 = Get-InvokeRoundPattern 'p1'
@@ -58,6 +91,9 @@ Check 'p1' $p1 '- ### Heading in a list item' $true
 Check 'p1' $p1 '#### Deeper heading' $true
 Check 'p1' $p1 'I will now review the diff.' $false
 Check 'p1' $p1 'Here are my findings:' $false
+# An inline comment after sentence punctuation split a finding into two F-ids (2026-10-31).
+Check 'p1' $p1 'x = 1.  # float' $false
+Check 'p1' $p1 'I inspected the diff.### NO FINDINGS' $true
 
 # --- Phase 2: per-finding verdicts, however the reviewer emphasises them ------
 $p2 = Get-InvokeRoundPattern 'p2'
@@ -92,9 +128,11 @@ if ($source -match "(?m)^\s*if \(\`$ln -match '\^### '\)") {
 if ($source -match "Where-Object \{ \`$_ -match '\^### ' \}") {
     $failures += 'the issuesRaised counter still counts a hardcoded ^### heading instead of the shared parser.'
 }
-$sharedHeadingCalls = [regex]::Matches($source, 'Get-ReviewHeadingLineNumbers').Count
-if ($sharedHeadingCalls -ne 3) {
-    $failures += "the helper plus participation and pooling must use the shared heading parser (found $sharedHeadingCalls references)."
+foreach ($use in @(
+    @{ Name = 'participation (Strip-Preamble)'; Pattern = '\$headingIndices = @\(Get-ReviewHeadingLineNumbers -Lines \$lines -Pattern \$startPattern\)' }
+    @{ Name = 'pooling'; Pattern = '\$headingIndices = @\(Get-ReviewHeadingLineNumbers -Lines \$lines -Pattern \$script:FindingHeading\)' }
+)) {
+    if ($source -notmatch $use.Pattern) { $failures += "$($use.Name) must use the shared heading parser." }
 }
 # issuesRaised is read off the pooler's own provenance, so it cannot disagree with what pooled.
 if ($source -notmatch '\$raised = @\(\$pooledMap\.Values \| Where-Object \{ \$_\.reviewer -eq \$r\.id \}\)\.Count') {
@@ -119,6 +157,33 @@ if (-not $verdictStart -or -not $verdictLineTemplate) {
     Check 'p2-verdict' $verdictLine 'F1: arbitrary text with no verdict' $false
     Check 'p2-verdict' $verdictLine 'F12 and F13 both agree with this' $false
     Check 'p2-verdict' $verdictLine '### Verdicts' $false
+
+    # Coverage credits every id a verdict keyword follows, and ignores fenced examples.
+    $verdictParser = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-VerdictedIds' }, $true)
+    if ($null -eq $verdictParser) { $failures += 'Get-VerdictedIds was not found in run-review.ps1' }
+    else {
+        . ([scriptblock]::Create($verdictParser.Extent.Text))
+        $script:P2VerdictLine = $verdictLineTemplate.Replace('$script:P2VerdictStart', $verdictStart)
+        foreach ($case in @(
+            @{ Text = "F5: AGREE; F6: AGREE"; Want = 'F5,F6' }
+            @{ Text = "F1: AGREE - real`n``````text`nF2: AGREE`n``````"; Want = 'F1' }
+            @{ Text = "F3: AGREE - same mechanism as F7, which is out of scope"; Want = 'F3' }
+            @{ Text = "F3: AGREE with F7's reasoning; F8: AGREE"; Want = 'F3,F8' }
+        )) {
+            $got = @(Get-VerdictedIds $case.Text) -join ','
+            if ($got -ne $case.Want) { $failures += "[verdict-ids] '$($case.Text -replace "`n", ' / ')': got '$got', want '$($case.Want)'" }
+        }
+        $lineKeywords = [regex]::Match($verdictLineTemplate, '\\b\(\?:(?<k>[^)]+)\)\\b').Groups['k'].Value
+        if (-not $lineKeywords -or $verdictParser.Extent.Text -notmatch [regex]::Escape("(?:$lineKeywords)")) {
+            $failures += 'Get-VerdictedIds no longer uses the same verdict keywords as P2VerdictLine.'
+        }
+    }
+}
+
+# The brief must say what the driver does with a heading-less reply: it takes part, unpooled.
+$phase1Brief = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'briefs' 'phase1-review.txt') -Raw
+if ($phase1Brief -match 'review is dropped from the panel' -or $phase1Brief -notmatch 'still\s+counts\s+as\s+taking\s+part') {
+    $failures += 'phase1-review.txt misstates what happens to a reply with no heading (the driver counts it as taking part, unpooled).'
 }
 if ($source -notmatch '(?s)function Get-ReviewHeadingLineNumbers.*?\$line\s+-match\s+\$Pattern') {
     $failures += 'the shared heading parser must match each non-fenced line against its supplied pattern.'

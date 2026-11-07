@@ -39,7 +39,7 @@ $findingPattern = $findingPatternMatch.Groups[1].Value
 if ('I inspected the diff.### NO FINDINGS' -notmatch $findingPattern) {
     throw 'FindingHeading must admit a heading attached to preceding reviewer narration'
 }
-foreach ($nonHeading in 'the C# compiler', '$x  # keep', 'C# `# comment`') {
+foreach ($nonHeading in 'the C# compiler', '$x  # keep', 'C# `# comment`', 'x = 1.  # float') {
     if ($nonHeading -match $findingPattern) { throw "FindingHeading must not match an inline hash: $nonHeading" }
 }
 if ($findingPattern -notmatch '\^') { throw 'FindingHeading must anchor markdown headings at line start or sentence punctuation' }

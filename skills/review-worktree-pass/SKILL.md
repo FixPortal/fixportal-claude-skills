@@ -32,10 +32,19 @@ in the primary project checkout, with one numbered branch per pass.
     - **A closed, unmerged PR** — stop before batch selection. Do not treat it as
       an in-flight pass or silently abandon it; ask whether to resume the branch
       with a new PR or explicitly abandon the pass.
-    - **A merged pass** — first inspect `gh pr view <branch> --repo <owner>/<repo> --json state --jq .state`.
-      If it reports `MERGED`, the pass is merged. When the PR cannot be resolved, use
+    - **A merged pass** — first inspect `gh pr view <branch> --repo <owner>/<repo> --json state,headRefOid,baseRefName`.
+      If it reports `MERGED`, its `baseRefName` equals the branch component of the verified
+      mainline (a PR merged into any other base proves nothing about mainline), and its
+      `headRefOid` equals `git rev-parse HEAD`, the pass is merged.
+      If `headRefOid` differs from `HEAD`, commits were added after the merge (the orphan-branch
+      trap): run `git cherry -v <mainline-ref> HEAD` and treat any `+` row as work still in
+      flight; `MERGED` alone does not close the pass. When the PR cannot be resolved, use
       `git cherry -v <mainline-ref> HEAD` only after confirming the remote branch is gone;
-      no `+` rows means every branch patch is present on mainline. Rebase-merge rewrites
+      no `+` rows means every non-merge branch patch is present on mainline. `git cherry`
+      skips merge commits, so also run `git log --merges --oneline <mainline-ref>..HEAD`; for
+      each merge listed, `git show --cc <sha>` must show no conflict resolution, or that
+      resolution must be confirmed present on mainline, else it is work still in flight.
+      Rebase-merge rewrites
       SHAs, so `<mainline-ref>..HEAD` stays non-empty after a merge and cannot answer this.
       Matching titles are not patch evidence either. If any `+` remains, the pass is in
       flight; continue on it. If none remain, confirm the tree is clean (`git status --porcelain` empty;
@@ -124,12 +133,51 @@ supplies the number either. Do not fill that gap by inference — run the comman
 If all three come back empty in a project whose memory records earlier passes, trust the
 memory: a merged and torn-down batch can leave nothing behind at all.
 
+## Close a finding only on a demonstrated red
+
+A finding marked **fixed** needs proof that its check fails without the fix and passes
+with it. A new test that passes is not that proof: a test that cannot fail passes too.
+The 2026-10-11/12 `audit-tests` sweep refuted two remediation closures this way — in two
+different repositories, each closure shipped a test that stayed green with the
+fix reverted.
+
+- **Red first.** Write or pick the check, run it against the pre-fix code, and confirm it
+  fails **for the finding's reason** — the expected assertion, not a compile error, a
+  missing fixture or a skipped test. Then apply the fix and run it green.
+- **Existing coverage counts.** If a test already exercises the defect, show that test red
+  on the pre-fix code instead of adding a duplicate.
+- **Untestable findings** (docs, config, workflow-only) need a stated alternative check that
+  goes red the same way — a failing guard or contract script, an `actionlint` error, a
+  reproduced CI failure — plus a one-line reason no test applies. "Reviewed by reading" is
+  not a red.
+- **Record both runs.** Put the red and green evidence — command and the decisive failing
+  line — in the commit message or PR body against the finding's id. A finding without it is
+  not fixed; disposition it as declined or deferred instead.
+
+## Test safety in every brief and review
+
+Every implementer or verifier subagent brief that writes or runs tests must repeat
+these constraints explicitly; do not assume the child inherited the parent context:
+Pester and destructive PowerShell verifiers run through `safe-test-run` in Windows
+Sandbox on a disposable snapshot, never in the working profile. Clean lint does not
+permit host execution. Destructive fault injection needs separate approval for the
+exact guest-only command; do not create a host-profile decoy or sentinel proof.
+
+Review **deletion-target provenance**: trace the actual resolved target even when
+setup throws before assignment or leaves stale state. Require positive evidence that
+the target belongs to the current test/helper, and print its resolved path before
+recursive deletion. A temp API, variable name or intended assignment is not ownership
+proof. Cleanup must refuse an unvalidated target after failed setup. Guards supplement
+isolation; they do not provide it. Record the isolated lane and actual result/gaps.
+
 ## Before you push
 
-Run the repo's full local check suite **in this worktree** before the push that
+Run the repo's full check suite against a snapshot of **this worktree** before the push that
 opens or updates the PR — the *Build and test before pushing a PR* rule, whose
 own rationale is written around exactly this workspace ("the whole point of a
 worktree is to run exactly this check without disturbing the primary checkout").
+Use the isolated lane above for Pester/destructive verifiers; only inspected read-only PowerShell
+parse/lint checks may execute in the working profile. Report unavailable prerequisites.
 For a TS/JS repo that is typecheck, lint, the full test run, and a build when an
 SSR-rendered component was touched; elsewhere it is that repo's equivalent.
 
@@ -160,7 +208,14 @@ the start of the next review.
 
 Only after all findings are fixed, declined with reasoning, or explicitly deferred,
 close the source run's `_index.md`: set `disposition: remediated` and add
-`remediation-tip: <40-character mainline SHA>`. Flip an existing
+`remediation-tip: <40-character mainline SHA>`, plus a `remediation-commits:` list of
+the pass's merged commits as they landed on mainline (40-character SHAs, one per line;
+after a rebase-merge these are the new SHAs, not the branch's). `review-digest`
+subtracts exactly that list from drift, and `validate-report.ps1` requires it on runs
+dated 2026-11-02 or later. A pass that merged no fix (every finding declined or
+deferred) is not a remediation: leave the record `disposition: reviewed`, with the
+dispositions written in its report, rather than marking it remediated with an empty
+list. Flip an existing
 `disposition: reviewed` line — and if the run predates the convention and has
 no `disposition` line at all (a legacy record), add both lines. Never leave the
 source record dispositionless after a merged pass.
@@ -193,12 +248,16 @@ validation passes. Copying first also makes the failure recoverable by a person 
 not this session.
 
 Stale-after-merge cleanup (pre-authorised post-merge tidy): before deleting the
-branch, confirm it is genuinely merged using the rebase-merge fingerprint from
-the *Pull request merge style* rule: **both** the remote branch is gone and the
-local branch's commit titles match the rebased commits on the verified
-mainline. An empty
+branch, confirm it is genuinely merged. The *Pull request merge style* fingerprint
+needs **both** checks — the remote branch is gone and the local branch's commit titles
+match the rebased commits on the verified mainline — but matching titles are not patch
+evidence, as the start-of-pass check above already says. So also require patch
+evidence: the PR reports `MERGED` with a `headRefOid` equal to the local branch tip, or
+`git cherry -v <mainline-ref> <branch>` shows no `+` rows. Any `+` row means the branch
+holds work that never reached mainline: stop, do not delete it. `git cherry` skips merge
+commits, so apply the merge-commit check from the start-of-pass step too. An empty
 `git diff <mainline-ref>..<branch>` is useful supplemental evidence, never a
-substitute for either required check.
+substitute for any required check.
 
 Because the branch is checked out in the worktree, first change the shell's
 working directory to the verified primary checkout (or another safe directory
@@ -212,6 +271,9 @@ re-arguing the policy — not the ACT. `git worktree remove` and `git branch -D`
 irreversible for anything not already on the mainline, and a clean tree is not evidence
 that the branch is unwanted: it is equally the state of a finished pass whose PR has not
 merged yet. Immediately before removing, report the worktree path, the branch name, the
-empty-range and remote-gone checks that were run, and wait for explicit confirmation.
+remote-gone, title-match and patch-evidence checks that were run (PR `MERGED` at the
+branch tip, or no `+` rows from `git cherry -v`), and wait for explicit confirmation.
 Absent it, leave both in place and say so; a lingering worktree costs disk, a deleted
 in-flight branch costs the pass.
+
+Tests: [test/ inventory](references/validation.md).

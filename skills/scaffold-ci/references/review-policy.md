@@ -103,6 +103,27 @@ allowlist is the only thing that catches a *new* third-party dependency, but def
 with any short list fails most repos in this estate, and a gate that reddens on adoption gets
 reverted rather than fixed.
 
+**Opt-in: an isolated, offline PyYAML.** The canonical guard runs the checker on the
+runner image's system `python3`, which carries PyYAML — keep that as the default, and never
+add `actions/setup-python` (its tool-cache interpreter has no PyYAML). A repo that wants the
+parser pinned and independent of the runner image can vendor
+the wheel under `.github/vendor` and replace the hygiene step with:
+
+```yaml
+      - name: Create workflow parser environment
+        run: python3 -m venv "$RUNNER_TEMP/review-parser"
+      - name: Install pinned workflow parser
+        run: '"$RUNNER_TEMP/review-parser/bin/python" -m pip install --disable-pip-version-check --no-index --no-deps --find-links=.github/vendor PyYAML==6.0.3'
+      - name: Workflows must be hygienic (no target-context trigger, no write-all, actions pinned)
+        env:
+          PRIVILEGED_TRIGGER_NO_CHECKOUT: review-tier.yml
+        run: '"$RUNNER_TEMP/review-parser/bin/python" .github/scripts/assert_workflow_hygiene.py'
+```
+
+`--no-index` keeps the install offline (no PyPI at guard time). This is a deliberate
+divergence from canonical: the asset drift gate will report it, so record it in the repo's
+manifest, and expect `audit-ci`'s byte comparison to flag the guard as adapted.
+
 The HIGH-list loops sit in their own step, `Policy-controlled paths must remain HIGH`
 (`shell: bash`, `set -euo pipefail`), so a consumer's contract checker can pin that step's
 whole body. Keep the name exact; scaffold-ci's tests fail if it disappears.

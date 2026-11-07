@@ -20,10 +20,12 @@
   Read-only. Never dismisses an alert, opens a PR, or closes anything.
 
 .PARAMETER Org
-  GitHub organisation or user to enumerate. Repeatable.
+  GitHub organisations or users to enumerate. Under pwsh -File, pass one
+  comma-separated argument rather than repeating -Org.
 
 .PARAMETER Repo
-  Explicit owner/repo to check. Repeatable. Skips enumeration when given.
+  Explicit owner/repo values to check. Under pwsh -File, pass one comma-separated
+  argument rather than repeating -Repo. Skips enumeration when given.
 
 .PARAMETER GraceHours
   An alert younger than this is not reported. Dependabot security updates are meant
@@ -45,6 +47,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# `pwsh -File s.ps1 -Repo a,b` delivers ONE string "a,b" (-File does no array parsing),
+# so split on commas. A repeated `-Repo a -Repo b` is rejected by the parameter binder
+# before this script runs and cannot be fixed here: pass one comma-separated value.
+function ConvertTo-ListParameter {
+    param([string[]]$Value)
+    @($Value | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+$Org  = ConvertTo-ListParameter $Org
+$Repo = ConvertTo-ListParameter $Repo
 
 # --- the matcher -------------------------------------------------------------
 # THE LOAD-BEARING PART, and the failure direction is the whole design.
@@ -586,7 +598,10 @@ foreach ($slug in $repos) {
         # directory alone let an open PR bumping nanoid 3.3.16 -> 3.3.17 suppress an alert
         # requiring 3.3.18: silent suppression indistinguishable from a fix, in the tool
         # written because Dependabot reached a wrong verdict on exactly that package.
-        $firstPatched = [string](Get-Prop $a @('security_vulnerability', 'first_patched_version', 'identifier') '')
+        # Default 'none', not '': the API's null (no fix exists) must reach the matcher's
+        # 'none' guard. '' skips the destination check, so any open same-package PR hid
+        # an alert that has no fix (XM11).
+        $firstPatched = [string](Get-Prop $a @('security_vulnerability', 'first_patched_version', 'identifier') 'none')
         $match = $prs | Where-Object {
             Test-DependabotPrCoversPackage -Body ([string]$_.body) -PackageName ([string]$pkg) `
                 -HeadRefName ([string](Get-Prop $_ @('headRefName') '')) `

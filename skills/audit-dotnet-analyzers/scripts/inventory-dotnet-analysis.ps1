@@ -251,10 +251,14 @@ function Get-PackageRefs {
                 # `PackageReference Update="X" Version="..."` is a version override, and
                 # reading Include alone would make those overrides invisible.
                 $id = $node.GetAttribute('Include')
-                if (-not $id) { $id = $node.GetAttribute('Update') }
+                $operation = 'Include'
+                if (-not $id) { $id = $node.GetAttribute('Update'); $operation = 'Update' }
                 if (-not $id) { continue }
                 $refs.Add([pscustomobject]@{
                     Kind    = $kind
+                    # An Update item only edits metadata of an item some project includes
+                    # so callers must not read it as an installed package.
+                    Operation = $operation
                     Id      = $id
                     Version = $node.GetAttribute('Version')
                     File    = $doc.Relative
@@ -445,13 +449,24 @@ function Get-ContentFingerprint {
         finally { $pathStream.Dispose() }
     }
     finally { $process.Dispose() }
-    $paths = @($pathText.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries) | Sort-Object -Unique)
+    # Ordinal de-duplication and order (XM12): `Sort-Object -Unique` is case-insensitive and
+    # collapsed `A.txt` and `a.txt`, so a change to the dropped variant read as Unchanged.
+    $pathSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $pathText.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)) { [void]$pathSet.Add($entry) }
+    $paths = [string[]]::new($pathSet.Count)
+    $pathSet.CopyTo($paths)
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
     # A `return` inside a `$x = foreach` assignment exits the function after emitting the
     # records collected so far, so accumulate explicitly and return $null from the loop body.
     $records = [System.Collections.Generic.List[string]]::new()
     foreach ($path in $paths) {
         $file = Join-Path $Repo $path
-        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+        # M33: a submodule gitlink (mode 160000) is a directory here and its content is its
+        # own repository's; skip it. A tracked path that is absent from the work tree
+        # (deleted, or outside a sparse checkout) is a fixed record, not a reason to give
+        # up on the whole fingerprint - its absence is itself the state being compared.
+        if (Test-Path -LiteralPath $file -PathType Container) { continue }
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { $records.Add("$path`0ABSENT`0"); continue }
         try { $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256 -ErrorAction Stop).Hash }
         catch { return $null }
         $records.Add("$path`0$hash`0")
@@ -510,9 +525,20 @@ function Get-RepoInventory {
 
     # Anything that plausibly ships analyzers, plus every GlobalPackageReference:
     # a shared style package is the usual carrier and rarely name-matches.
+    # An Update-only id (no Include of the same id anywhere) adds no reference, so it is
+    # not an installed analyzer; it stays visible in AllPackageRefs with its Operation.
+    $included = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    # A PackageVersion record is version evidence only (central management); it never
+    # counts as a reference, so only package-reference Includes seed the set.
+    foreach ($ref in $refs) {
+        if ($ref.Operation -eq 'Include' -and $ref.Kind -in 'PackageReference', 'GlobalPackageReference') {
+            [void]$included.Add($ref.Id)
+        }
+    }
     $analyzerish = @($refs | Where-Object {
-        $_.Kind -eq 'GlobalPackageReference' -or
-        $_.Id -match '(?i)analyz|sonar|stylecop|roslynator|meziantou|codestyle'
+        $included.Contains($_.Id) -and (
+            $_.Kind -eq 'GlobalPackageReference' -or
+            $_.Id -match '(?i)analyz|sonar|stylecop|roslynator|meziantou|codestyle')
     })
 
     $bundled = @(

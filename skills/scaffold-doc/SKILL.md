@@ -48,3 +48,5 @@ For a document serving both a repository and Obsidian, maintain separate files: 
 - [ ] Commands are complete and copy-pasteable.
 - [ ] IDs, dates, units, caveats, and sources are reproducible.
 - [ ] README, ADR, and report conventions are not mixed.
+
+Tests: [test/ inventory](references/validation.md).

@@ -13,7 +13,7 @@ Five questions; no phases.
 
 ## Dispatch
 
-Read `~/.agents/notes/dotnet-runtime-traps.md` (if absent, proceed; record the assumption).
+Read `~/.agents/notes/dotnet-runtime-traps.md`.
 
 Resolve tier `frontier` through `model-registry` when supported. Send **one** reviewer
 through the runtime's native subagent facility; assume no particular tool or alias.
@@ -68,3 +68,5 @@ A bare "looks fine" answers nothing. Return one row per question, Q1 to Q5:
 
 Any finding blocks `quality-gate-review` PASS until it is fixed or the user explicitly
 accepts it — same rule as `ponytail:ponytail-review` findings.
+
+Tests: [test/ inventory](references/validation.md).

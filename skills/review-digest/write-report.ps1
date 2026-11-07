@@ -114,17 +114,22 @@ foreach ($r in $rows) {
         $md.Add('')
         $md.Add("Boundary ``$($g.boundarySha)``; covers $($g.files) tracked files; $($g.commits) non-remediation commits and $(@($g.changedFiles).Count) files changed since; disposition $(Cell $g.disposition).")
         if (@($g.remediationFiles).Count) { $md.Add("Own remediation (unscored): $(@($g.remediationFiles) -join ', ')") }
+        if ($g.detail) { $md.Add("Note: $($g.detail)") }
+        # The prompt names the changed files under their current names; the record's declared
+        # paths can predate a rename, and a review scoped to them would miss the renamed file.
+        $reviewPaths = if (@($g.reviewPaths).Count) { @($g.reviewPaths) } else { @($g.paths) }
         if ($g.historyReset) {
             $md.Add('')
             $md.Add("History was replaced after this review (new root $($g.historyReset)). The boundary is the reviewed state in the replaced history, still in the object store; drift is the tree diff from it to HEAD, so the commit count is not meaningful.")
         }
         if (-not $g.commits -and -not @($g.changedFiles).Count) { continue }
+        if (@($g.paths).Count) { $md.Add("Declared scope of that review (provenance): $(@($g.paths) -join '; ')") }
         $md.Add(''); $md.Add('```text')
         $md.Add("Run /adversarial-review on $($r.resolvedPath).")
         $md.Add("Target: $($g.boundarySha)..$($r.headSha)")
         if ($g.historyReset) { $md.Add("Note: $($g.boundarySha) is from the history replaced at $($g.historyReset); review the tree diff (git diff $($g.boundarySha) $($r.headSha)), not the commit log.") }
         $md.Add("Scope-kind: $($g.scopeKind)")
-        if (@($g.paths).Count) { $md.Add("Reviewed-paths: $(@($g.paths) -join '; ')") }
+        if (@($g.paths).Count) { $md.Add("Reviewed-paths: $($reviewPaths -join '; ')") }
         if (@($g.excludedPaths).Count) { $md.Add("Excluded-paths: $(@($g.excludedPaths) -join '; ')") }
         $md.Add('Review only these files, which changed since the boundary and are not covered by a newer review:')
         foreach ($f in @($g.changedFiles)) { $md.Add("  $f") }
@@ -144,13 +149,32 @@ foreach ($r in $rows) {
         $md.Add(''); $md.Add("### Uncovered source$(if ($isNewSource) { ' (queued: new or changed since the newest review)' } else { ' (not queued)' }): $($sourceFiles.Count) files"); $md.Add('')
         if ($isNewSource) { $md.Add('These source files were added or changed after the newest usable review boundary and have no coverage group. Review this new source. Older uncovered files remain unqueued.') }
         else { $md.Add('No usable review record covers these files. That is a statement about the records, not a backlog: it includes vendored third-party code, generated output, and anything simply never targeted by a review. It is listed for context and is not a recommendation to audit it.') }
-        $md.Add(''); $md.Add('```text')
-        $md.Add("Run /adversarial-review on $($r.resolvedPath).")
-        $md.Add("Target: $emptyTree..$($r.headSha)")
-        $md.Add('Scope-kind: subsystem')
-        $specs = if ($sourceFiles.Count -le 100) { $sourceFiles } else { Dirs $sourceFiles }
-        $md.Add("Reviewed-paths: $($specs -join '; ')")
-        $md.Add('```')
+        if ($isNewSource) {
+            # Exact paths only, 100 per prompt. Widening to directories would also audit
+            # already-reviewed and older source under the same empty-tree target.
+            $parts = [Math]::Ceiling($sourceFiles.Count / 100)
+            for ($p = 0; $p -lt $parts; $p++) {
+                $md.Add(''); $md.Add('```text')
+                $md.Add("Run /adversarial-review on $($r.resolvedPath).$(if ($parts -gt 1) { " Part $($p + 1) of $parts." })")
+                $md.Add("Target: $emptyTree..$($r.headSha)")
+                $md.Add('Scope-kind: subsystem')
+                $md.Add("Reviewed-paths: $(@($sourceFiles | Select-Object -Skip ($p * 100) -First 100) -join '; ')")
+                $md.Add('```')
+            }
+            $older = @($r.uncovered.source | Where-Object { $sourceFiles -cnotcontains $_ })
+            if ($older.Count) {
+                $md.Add(''); $md.Add("Older uncovered source, not queued and listed for context only ($($older.Count) files$(if ($older.Count -gt 100) { ', shown by top two directory levels' })):"); $md.Add('')
+                foreach ($o in $(if ($older.Count -le 100) { $older } else { Dirs $older })) { $md.Add("- $o") }
+            }
+        } else {
+            $md.Add(''); $md.Add('```text')
+            $md.Add("Run /adversarial-review on $($r.resolvedPath).")
+            $md.Add("Target: $emptyTree..$($r.headSha)")
+            $md.Add('Scope-kind: subsystem')
+            $specs = if ($sourceFiles.Count -le 100) { $sourceFiles } else { Dirs $sourceFiles }
+            $md.Add("Reviewed-paths: $($specs -join '; ')")
+            $md.Add('```')
+        }
     }
     # Waived records are listed separately from the rest, and BELOW them, because the two ask
     # different things of the reader: the unusable ones are a repair job, a waived one has already

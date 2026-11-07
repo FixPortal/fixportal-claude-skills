@@ -131,7 +131,8 @@ is a non-empty explanation, and `findings` is empty. This records why the audit 
 without claiming the target was preserved. In `artifact` mode `targetStateUnchanged` must be ABSENT, because step 1's
 captures are repository-mode only, so there is no baseline to compare against and any
 value there asserts a proof that was never constructed. An omitted `mode` reads as
-`repository`, which keeps every existing v1 and v2 manifest valid — but a new artifact-mode
+`repository`, which keeps every existing v1 and v2 manifest valid for that field (the
+`harnessDispositionBasis` cutover below is separate) — but a new artifact-mode
 manifest must state it, since absence cannot distinguish the two.
 
 `audit.depth` is exactly `Measured`, `Characterized`, `Surveyed`, or `Blocked`. Every attempted or unavailable workload has one outcome. `status` is exactly `Completed`, `Unstable`, `Unavailable`, `Blocked`, `Not run`, or `Not required`; `representativeMetrics` may be empty unless status is `Completed`; `stability` is exactly `Stable`, `Unstable`, `Mixed`, `Not assessed`, or `Not required`; and `harnessDisposition` is exactly `Existing`, `Promote`, `Retained external`, `Not needed`, or `Rejected`. A `Promote` disposition requires the complete `harnessPromotion` object shown above. Use `status: "Not required"`, `stability: "Not required"`, and `harnessDisposition: "Not needed"` when the audit establishes there is no material performance workload or contract; its basis must start `No benchmark required:` and explain that decision. This is a completed scope decision, not a gap. Use `Not assessed` only when an applicable dimension could not be evaluated. A `Not required` outcome has no metrics and no harness promotion.
@@ -141,8 +142,10 @@ a required one-sentence string on that workload.** `Promote` is the only value t
 carries a mandatory object, which made it the only expensive answer — and the three
 cheapest exits (`Not needed`, `Existing`, `Retained external`) all avoided filling in
 promotion detail while asserting something about the world that nobody had to evidence.
-The field is required exactly when `harnessDisposition` is not `Promote`, so there is now
-somewhere to put it and the validator enforces that it is filled. What each must say:
+The field is required exactly when `harnessDisposition` is not `Promote` and the manifest's
+`audit.completedUtc` is on or after 2026-09-06T14:37:07Z (the cutover). A published v2
+manifest completed before the cutover may omit it and stays valid; it is never rewritten.
+A basis that is present is always checked. What each must say:
 
 - **`Not needed`** — why this workload will not be re-measured. Name what makes a
   regression here detectable without a harness (an existing assertion, a budget already

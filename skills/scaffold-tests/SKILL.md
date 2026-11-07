@@ -1,6 +1,6 @@
 ---
 name: scaffold-tests
-description: Use when creating or normalizing .NET/C# test projects (xUnit or NUnit) — adding a test project for a src/ project, scaffolding unit tests, or aligning test project structure. Triggers - add tests, create test project, scaffold unit tests, a src/ project missing its test project. .NET/C# only; for JS/TS frontend tests see scaffold-frontend.
+description: Use when creating or normalizing .NET/C# test projects (xUnit or NUnit) — adding a test project for a src/ project, scaffolding unit tests, or aligning test project structure. Triggers - add tests, create test project, scaffold unit tests, a src/ project missing its test project. .NET/C# only; for React/Vite frontend tests see scaffold-frontend.
 ---
 
 # Scaffold Tests
@@ -16,7 +16,7 @@ Create .NET test projects that mirror `src/`, preserve the repository's framewor
 
 ## Framework decision
 
-Before adding a test project, inspect test `.csproj` files and `Directory.Packages.props` for `PackageReference`/`PackageVersion` entries. Use this branch:
+Before adding a test project, inspect test `.csproj` files and `Directory.Packages.props` for `PackageReference`/`PackageVersion` entries:
 
 | Detected framework | Add to an existing solution |
 |---|---|
@@ -87,7 +87,7 @@ public sealed class FruitLookupTests
 }
 ```
 
-Do not substitute a concrete library merely to configure its extension methods: NSubstitute can only intercept virtual/interface calls. Wrap the external boundary in an existing app-owned interface; do not invent a wrapper unless production code genuinely needs that seam.
+Do not substitute a concrete library to configure its extension methods: NSubstitute can only intercept virtual/interface calls. Wrap the external boundary in an existing app-owned interface; do not invent one unless production code needs that seam.
 
 ## Async and timing
 
@@ -131,7 +131,7 @@ public async Task Shutdown_WhenSendIsBlocked_ReturnsWithoutCompletingSend()
 }
 ```
 
-xUnit v2 lacks `TestContext.Current` and its timeout is undefined under parallelization; a kept v2 suite uses a token source:
+xUnit v2 lacks `TestContext.Current`; inspect scheduling as above. For aggressive/unknown scheduling use a token:
 
 ```csharp
 using var ceiling = new CancellationTokenSource();
@@ -149,10 +149,12 @@ ceiling.CancelAfter(HangCeilingMs);
 | Sleep, stopwatch, or tight timeout assertions | A real signal plus a generous hang ceiling |
 | Framework timeout under aggressive/unknown scheduling | Operation-local `WaitAsync`/`CancelAfter` |
 | Empty substitutes in integration tests | Real collaborators |
-| Slow or inherently expensive coverage in PR CI | A separate weekly/manual extended-test project |
+| Slow or expensive coverage in PR CI | A separate weekly/manual extended-test project |
 
 ## Completion check
 
 Confirm framework, structure, test style/timing/CI, and a green restore/build/test run.
 
 For adequacy review rather than scaffolding, use `audit-tests`.
+
+Tests: [test/ inventory](references/validation.md).

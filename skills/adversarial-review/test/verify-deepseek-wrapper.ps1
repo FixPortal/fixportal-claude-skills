@@ -22,14 +22,14 @@ foreach ($bad in @(
 }
 $manifest = Get-Content (Join-Path $PSScriptRoot '../reviewers.json') -Raw | ConvertFrom-Json
 $seat = @($manifest.reviewers | Where-Object id -eq 'D')
-if ($seat.Count -ne 1 -or $seat[0].supplemental -or $seat[0].vendor -ne 'deepseek' -or $seat[0].repoAccess -or $seat[0].wrapper -ne 'deepseek' -or -not $seat[0].model) { throw 'DeepSeek must be a counted, repo-blind, literal-pinned seat' }
+if ($seat.Count -ne 1 -or $seat[0].supplemental -or $seat[0].vendor -ne 'deepseek' -or $seat[0].repoAccess -or $seat[0].wrapper -ne 'deepseek' -or $seat[0].select.vendor -ne 'deepseek' -or $seat[0].select.tier -ne 'frontier') { throw 'DeepSeek must be a counted, repo-blind seat selecting the frontier tier' }
 if (($manifest.roles | ConvertTo-Json -Depth 8) -match 'deepseek') { throw 'DeepSeek must not enter judging or verification' }
 if (@($manifest.reviewers | Where-Object { $_.id -eq 'K' }).Count) { throw 'Kimi must stay retired to alternates' }
 $registryPath = Join-Path $PSScriptRoot '../../model-registry/registry.json'
 if (Test-Path -LiteralPath $registryPath) {
-    $entry = (Get-Content $registryPath -Raw | ConvertFrom-Json).models.($seat[0].model)
-    if ($entry.vendor -ne 'deepseek' -or $null -ne $entry.tier) { throw 'Registry entry must exist and stay untriaged (tier null)' }
+    $entry = (Get-Content $registryPath -Raw | ConvertFrom-Json).models.'deepseek-v4-pro'
+    if ($entry.vendor -ne 'deepseek' -or $entry.tier -ne 'frontier') { throw 'Registry entry must exist and be triaged frontier' }
 } else {
-    Write-Host 'SKIP: model-registry not present in this tree - the untriaged registry entry is not asserted';
+    Write-Host 'SKIP: model-registry not present in this tree - the frontier-triaged registry entry is not asserted'
 }
-'DeepSeek contracts passed: verbatim model pass-through, response-model/finish/empty checks, counted repo-blind seat, no judge/verifier role, untriaged registry entry.'
+'DeepSeek contracts passed: verbatim model pass-through, response-model/finish/empty checks, counted repo-blind seat, no judge/verifier role, frontier-triaged registry entry.'

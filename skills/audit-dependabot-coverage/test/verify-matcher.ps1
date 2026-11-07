@@ -48,6 +48,7 @@ $requiredFunctions = @(
     'Get-SecurityUpdateState'
     'Get-SecurityUpdateClassification'
     'Add-UnmatchedAlert'
+    'ConvertTo-ListParameter'
 )
 $missingFunctions = @()
 foreach ($fn in $requiredFunctions) {
@@ -399,6 +400,25 @@ Assert-Prop -Object $alertLike -Path @('dependency', 'nope', 'deeper') -Default 
 Assert-Prop -Object $null -Path @('anything') -Default 'fallback' -Expected 'fallback' `
     -Label 'a null object yields the default'
 
+# XM11: the reconcile loop's own `$firstPatched` assignment, run against a no-fix alert,
+# must yield 'none' (the matcher's guard) and never '' (which skips the destination check
+# and lets any open same-package PR hide an alert that has no fix). Executed from the AST,
+# not pattern-matched, so it follows whatever default the production line uses.
+$firstPatchedAssignment = $ast.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $candidate.Left.Extent.Text -eq '$firstPatched'
+}, $true)
+if ($null -eq $firstPatchedAssignment) { bad 'reconcile.ps1 must assign $firstPatched' }
+else {
+    $a = $noFix
+    Invoke-Expression $firstPatchedAssignment.Extent.Text
+    if ($firstPatched -ceq 'none') { ok 'a null first_patched_version reaches the matcher as none' }
+    else { bad "a null first_patched_version reaches the matcher as none (got '$firstPatched')" }
+    Assert-Match -Body "Bumps [nanoid](https://x) from 3.3.16 to 3.3.17." -Pkg 'nanoid' -FirstPatchedVersion $firstPatched -Expected $false `
+        -Label 'a no-fix alert is not covered by an open same-package PR'
+}
+
 # No explicit Default means $null, and it must not become the string 'null' or throw.
 $implicit = Get-Prop $alertLike @('nope')
 if ($null -eq $implicit) { ok 'a missing property with no Default yields $null' }
@@ -570,6 +590,12 @@ $script:fail = 0
 $null = Assert-Match -Body $single -Pkg 'brace-expansion' -Expected $false -Label 'red-check probe'
 if ($script:fail -eq 1) { $script:fail = $before; ok 'red check: a false expectation is reported as a failure' }
 else { $script:fail = 1; bad 'red check: a false expectation is reported as a failure' }
+
+# --- -Repo comma split under pwsh -File --------------------------------------
+# -File passes `a,b` as one string; the script must split it. Offline: no gh, no network.
+$split = @(ConvertTo-ListParameter @('a/x, b/y,', 'c/z'))
+if ($split.Count -eq 3 -and $split[1] -eq 'b/y') { ok '-Repo a,b splits into separate trimmed repos' }
+else { bad "-Repo split gave [$($split -join '|')], expected a/x|b/y|c/z" }
 
 ''
 if ($script:fail -eq 0) { 'PASS'; exit 0 } else { 'FAILURES ABOVE'; exit 1 }

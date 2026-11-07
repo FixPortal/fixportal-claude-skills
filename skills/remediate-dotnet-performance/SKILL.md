@@ -9,8 +9,9 @@ Run one causal experiment only after the user explicitly approves its exact unre
 
 **A finding is identified by manifest path plus ID, never by ID alone** — `PERF-NNN` is
 unique only within one manifest, so a second audit of the same repository publishes its own
-`PERF-001` and an approval naming "PERF-001" names two things. **Check the experiment
-records for that manifest-and-ID before proposing anything**: the manifest's
+`PERF-001` and an approval naming "PERF-001" names two things. **Check the experiment records for that manifest-and-ID before proposing anything**.
+They live at `<vault>\Claude\Performance Audit\<repository>\YYYY-MM-DD-HHmm-PERF-NNN-experiment.md`
+(see [experiment record contract](references/change-record.md)). The manifest's
 `resolutionState` is immutable, so a finding whose experiment already ran and was REJECTED
 still reads `unresolved` and is otherwise re-runnable on the very evidence that rejected
 it. An `accepted` or `rejected` record closes it; reopening needs an explicit statement of
@@ -36,8 +37,10 @@ Use only `<repo>\.claude\worktrees\performance-experiments` on a branch such as 
 Read [the experiment runbook](references/experiment-runbook.md) before changing product code. Read [the change-record templates](references/change-record.md) when recording evidence or an accepted result. Keep Git operations explicit and reversible. Run the boundary gate on the candidate diff, with both mandatory parameters:
 
 ```powershell
-pwsh -NoProfile -File ~/.agents/skills/audit-dotnet-performance/scripts/test-managed-product-boundary.ps1 -RepositoryPath "<experiment-worktree-root>" -BaseRef "<branch-point-sha>" -ProductPath src
+pwsh -NoProfile -File ~/.agents/skills/audit-dotnet-performance/scripts/test-managed-product-boundary.ps1 -RepositoryPath "<experiment-worktree-root>" -BaseRef "<branch-point-sha>"
 ```
+
+Do not add `-ProductPath src`. The default scans the whole repository, root `Directory.Build.props` included. A `-ProductPath` that matches no file exits 2 (a stop, not a pass); pass one only for a path that exists, such as a finding's own project directory, and only as a supplemental check: a `-ProductPath` run omits changes outside its path (a root `Directory.Build.props`, say), so acceptance requires `passed: true` from the default whole-repository run.
 
 **"It must pass" means `passed: true` in the JSON, plus a recorded disposition for every
 warning** — not exit 0. Exit 0 means the audit COMPLETED, boundary violations included;

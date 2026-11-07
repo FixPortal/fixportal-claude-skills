@@ -4,6 +4,7 @@ $skillRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $skill = Get-Content -Raw -LiteralPath (Join-Path $skillRoot 'SKILL.md')
 $reader = Join-Path $skillRoot 'scripts/get-editorconfig-assignment.ps1'
 $planner = Join-Path $skillRoot 'scripts/get-remediation-plan.ps1'
+$formatDetector = Join-Path $skillRoot 'scripts/get-solution-format.ps1'
 $reportValidator = Join-Path $skillRoot 'scripts/test-estate-report.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('dotnet-audit-contract-' + [guid]::NewGuid().ToString('N'))
 
@@ -29,6 +30,12 @@ function Assert-Fails([scriptblock] $Action, [string] $expectedPattern, [string]
 try {
     if (-not (Test-Path -LiteralPath $reportValidator)) {
         throw 'The estate report publication validator is missing.'
+    }
+    if (-not (Test-Path -LiteralPath $formatDetector)) {
+        throw 'The solution-format detector script is missing (R20): the CI-entry-point rule must be shipped, not defined in this test.'
+    }
+    if ($skill -notmatch 'scripts/get-solution-format\.ps1') {
+        throw 'SKILL.md must direct the operator to scripts/get-solution-format.ps1 for SolutionFormat (R20).'
     }
 
     $validReport = @'
@@ -202,7 +209,45 @@ jobs:
       - run: dotnet test "src/My App.sln" --configuration Release
 '@
 
+    # CI passes options BEFORE the solution, and the root also holds a competing `.slnx`.
+    $optionsRoot = Join-Path $tempRoot 'options'
+    New-Item -ItemType Directory -Path (Join-Path $optionsRoot '.github/workflows') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $optionsRoot 'src') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $optionsRoot 'Current.slnx') -Value '<Solution />'
+    Set-Content -LiteralPath (Join-Path $optionsRoot 'src/Legacy.sln') -Value ''
+    Set-Content -LiteralPath (Join-Path $optionsRoot '.github/workflows/ci.yml') -Value @'
+jobs:
+  build:
+    steps:
+      - run: dotnet build -c Release src/Legacy.sln
+'@
+
+    # No workflow names a solution and the only `.slnx` is below the root.
+    $nestedRoot = Join-Path $tempRoot 'nested'
+    New-Item -ItemType Directory -Path (Join-Path $nestedRoot 'src') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $nestedRoot 'src/Current.slnx') -Value '<Solution />'
+
     $planCases = @(
+        @{
+            Name = 'options before the solution argument'
+            Root = $optionsRoot
+            MigrationAuthorized = $false
+            WidthMigration = $false
+            OtherFindings = $true
+            ExpectedFormat = 'sln'
+            ExpectedSolutionAction = 'PreserveExistingSln'
+            ExpectedPrs = @('AllFindings')
+        },
+        @{
+            Name = 'fallback finds a nested slnx'
+            Root = $nestedRoot
+            MigrationAuthorized = $false
+            WidthMigration = $false
+            OtherFindings = $true
+            ExpectedFormat = 'slnx'
+            ExpectedSolutionAction = 'PreserveSlnx'
+            ExpectedPrs = @('AllFindings')
+        },
         @{
             Name = 'quoted solution path with a space'
             Root = $quotedRoot
@@ -270,26 +315,8 @@ jobs:
     )
 
     foreach ($case in $planCases) {
-        # The format is what CI BUILDS, not whichever file happens to exist. A repository
-        # mid-migration carries both a `.sln` and a `.slnx`, and choosing `slnx` on presence
-        # alone hands the planner a format the pipeline does not use - so the remediation
-        # action is computed for the wrong solution. Read the entry point; fall back to
-        # presence only when no workflow names one. (CodeRabbit, PR #135.)
-        $ciSolution = $null
-        $workflowDir = Join-Path $case.Root '.github/workflows'
-        if (Test-Path -LiteralPath $workflowDir -PathType Container) {
-            foreach ($workflow in Get-ChildItem -LiteralPath $workflowDir -File | Where-Object { $_.Extension -in '.yml', '.yaml' }) {
-                # QUOTED PATHS COUNT. `\S+` cannot match `dotnet test "src/My App.sln"`, so a
-                # solution whose path has a space fell through to presence detection - the
-                # exact fallback this block exists to avoid, silently, on the repositories
-                # most likely to be mid-migration. (CodeRabbit, PR #135.)
-                $hit = [regex]::Match((Get-Content -LiteralPath $workflow.FullName -Raw), '(?i)\bdotnet\s+(?:build|test|restore)\s+(?<solution>"[^"\r\n]+\.slnx?"|''[^''\r\n]+\.slnx?''|\S+\.slnx?)(?=\s|$)')
-                if ($hit.Success) { $ciSolution = $hit.Groups['solution'].Value.Trim('"', "'"); break }
-            }
-        }
-        $format = if ($ciSolution) {
-            if ($ciSolution -match '(?i)\.slnx$') { 'slnx' } else { 'sln' }
-        } elseif (Get-ChildItem -LiteralPath $case.Root -Filter '*.slnx' -File) { 'slnx' } else { 'sln' }
+        # The detection is the shipped script's, not logic defined in this test.
+        $format = & $formatDetector -RepositoryRoot $case.Root
         if ($case.ContainsKey('ExpectedFormat')) {
             Assert-Equal $format $case.ExpectedFormat "$($case.Name): the CI entry point's solution format was misread."
         }

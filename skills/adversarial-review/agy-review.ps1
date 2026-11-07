@@ -126,6 +126,11 @@ try {
         $(if ($RepoPath) { "You may read the repository at $RepoPath for context; do not modify it." })
         'Do NOT search the filesystem for these files. Use exactly the absolute paths given above.'
         'If a path above cannot be read, stop and say so; never substitute another file.'
+        # Print mode soft-denies every tool confirmation, and a denied RunCommand ends the whole
+        # session with empty stdout ("agy returned an empty review"). Observed 2026-10-21: 20 KB and
+        # 100 KB diff slices came back empty with the plain prompt and returned reviews once this
+        # line was added; a 1 KB diff never tried a shell, so it passed either way.
+        'Shell access is disabled and any shell command (grep, cat, head, wc, type) ends the session with no output. Read files only with the file-viewing tool, in line ranges if a file is long.'
         'Output only the review text in the exact format the brief requests. No preamble or narration.'
     ) | Where-Object { $_ }
 

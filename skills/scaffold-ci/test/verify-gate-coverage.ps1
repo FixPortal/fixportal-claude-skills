@@ -900,6 +900,36 @@ jobs:
         throw "file mode must fail closed when its named workflow has no jobs:`n$($emptyFile.Output)"
     }
 
+    # Historical FX8: a jobs-bearing file without the aggregate must fail closed.
+    $missingGate = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+'@
+    if ($missingGate.Code -eq 0 -or $missingGate.Output -notmatch "no 'ci-gate' job") {
+        throw "a jobs-bearing file without ci-gate must be refused:`n$($missingGate.Output)"
+    }
+
+    $env:GATE_EXEMPT = 'removed-job'
+    try {
+        $staleExemption = Invoke-Gate @'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  ci-gate:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+        run: exit 1
+'@
+    }
+    finally { $env:GATE_EXEMPT = '' }
+    if ($staleExemption.Code -eq 0 -or $staleExemption.Output -notmatch 'name jobs that do not exist: removed-job') {
+        throw "a stale exemption must name its nonexistent job and fail:`n$($staleExemption.Output)"
+    }
+
     # ── Gate scripts must be tiered HIGH ────────────────────────────────────────
     # A script a merge-blocking job runs from the PR's own checkout decides what can
     # merge. The guard's named-path list cannot cover a checker one repository authored

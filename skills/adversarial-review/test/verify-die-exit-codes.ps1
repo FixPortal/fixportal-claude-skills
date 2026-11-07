@@ -4,6 +4,13 @@ param()
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'fixtures' 'preflight-fixture.ps1')
+# Cleanup deletes only directories this run created (recorded in $owned right after each
+# New-Item, which has no -Force so a pre-existing path throws first) and only through the guard.
+# This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
+$ownedDelete = Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1'
+if (-not (Test-Path -LiteralPath $ownedDelete)) { throw "test/Remove-OwnedTempTree.ps1 is missing; this suite deletes nothing without it" }
+. $ownedDelete
+$owned = [System.Collections.Generic.List[string]]::new()
 $skillDir = Split-Path -Parent $PSScriptRoot
 $spine = Join-Path $skillDir 'run-review.ps1'
 # A PINNED manifest, not the live reviewers.json. Nothing here is about which model
@@ -17,8 +24,9 @@ $workDir = Join-Path ([IO.Path]::GetTempPath()) ("ar-existing-run-" + [Guid]::Ne
 $workDir2 = Join-Path ([IO.Path]::GetTempPath()) ("ar-no-origin-" + [Guid]::NewGuid().ToString('N'))
 $workDir3 = Join-Path ([IO.Path]::GetTempPath()) ("ar-no-merge-base-" + [Guid]::NewGuid().ToString('N'))
 
-New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
 try {
+    New-Item -ItemType Directory -Path $sandbox | Out-Null
+    $owned.Add($sandbox)
     & git -C $sandbox init --quiet 2>$null
     Set-Content -LiteralPath (Join-Path $sandbox 'a.txt') -Value 'one' -Encoding utf8
     & git -C $sandbox add -A 2>$null
@@ -39,6 +47,7 @@ try {
     }
 
     New-Item -ItemType Directory -Path $workDir | Out-Null
+    $owned.Add($workDir)
     # The pre-flight gate runs before the run-identity check, so without evidence this
     # would exit 2 and never reach the exit-5 path under test.
     Write-PreflightFixture -Dir $workDir -ManifestPath $manifest
@@ -52,6 +61,7 @@ try {
     # on a null-valued expression" before the Die that names the cause could run. Both
     # also exit 1, so the message is the assertion. The sandbox has no origin remote.
     New-Item -ItemType Directory -Path $workDir2 | Out-Null
+    $owned.Add($workDir2)
     Write-PreflightFixture -Dir $workDir2 -ManifestPath $manifest
     $output = & pwsh -NoProfile -File $spine -Target '123' -RepoPath $sandbox -ManifestPath $manifest -WorkDir $workDir2 2>&1 | Out-String
     if ($output -notmatch 'Cannot resolve origin for PR #123') {
@@ -61,6 +71,7 @@ try {
     & git -C $sandbox checkout --orphan lone --quiet 2>$null
     & git -C $sandbox -c user.email=t@t -c user.name=t commit -m 'lone' --quiet 2>$null
     New-Item -ItemType Directory -Path $workDir3 | Out-Null
+    $owned.Add($workDir3)
     Write-PreflightFixture -Dir $workDir3 -ManifestPath $manifest
     $output = & pwsh -NoProfile -File $spine -RepoPath $sandbox -ManifestPath $manifest -WorkDir $workDir3 2>&1 | Out-String
     if ($output -notmatch 'Could not find merge-base of') {
@@ -70,8 +81,5 @@ try {
     'run-review.ps1 OK — fatal exit codes 2 and 5 stay distinct from 1'
 }
 finally {
-    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $workDir2 -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $workDir3 -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($dir in $owned) { Remove-OwnedTempTree -Path $dir }
 }

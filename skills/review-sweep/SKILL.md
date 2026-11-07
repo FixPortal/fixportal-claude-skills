@@ -42,8 +42,9 @@ Only after `scopeValidation` is usable (`valid`, or `none` for a whole-repo
 row) may `hasTrackedSource=false` map to skip/void; missing or null source
 evidence is unknown is STOP. Never re-infer scope validity from Git.
 
-Row-level change counts are unions across coverage groups. For drift, expand
-`reviewCoverage` and review each changed group using its own boundary and paths.
+Row-level change counts start at the newest review's boundary; an older group's
+earlier change appears only in that group. For drift, expand `reviewCoverage` and
+review each changed group using its own boundary and changed files.
 For `queue=new-source`, review only the emitted `newSource` paths. Exempt rows
 are not queued and receive no prompt.
 

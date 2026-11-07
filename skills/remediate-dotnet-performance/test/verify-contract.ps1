@@ -30,4 +30,11 @@ Assert-That ($finding.repository.head -eq '0123456789abcdef') 'Expected audited 
 Assert-That ($finding.finding.workload.id -eq 'format') 'Expected selected workload handoff.'
 Assert-That ($finding.finding.productBoundary.allowed -eq 'managed-public-api') 'Expected managed product boundary handoff.'
 
+# R01: the documented gate command must not hard-code `-ProductPath src` (it scanned nothing
+# on repos without src/ and skipped a root Directory.Build.props where src/ exists).
+$remediateSkill = Get-Content -LiteralPath (Join-Path $skillPath 'SKILL.md') -Raw
+$gateCommand = [regex]::Match($remediateSkill, '(?m)^pwsh [^\r\n]*test-managed-product-boundary\.ps1[^\r\n]*').Value
+Assert-That ($gateCommand -ne '') 'Expected the boundary gate command in SKILL.md.'
+Assert-That ($gateCommand -notmatch '-ProductPath') "The documented boundary gate command must not pass -ProductPath: $gateCommand"
+
 Write-Host 'PASS: remediation manifest handoff verified.'

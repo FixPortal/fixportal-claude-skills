@@ -159,7 +159,9 @@ different values for identical evidence and getting different PR plans:
   A repository holding both a `.sln` and a `.slnx`, or one mid-migration, is graded on
   whichever CI actually invokes, and the evidence record says which. There is no `mixed`
   value because a build has one entry point, and grading against a file CI never opens
-  grades nothing.
+  grades nothing. Compute it with `scripts/get-solution-format.ps1 -RepositoryRoot <repo>`:
+  it reads the first `dotnet build|test|restore <solution>` in `.github/workflows` and
+  falls back to file presence only when no workflow names one.
 
 ## Audit workflow
 
@@ -358,3 +360,5 @@ agent to rediscover what the audit already established.
 - About to generate repository remediation for an unavailable or mechanically false baseline requirement.
 - About to omit an excluded repository, exception, or unavailable check from the report.
 - About to publish a report without a copy-ready prompt for every non-conforming repo.
+
+Tests: [test/ inventory](references/validation.md).

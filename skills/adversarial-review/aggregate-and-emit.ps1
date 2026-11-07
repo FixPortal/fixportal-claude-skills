@@ -49,6 +49,8 @@
                    "inputTokens": 90000, "outputTokens": 0,
                    "costUsd": 2.7, "reviewDurationMs": 140000 }
       }
+    Optional `findings` is emitted once after participant rows; its contract is
+    documented in docs/run-artefacts.md. Absent `findings` preserves counts-only runs.
     Both keys optional. Missing `accepted` → zeros (warned). Missing `judge` → no
     judge row emitted (the run shows as "no judge"). Judge `costUsd` is honoured
     only for an exact model id the registry cannot price; registry pricing wins
@@ -325,8 +327,10 @@ foreach ($mf in $metricFiles) {
 # --- Verdict (accepted per reviewer + judge participant) ----------------
 $accepted = @{}
 $judge = $null
+$hasFindings = $false
 if (Test-Path -LiteralPath $VerdictPath) {
     $v = Get-Content -LiteralPath $VerdictPath -Raw | ConvertFrom-Json
+    $hasFindings = $null -ne $v.PSObject.Properties['findings']
     if ($v.accepted) {
         foreach ($prop in $v.accepted.PSObject.Properties) { $accepted[$prop.Name] = [int]$prop.Value }
     }
@@ -455,3 +459,14 @@ Write-Host ""
 Write-Host "==== aggregate-and-emit: $RunId ($chunkCount chunks) ===="
 $rows | Format-Table -AutoSize | Out-String | Write-Host
 if (-not $judge) { Write-Warning "No judge row — run shows as 'no judge' until aggregate-verdict.json carries a judge." }
+
+# Last, so a findings failure cannot hide the participant table; the exit code still reports it.
+if ($hasFindings) {
+    $findingsArgs = @('-NoProfile', '-File', (Join-Path $scriptDir 'emit-review-findings.ps1'), '-RunId', $RunId, '-VerdictPath', $VerdictPath)
+    if ($Repo) { $findingsArgs += @('-Repo', $Repo) }
+    & pwsh @findingsArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Findings emit failed (exit $LASTEXITCODE)." -ErrorAction Continue
+        exit 1
+    }
+}

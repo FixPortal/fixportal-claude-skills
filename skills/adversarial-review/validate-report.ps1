@@ -141,7 +141,11 @@ function Read-Frontmatter([string] $Text) {
         if ($line -match '^([A-Za-z][\w-]*):\s*(.*)$') {
             $key = $Matches[1]; $value = $Matches[2].Trim()
             if ($value -match '^\[(.*)\]$') { $fm[$key] = @($Matches[1] -split ',' | ForEach-Object { $_.Trim().Trim('"', "'", '`') } | Where-Object { $_ }) }
-            elseif ($value) { $fm[$key] = $value.Trim('"', "'", '`') }
+            elseif ($value) {
+                # Kept identical to review-digest/collect.ps1's reader, which needs the marker for `subsystem:`.
+                if ($value -match '^(["''`]).*\1$') { $fm["quoted:$key"] = $true }
+                $fm[$key] = $value.Trim('"', "'", '`')
+            }
             else { $fm[$key] = @() }
         } elseif ($key -and $line -match '^\s*-\s*(.*)$') {
             $fm[$key] = @($fm[$key]) + @($Matches[1].Trim().Trim('"', "'", '`'))
@@ -207,6 +211,55 @@ function Resolve-Target([hashtable] $Fm) {
     @{ Base = $m.Groups[1].Value; Tip = "$tip" }
 }
 
+# Mirrors Resolve-OnHead in review-digest/collect.ps1: a sha on HEAD's ancestry, or one whose tree
+# a HEAD commit carries exactly (a rebase-merged review tip).
+function Test-OnHead([string] $Sha) {
+    $commit = @(& git -C $RepoPath rev-parse --verify --quiet "$Sha^{commit}" 2>$null)[0]
+    if (-not $commit) { return $false }
+    & git -C $RepoPath merge-base --is-ancestor $commit HEAD 2>$null
+    if ($LASTEXITCODE -eq 0) { return $true }
+    $tree = @(& git -C $RepoPath rev-parse "$commit^{tree}" 2>$null)[0]
+    @(& git -C $RepoPath log --format=%T HEAD 2>$null | Where-Object { $_ -eq $tree }).Count -gt 0
+}
+
+# Mirrors Find-PatchTwin in collect.ps1: a commit on HEAD since the fork point whose
+# `patch-id --stable` equals the off-HEAD commit's own (its rebased copy).
+function Test-PatchTwin([string] $Sha) {
+    $forked = @(& git -C $RepoPath merge-base $Sha HEAD 2>$null)[0]
+    if (-not $forked) { return $false }
+    $id = @(& git -C $RepoPath -c core.quotepath=false show --no-color $Sha 2>$null | & git -C $RepoPath patch-id --stable 2>$null)[0]
+    if (-not $id) { return $false }
+    $id = ($id -split ' ')[0]
+    @(& git -C $RepoPath -c core.quotepath=false log -p --no-color --no-merges "$forked..HEAD" 2>$null | & git -C $RepoPath patch-id --stable 2>$null | Where-Object { $_ -like "$id *" }).Count -gt 0
+}
+
+# Mirrors Test-RangeTwins in collect.ps1: every reviewed commit off HEAD has a patch-id copy on
+# HEAD since the fork, so a `reviewed` record's whole branch reached mainline by rebase.
+function Test-RangeTwins([string] $Base, [string] $Tip) {
+    # @() outside the if: a one-element array returned from `if` unrolls to a string, which @exclude would splat per character.
+    $exclude = @(if ($Base -ne $emptyTree) { "^$Base" })
+    $offHead = @(& git -C $RepoPath rev-list --no-merges $Tip @exclude '^HEAD' 2>$null | Where-Object { $_ })
+    if (-not $offHead.Count) { return $false }
+    $forked = @(& git -C $RepoPath merge-base $Tip HEAD 2>$null)[0]
+    if (-not $forked) { return $false }
+    $onHead = [Collections.Generic.HashSet[string]]::new([string[]]@(& git -C $RepoPath -c core.quotepath=false log -p --no-color --no-merges "$forked..HEAD" 2>$null | & git -C $RepoPath patch-id --stable 2>$null | ForEach-Object { ($_ -split ' ')[0] }))
+    foreach ($commit in $offHead) {
+        $id = @(& git -C $RepoPath -c core.quotepath=false show --no-color $commit 2>$null | & git -C $RepoPath patch-id --stable 2>$null)[0]
+        if (-not $id -or -not $onHead.Contains(($id -split ' ')[0])) { return $false }
+    }
+    $true
+}
+
+# Mirrors collect.ps1's history-reset rescue: HEAD's root is an `Initial OSS release|commit` made
+# on or after the review date, so the reviewed tip lives on in the replaced history.
+function Test-HistoryReset([datetime] $ReviewDate) {
+    foreach ($rootSha in @(& git -C $RepoPath rev-list --max-parents=0 HEAD 2>$null)) {
+        $root = @(& git -C $RepoPath show -s '--format=%ad%x09%s' --date=short $rootSha 2>$null)[0]
+        if ($root -match '^(\d{4}-\d{2}-\d{2})\tInitial OSS (?:release|commit)$' -and $Matches[1] -ge $ReviewDate.ToString('yyyy-MM-dd')) { return $true }
+    }
+    $false
+}
+
 foreach ($index in $indexes) {
     $indexText = Get-Content -LiteralPath $index.FullName -Raw
     # The consumer reads metadata only from a leading `---` block, so a record keeping its keys
@@ -224,6 +277,30 @@ foreach ($index in $indexes) {
     # Every key below comes from THIS hashtable. Reading any of them off $indexText again would
     # reintroduce the whole-file match, and with it the divergence this file has now had twice.
     $fm = Read-Frontmatter $indexText
+    # The closure step records the merged fix commits, so review-digest can subtract them from
+    # drift even across a later history reset (owner decision, PR #425 X1). Runs dated before the
+    # rule are grandfathered, as the verdict rules below are. Frontmatter-only, so it runs before
+    # both the legacy-schema exit and the -RepoPath guard: a vault sweep enforces it too, and a
+    # post-cutover record cannot skip it by omitting scope-kind (CodeRabbit, PR #426).
+    # A missing or malformed date falls back to the run folder's id, and with neither the record is
+    # held to the rule: it cannot prove it predates the cutover (CodeRabbit, PR #426).
+    $closureDate = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact("$(Get-Scalar $fm 'date')", 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$closureDate) -and
+        -not ((Split-Path -Leaf (Split-Path -Parent $index.FullName)) -match '^(\d{8})T\d{6}Z' -and
+            [datetime]::TryParseExact($Matches[1], 'yyyyMMdd', [cultureinfo]::InvariantCulture, 'None', [ref]$closureDate))) {
+        $closureDate = [datetime]::MaxValue
+    }
+    $remediationCommits = @(Get-List $fm 'remediation-commits')
+    if ((Get-Scalar $fm 'disposition') -eq 'remediated' -and $closureDate -ge [datetime]'2026-11-02' -and -not $remediationCommits.Count) {
+        $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = 'remediated review dated on/after 2026-11-02 requires remediation-commits (the merged fix SHAs)'; Text = '' }
+    }
+    # Format needs no checkout, so a post-cutover record is checked here: exiting below (no scope-kind,
+    # scope-kind: document, no -RepoPath) must not pass it with an unusable list (CodeRabbit, PR #426).
+    # Earlier legacy records keep their prose lists (for example a 2026-06-24 run); the scoped check below still reads them.
+    $commitsCheckedEarly = $closureDate -ge [datetime]'2026-11-02'
+    foreach ($sha in @($remediationCommits | Where-Object { $commitsCheckedEarly })) {
+        if ($sha -notmatch '^[0-9a-f]{40}$') { $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "remediation-commits requires exact 40-character SHAs: $sha"; Text = [string]$sha } }
+    }
     $scopeKind = Get-Scalar $fm 'scope-kind'
     if (-not $scopeKind) { continue } # legacy report; new runs opt into the coverage schema
     # Shape is not completeness. A record can carry a well-formed block and still be dropped,
@@ -239,9 +316,13 @@ foreach ($index in $indexes) {
     }
     $reviewDate = [datetime]::MinValue
     $dateText = Get-Scalar $fm 'date'
+    # "Today" is the UTC calendar day, because `date:` follows the UTC RunId: a host behind UTC
+    # rejected a record dated by its own run id. review-digest/collect.ps1 applies the same rule
+    # (`$date.Date -gt [datetime]::UtcNow.Date`); change both together.
+    $today = [datetime]::UtcNow.Date
     if ($dateText -and -not [datetime]::TryParseExact($dateText, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$reviewDate)) {
         $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = 'date must use yyyy-MM-dd'; Text = $dateText }
-    } elseif ($dateText -and $reviewDate.Date -gt (Get-Date).Date) {
+    } elseif ($dateText -and $reviewDate.Date -gt $today) {
         $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = 'date must not be in the future'; Text = $dateText }
     }
     if ($scopeKind -notin 'repository', 'subsystem', 'document') {
@@ -270,7 +351,6 @@ foreach ($index in $indexes) {
     if ($skipReason -and -not $declaresNoPanel) {
         $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = 'skip-reason is set but reviewers/judge do not declare none'; Text = "reviewers: $reviewers" }
     }
-
     if ($scopeKind -eq 'document') { continue }
     if (-not $RepoPath -or -not (Test-Path -LiteralPath (Join-Path $RepoPath '.git'))) {
         # SKIP with a notice, not a violation. A multi-repo vault sweep cannot supply one
@@ -296,10 +376,31 @@ foreach ($index in $indexes) {
         # still carrying a well-formed 40..40 target. Checking only the shape here would reject the
         # waiver on exactly the records that most need one - and the rejection would be invisible,
         # since nothing downstream re-reads it.
+        #
+        # Decided only once the whole boundary is known, as collect.ps1's Get-Run reaches it: the
+        # tip on HEAD (directly, or through a HEAD commit with the identical tree), or rescued by a
+        # remediated record whose remediation-tip is on HEAD AND whose reviewed tip has a patch-id
+        # copy on HEAD (the collector's boundary), or by a reviewed record whose every off-HEAD
+        # reviewed commit has such a copy, or by a later history reset; AND the base
+        # resolving. A record that fails any of those is unusable, so its waiver is legitimate.
         $resolves = $false
         if ($resolved) {
-            & git -C $RepoPath merge-base --is-ancestor $resolved.Tip HEAD 2>$null
-            $resolves = $LASTEXITCODE -eq 0
+            & git -C $RepoPath cat-file -e "$($resolved.Tip)^{commit}" 2>$null
+            $tipUsable = $LASTEXITCODE -eq 0 -and ((Test-OnHead $resolved.Tip) -or
+                ((Get-Scalar $fm 'disposition') -eq 'remediated' -and "$(Get-Scalar $fm 'remediation-tip')" -match '^[0-9a-f]{7,40}$' -and (Test-OnHead (Get-Scalar $fm 'remediation-tip')) -and (Test-PatchTwin $resolved.Tip)) -or
+                ((Get-Scalar $fm 'disposition') -eq 'reviewed' -and (Test-RangeTwins $resolved.Base $resolved.Tip) -and (Test-PatchTwin $resolved.Tip)) -or
+                (Test-HistoryReset $reviewDate))
+            $baseUsable = $resolved.Base -eq $emptyTree
+            if (-not $baseUsable) { & git -C $RepoPath cat-file -e "$($resolved.Base)^{commit}" 2>$null; $baseUsable = $LASTEXITCODE -eq 0 }
+            $resolves = $tipUsable -and $baseUsable
+            # ...and, for a subsystem record, a declared path list whose every entry matches.
+            if ($resolves -and $scopeKind -eq 'subsystem') {
+                $declared = @(Get-List $fm 'reviewed-paths')
+                $unmatched = @($declared | Where-Object {
+                    -not @(& git -C $RepoPath diff --name-only $emptyTree $resolved.Tip -- $_ 2>$null).Count -and
+                    -not @(& git -C $RepoPath diff --name-only $resolved.Base $resolved.Tip -- $_ 2>$null).Count })
+                $resolves = $declared.Count -gt 0 -and -not $unmatched.Count
+            }
         }
         if ($resolves) {
             $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = 'coverage-waiver on a record whose target already resolves; remove the waiver or the target'; Text = "$target" }
@@ -348,7 +449,7 @@ foreach ($index in $indexes) {
     }
     foreach ($sha in @(Get-List $fm 'remediation-commits')) {
         if ($sha -notmatch '^[0-9a-f]{40}$') {
-            $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "remediation-commits requires exact 40-character SHAs: $sha"; Text = [string]$sha }
+            if (-not $commitsCheckedEarly) { $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "remediation-commits requires exact 40-character SHAs: $sha"; Text = [string]$sha } }
         } else {
             & git -C $RepoPath cat-file -e "$sha^{commit}" 2>$null
             if ($LASTEXITCODE -ne 0) {
@@ -356,6 +457,11 @@ foreach ($index in $indexes) {
             } else {
                 & git -C $RepoPath merge-base --is-ancestor $sha HEAD 2>$null
                 if ($LASTEXITCODE -ne 0) { $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "remediation commit is not on RepoPath HEAD history: $sha"; Text = '' } }
+                # The reviewed tip, or anything before it, is the state that was reviewed, not a fix to it (CodeRabbit, PR #426).
+                if ($tipExists) {
+                    & git -C $RepoPath merge-base --is-ancestor $sha $tipSha 2>$null
+                    if ($LASTEXITCODE -eq 0) { $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "remediation commit is not after the reviewed tip: $sha"; Text = '' } }
+                }
             }
         }
     }
@@ -369,14 +475,22 @@ foreach ($index in $indexes) {
             $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "reviewed-paths entry could not be probed (git diff exited $LASTEXITCODE): $path"; Text = [string]$path }
         }
         elseif (-not $matchesAtTip.Count) {
-            $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "reviewed-paths entry matches no tracked files at reviewed tip: $path"; Text = [string]$path }
+            # An entry whose files were all deleted in the reviewed range still names reviewed
+            # changes: a repository-scope chunk pathspec, or a subsystem path list built from the
+            # range's changed files (review-sweep's drift recipe). A tip-only check left such a
+            # record unable to pass or to drop the entry. collect.ps1 applies the same rule.
+            $matchesInRange = @(& git -C $RepoPath diff --name-only $baseSha $tipSha -- $path 2>$null)
+            if (-not $matchesInRange.Count) {
+                $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "reviewed-paths entry matches no tracked files at reviewed tip: $path"; Text = [string]$path }
+            }
         }
     }
     foreach ($path in @($reviewedPaths) + @($excludedPaths)) {
         $pathText = [string]$path
-        $magic = [regex]::Match($pathText, '^:\((?<tokens>[^)]*)\)')
-        $hasExcludeMagic = $magic.Success -and @($magic.Groups['tokens'].Value.Split(',')) -contains 'exclude'
-        if ($pathText -match '^:(?:!|\^)' -or $hasExcludeMagic) {
+        # Short-form magic is any run of `/`, `!`, `^` after the colon, so `:/!foo` excludes too;
+        # long form names `exclude` as one of its comma-separated words (not inside `attr:...`).
+        # One rule, shared verbatim with audit-ai-quality/detect.ps1 and review-digest/collect.ps1.
+        if ($pathText -match '^:(?:[/!^]*[!^]|\((?:[^)]*,)?exclude(?:,[^)]*)?\))') {
             $violations += [pscustomobject]@{ File = $index.FullName; Line = 1; Rule = 'coverage-schema'; Message = "pathspec exclusions are not allowed in coverage lists: $path"; Text = [string]$path }
         }
     }
@@ -416,33 +530,133 @@ foreach ($index in $indexes) {
 # that index mandatory for every new run, and legacy folders without one (15 files measured)
 # stay exempt. Refuted if: a vault sweep reports missing-verification on a pre-cutover run.
 $verificationCutover = [datetime]'2026-10-05'
-function Test-VerificationApplies([string] $FilePath) {
+# The verdict rules (a Verification paragraph must hold a verdict, never PENDING; a [contested]
+# bullet or row needs its own verdict) landed 2026-11-02 and are grandfathered the same way:
+# measured that day, they turned 115 checks red across 16 run folders written before them, which
+# would block every remediation write-back to those folders (owner decision, PR #425 XM6/XM7).
+# Refuted if: a vault sweep reports contested-without-block or verification-without-verdict on a
+# run dated before this cutover.
+$verdictRulesCutover = [datetime]'2026-11-02'
+# The run date that governs a deliverable: $null for a legacy folder with no index (exempt),
+# MaxValue for an index with no parseable date (broken, so every rule applies).
+function Get-GoverningRunDate([string] $FilePath) {
     $dir = Split-Path -Parent $FilePath
     while ($dir) {
         $idx = Join-Path $dir '_index.md'
         if (Test-Path -LiteralPath $idx -PathType Leaf) {
+            # Only an index that DATES itself before a cutover is exempt. A missing or malformed
+            # date is a broken index, and a broken index must not switch the rules off.
             $d = [datetime]::MinValue
             $dateText = Get-Scalar (Read-Frontmatter (Get-Content -LiteralPath $idx -Raw)) 'date'
-            return ($dateText -and [datetime]::TryParseExact($dateText, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$d) -and $d -ge $verificationCutover)
+            if ($dateText -and [datetime]::TryParseExact($dateText, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$d)) { return $d }
+            return [datetime]::MaxValue
         }
+        # The run folder (<RunId>, SKILL.md 5) is the top of the search: an _index.md above it
+        # belongs to no run. shortcut: a legacy run folder not named by RunId still climbs; none
+        # of the vault's parent folders carries an _index.md today.
+        if ((Split-Path -Leaf $dir) -match '^\d{8}T\d{6}Z$') { break }
         $dir = Split-Path -Parent $dir
     }
-    $false
+    $null
 }
+
+# Fence-aware, so a `### ` or `[contested]` quoted inside a code sample is not report structure.
+# CommonMark's rule: an opener is 3+ backticks (info string without a backtick) or tildes, indented
+# at most 3 spaces; only the same character at least as long, alone on its line, closes it. A fence
+# left open at end of file is a typo, so everything after its opener is read as prose again.
+function Get-OutsideFence([string[]] $Lines) {
+    $outside = [bool[]]::new($Lines.Count)
+    $fence = $null; $openedAt = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($fence) {
+            if ($Lines[$i] -match ('^ {0,3}' + $fence[0] + '{' + $fence.Length + ',}\s*$')) { $fence = $null }
+            continue
+        }
+        if ($Lines[$i] -match '^ {0,3}(?<f>`{3,})[^`]*$' -or $Lines[$i] -match '^ {0,3}(?<f>~{3,})') {
+            $fence = $Matches['f']; $openedAt = $i
+            continue
+        }
+        $outside[$i] = $true
+    }
+    if ($fence) { for ($i = $openedAt; $i -lt $Lines.Count; $i++) { $outside[$i] = $true } }
+    , $outside
+}
+
+# A Phase-4 verdict, or the documented skip (`Not Phase-4 verified: <reason>`, phase3-adjudicate.txt).
+# Case-sensitive: the brief's verdict words are upper-case, and prose "confirmed" is not a verdict.
+function Test-HasVerdict([string] $Text) {
+    ($Text -cmatch '\b(CONFIRMED|REFUTED|INDETERMINATE)\b' -or $Text -match 'Not Phase-4 verified:') -and $Text -cnotmatch '\bPENDING\b'
+}
+
 foreach ($file in $files) {
-    if (-not (Test-VerificationApplies $file.FullName)) { continue }
+    $runDate = Get-GoverningRunDate $file.FullName
+    if ($null -eq $runDate -or $runDate -lt $verificationCutover) { continue }
+    $verdictRulesApply = $runDate -ge $verdictRulesCutover
     $text = Get-Content -LiteralPath $file.FullName -Raw
     if (-not $text) { continue }
-    foreach ($block in [regex]::Matches($text, '(?ms)^### .+?(?=^### |\z)')) {
-        $required = $block.Value -match '(?m)^\*\*(Critical|High)\*\*\s*·' -or $block.Value -match '\[contested\]'
-        if ($required -and $block.Value -notmatch '\*\*Verification\*\*') {
+    $lines = $text -split '\r?\n'
+    $outside = Get-OutsideFence $lines
+
+    # A finding block is a `### ` heading up to the next level 1-3 heading, so a trailing `## Low`
+    # list or `## Refuted` table is never read as part of the last finding.
+    $starts = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($outside[$i] -and $lines[$i] -match '^#{1,3} ') { $i } })
+    for ($n = 0; $n -lt $starts.Count; $n++) {
+        $start = $starts[$n]
+        if ($lines[$start] -notmatch '^### ') { continue }
+        $end = if ($n + 1 -lt $starts.Count) { $starts[$n + 1] } else { $lines.Count }
+        $body = @(for ($i = $start + 1; $i -lt $end; $i++) { if ($outside[$i]) { $i } })
+        # The tag counts only on the block's own severity line (`**<Severity>** · [...]`), never
+        # where a Consensus line quotes another finding's tag.
+        $severityLine = @($body | ForEach-Object { $lines[$_] } | Where-Object { $_ -match '^\*\*[^*]+\*\*\s*(?:\([^)]*\)\s*)?·' })[0]
+        $required = "$severityLine" -match '^\*\*(Critical|High)\*\*\s*(?:\([^)]*\)\s*)?·' -or "$severityLine" -match '\[contested\]'
+        if (-not $required) { continue }
+        # The label may open its own paragraph or follow the Consensus text on the same line.
+        $verificationAt = @($body | Where-Object { $lines[$_] -match '\*\*Verification\*\*' })[0]
+        if ($null -eq $verificationAt) {
             $violations += [pscustomobject]@{
-                File = $file.FullName; Line = ($text.Substring(0, $block.Index) -split "`n").Count
-                Rule = 'missing-verification'
+                File = $file.FullName; Line = $start + 1; Rule = 'missing-verification'
                 Message = 'Critical/High/contested finding block has no **Verification** line (Phase-4 verdict)'
-                Text = (($block.Value -split "`n")[0]).Trim()
+                Text = $lines[$start].Trim()
+            }
+            continue
+        }
+        if (-not $verdictRulesApply) { continue }
+        $paragraph = @(for ($i = $verificationAt; $i -lt $end -and $lines[$i].Trim(); $i++) { $lines[$i] }) -join ' '
+        $paragraph = $paragraph.Substring($paragraph.IndexOf('**Verification**'))
+        if (-not (Test-HasVerdict $paragraph)) {
+            $violations += [pscustomobject]@{
+                File = $file.FullName; Line = $verificationAt + 1; Rule = 'verification-without-verdict'
+                Message = '**Verification** line holds no CONFIRMED/REFUTED/INDETERMINATE verdict (or still reads PENDING); record the Phase-4 outcome'
+                Text = $lines[$start].Trim()
             }
         }
+    }
+
+    # A [contested] finding written as a bullet or table row has no block of its own, so it would
+    # otherwise borrow whatever Verification line sits above it. It must carry its own verdict.
+    if (-not $verdictRulesApply) { continue }
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if (-not $outside[$i]) { continue }
+        $item = [regex]::Match($lines[$i], '^(?<indent>\s*)(?:[-*+]|\d+[.)])\s')
+        if ($item.Success) {
+            $j = $i + 1
+            while ($j -lt $lines.Count -and $lines[$j].Trim() -and $lines[$j] -notmatch '^#' -and
+                -not ($lines[$j] -match '^(?<indent>\s*)(?:[-*+]|\d+[.)])\s' -and $Matches['indent'].Length -le $item.Groups['indent'].Length)) { $j++ }
+        } elseif ($lines[$i] -match '^\s*\|') { $j = $i + 1 }
+        else { continue }
+        $itemText = @($lines[$i..($j - 1)]) -join ' '
+        # The tag counts in a finding's tag position (after `·`, a bold label, or a table cell
+        # edge), outside code spans: `- AR-8 [contested]: ...` in a themes list is a
+        # cross-reference to a block, and a backticked tag is quoted text.
+        $tagged = ($itemText -replace '`[^`]*`', '') -match '(?:·|\*\*|\|)\s*\[contested\]'
+        if ($tagged -and -not (Test-HasVerdict $itemText)) {
+            $violations += [pscustomobject]@{
+                File = $file.FullName; Line = $i + 1; Rule = 'contested-without-block'
+                Message = 'a [contested] finding outside its own ### block carries no Phase-4 verdict; give it a full block with a **Verification** line'
+                Text = $lines[$i].Trim()
+            }
+        }
+        $i = $j - 1
     }
 }
 

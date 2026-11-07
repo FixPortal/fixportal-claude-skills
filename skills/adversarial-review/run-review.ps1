@@ -338,17 +338,6 @@ function Convert-ToWrapperSelector([string] $modelId, [string] $wrapper) {
     return $modelId
 }
 
-foreach ($r in $reviewers) {
-    $resolved = Resolve-SeatModel $r "Reviewer '$($r.id)' ($($r.label))"
-    # Two values, deliberately: telemetry keys on the REGISTRY id so Observatory rows
-    # stay priceable and un-fragmented, while the wrapper gets whatever its CLI takes.
-    # Collapsing them is what made the old alias->id reverse lookup necessary.
-    $r | Add-Member -NotePropertyName resolvedModel -NotePropertyValue $resolved -Force
-    $r | Add-Member -NotePropertyName wrapperModel -NotePropertyValue (Convert-ToWrapperSelector $resolved $r.wrapper) -Force
-    $shown = if ($r.wrapperModel -eq $resolved) { $resolved } else { "$resolved (as '$($r.wrapperModel)')" }
-    Write-Host "Reviewer $($r.id) ($($r.label)): $shown"
-}
-
 $quorumReviewerIds = @($reviewers | Where-Object { -not $_.supplemental } | ForEach-Object id)
 $vendorCount = @($reviewers | Where-Object { $_.id -in $quorumReviewerIds } | ForEach-Object vendor | Sort-Object -Unique).Count
 $minVendors = [int]($manifest.minVendors ?? 2)
@@ -371,6 +360,10 @@ if (-not $WorkDir) {
     $WorkDir = Join-Path ([IO.Path]::GetTempPath()) (Join-Path 'adversarial-review' $stamp)
 }
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+# Absolute from here on: `git -C $RepoPath diff --output=<relative>` resolves against the
+# repository, while PowerShell and [IO.File] resolve against the caller, so a relative WorkDir
+# wrote the working-tree patch into the reviewed repo.
+$WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 $diffFile = Join-Path $WorkDir 'review-diff.txt'
 $pooledFile = Join-Path $WorkDir 'pooled-findings.txt'
 $pooledMapFile = Join-Path $WorkDir 'pooled-map.json'
@@ -439,6 +432,19 @@ if ($preflightMissing.Count -gt 0) {
         "re-run pre-flight or disable the reviewer in the manifest. Evidence: $preflightFile") 2
 }
 Write-Host "Pre-flight evidence: $preflightFile ($($preflightPassed.Count) wrapper(s) recorded PREFLIGHT_SUCCESS)"
+
+# Resolved only AFTER the preflight skip above: a supplemental seat that is skipped there must
+# not first end the run because its registry entry cannot be resolved yet.
+foreach ($r in $reviewers) {
+    $resolved = Resolve-SeatModel $r "Reviewer '$($r.id)' ($($r.label))"
+    # Two values, deliberately: telemetry keys on the REGISTRY id so Observatory rows
+    # stay priceable and un-fragmented, while the wrapper gets whatever its CLI takes.
+    # Collapsing them is what made the old alias->id reverse lookup necessary.
+    $r | Add-Member -NotePropertyName resolvedModel -NotePropertyValue $resolved -Force
+    $r | Add-Member -NotePropertyName wrapperModel -NotePropertyValue (Convert-ToWrapperSelector $resolved $r.wrapper) -Force
+    $shown = if ($r.wrapperModel -eq $resolved) { $resolved } else { "$resolved (as '$($r.wrapperModel)')" }
+    Write-Host "Reviewer $($r.id) ($($r.label)): $shown"
+}
 
 # Put the routing traps at the point of use. Headings are enough to trigger the
 # operator's lookup without dumping the long corpus into every run transcript.
@@ -807,30 +813,74 @@ function Build-Args([object] $r, [string] $wrapper, [string] $instruction, [bool
 }
 
 function Get-ReviewHeadingLineNumbers([string[]] $Lines, [string] $Pattern) {
+    # A backtick opener's info string may not contain a backtick (CommonMark), so a line that
+    # merely STARTS with an inline ``` span is not a fence. A fence still open at the end is a
+    # typo, not a fence: the lines after its opener are rescanned as prose, so one stray opener
+    # cannot fold every later finding into the one above it.
     $indices = @()
     $fenceChar = $null
     $fenceLength = 0
+    $openedAt = -1
     for ($i = 0; $i -lt $Lines.Count; $i++) {
         $line = [string]$Lines[$i]
         if ($fenceChar) {
             if ($line -match "^\s*$([regex]::Escape($fenceChar)){$fenceLength,}\s*$") { $fenceChar = $null; $fenceLength = 0 }
             continue
         }
-        if ($line -match '^\s*(`{3,}|~{3,})') {
+        if ($line -match '^\s*(`{3,})[^`]*$' -or $line -match '^\s*(~{3,})') {
             $fenceChar = $Matches[1].Substring(0, 1)
             $fenceLength = $Matches[1].Length
+            $openedAt = $i
             continue
         }
         if ($line -match $Pattern) { $indices += $i }
     }
+    if ($fenceChar) {
+        for ($i = $openedAt + 1; $i -lt $Lines.Count; $i++) { if ([string]$Lines[$i] -match $Pattern) { $indices += $i } }
+    }
     return $indices
+}
+
+# A reviewer that wraps its reply, or each finding, in a ```markdown fence means the markdown,
+# not a code sample: drop those fences' own delimiter lines and keep any code block nested inside
+# them. A whole reply wrapped in one fence of another kind is unwrapped too, but only when nothing
+# outside it would be read as a heading. Without this every heading in such a reply is fenced, so
+# the vendor counts toward quorum with no finding pooled and issuesRaised = 0.
+function Expand-WrapperFences([string[]] $Lines, [string] $Pattern) {
+    $keep = [System.Collections.Generic.List[string]]::new()
+    $wrap = $null; $inner = $null; $headingOutside = $false
+    foreach ($raw in $Lines) {
+        $line = [string]$raw
+        if ($inner) {
+            if ($line -match "^\s*$([regex]::Escape($inner[0])){$($inner.Length),}\s*$") { $inner = $null }
+            $keep.Add($line); continue
+        }
+        if ($wrap -and $line -match "^\s*$([regex]::Escape($wrap[0])){$($wrap.Length),}\s*$") { $wrap = $null; continue }
+        if ($line -match '^\s*(?<f>`{3,})(?<info>[^`]*)$' -or $line -match '^\s*(?<f>~{3,})(?<info>.*)$') {
+            $fence = $Matches['f']
+            # A markdown fence after a heading that sits outside any wrapper is an example inside that
+            # finding, not a wrapper: unwrapping it would pool the example's `###` line as a finding.
+            if (-not $wrap -and -not $headingOutside -and $Matches['info'].Trim() -match '^(?i)(markdown|md)\b') { $wrap = $fence; continue }
+            $inner = $fence
+        }
+        elseif (-not $wrap -and $line -match $Pattern) { $headingOutside = $true }
+        $keep.Add($line)
+    }
+    $result = @($keep)
+    $content = @(for ($i = 0; $i -lt $result.Count; $i++) { if ($result[$i].Trim()) { $i } })
+    if ($content.Count -ge 2 -and -not @(Get-ReviewHeadingLineNumbers -Lines $result -Pattern $Pattern).Count -and
+        $result[$content[0]] -match '^\s*(`{3,}|~{3,})' -and
+        $result[$content[-1]] -match "^\s*$([regex]::Escape($Matches[1].Substring(0, 1))){$($Matches[1].Length),}\s*$") {
+        $result = @($result | Select-Object -Index (@(0..($result.Count - 1)) | Where-Object { $_ -ne $content[0] -and $_ -ne $content[-1] }))
+    }
+    , $result
 }
 
 function Strip-Preamble([string] $text, [string] $startPattern) {
     # Returns the stripped body AND whether the reply participates in this phase.
     # A heading is the pooling signal, not the participation signal: a reviewer can
     # return a clean, on-topic prose verdict and still be a real vendor response.
-    $lines = $text -split "`r?`n"
+    $lines = Expand-WrapperFences ($text -split "`r?`n") $startPattern
     $headingIndices = @(Get-ReviewHeadingLineNumbers -Lines $lines -Pattern $startPattern)
     if ($headingIndices.Count -eq 0) {
         $body = $text.Trim()
@@ -869,6 +919,24 @@ function Get-FailedPhaseCount([object[]] $Attempts, [string] $ReviewerId) {
     @($Attempts | Where-Object {
         $_.Id -eq $ReviewerId -and ($_.Exit -ne 0 -or [string]::IsNullOrWhiteSpace($_.Out))
     }).Count
+}
+
+# The pooled ids a Phase-2 reply votes on. Verdict lines outside fenced examples only, so a quoted
+# `F2: AGREE` cannot hide a real abstention; and every id on such a line that a verdict keyword
+# follows, so `F5: AGREE; F6: AGREE` votes on both. The keywords are P2VerdictLine's;
+# verify-start-patterns.ps1 pins the two lists together.
+function Get-VerdictedIds([string] $Text) {
+    $replyLines = @($Text -split "`r?`n")
+    @(Get-ReviewHeadingLineNumbers -Lines $replyLines -Pattern "(?i)$script:P2VerdictLine" | ForEach-Object {
+        # One clause per `;`, so an id quoted in an earlier clause (`F3: AGREE with F7's reasoning; F8: AGREE`)
+        # is not credited by a later clause's keyword.
+        foreach ($clause in ($replyLines[$_] -split ';')) {
+            $keywords = @([regex]::Matches($clause, '(?i)\b(?:AGREE|FALSE\s+POSITIVE|NEEDS\s+EVIDENCE|NEEDS\s+REPO)\b'))
+            if (-not $keywords.Count) { continue }
+            $lastKeyword = $keywords[-1].Index
+            [regex]::Matches($clause, '(?i)\bF\d+\b') | Where-Object { $_.Index -lt $lastKeyword } | ForEach-Object { $_.Value.ToUpperInvariant() }
+        }
+    } | Sort-Object -Unique)
 }
 
 function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $withFindings, [string[]] $ExpectedFIds = @()) {
@@ -949,7 +1017,10 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
     finally {
         $ErrorActionPreference = $previousErrorAction
     }
-    $script:roundAttempts[$phaseLabel] = @($results)
+    # A reviewer that never reported (stopped at the round timeout) still attempted this phase
+    # and failed it; recording only the rows that came back read its failedPhases as 0.
+    $script:roundAttempts[$phaseLabel] = @($results) + @($jobs | Where-Object { $_.Id -notin @($results | ForEach-Object Id) } |
+        ForEach-Object { [pscustomobject]@{ Id = $_.Id; Exit = $null; Out = '' } })
 
     # Say so loudly. A timed-out reviewer is indistinguishable downstream from one that failed
     # fast, and the difference matters: it means the round was cut short, not that a vendor
@@ -1029,9 +1100,7 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
             # becomes an explicit per-reviewer abstention in status.json and the judge
             # packet, so a consensus tag cannot rest on one vote plus untracked silence.
             if ($ExpectedFIds -and $ExpectedFIds.Count -gt 0) {
-                $verdictedIds = @([regex]::Matches($stripped.Text, "(?im)$script:P2VerdictLine") |
-                    ForEach-Object { ([regex]::Match($_.Value, '(?i)F\d+')).Value.ToUpperInvariant() } |
-                    Sort-Object -Unique)
+                $verdictedIds = @(Get-VerdictedIds $stripped.Text)
                 $coveredIds = @($ExpectedFIds | Where-Object { $_ -in $verdictedIds })
                 # Verdicts that name NO pooled id ('F99: AGREE') vote on nothing in this
                 # pool: positive evidence the reply is about something else. Off-contract.
@@ -1079,7 +1148,9 @@ function Invoke-Round([string] $phaseLabel, [string] $startPattern, [bool] $with
 # ONE parser for pooling and issuesRaised. Participation is deliberately broader: any
 # non-empty non-refusal reply counts, while this pattern decides which text becomes a
 # pooled finding. That separates "vendor answered" from "vendor raised a finding".
-$script:FindingHeading = '(?:^\s*(?:[-*+]\s+)?(?:\*\*|__)?|[.!?]\s*)(?:\*\*|__)?#{1,6}\s'
+# After sentence punctuation only `##`+ counts: a lone `#` there is an inline comment such as
+# `x = 1.  # float`, and admitting it split one finding into two F-ids.
+$script:FindingHeading = '(?:^\s*(?:[-*+]\s+)?(?:\*\*|__)?(?:\*\*|__)?#{1,6}|[.!?]\s*(?:\*\*|__)?#{2,6})\s'
 # The brief tells a reviewer with nothing to report to say so under this heading. A
 # clean review is a RESULT; without a recognised form for it the panel was structurally
 # unable to return "clean" and an all-clean round died on "no reviewer produced Phase 1
