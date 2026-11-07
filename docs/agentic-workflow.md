@@ -7,7 +7,10 @@ reading is the reasoning: why each control exists, what failure it was added aft
 where it still does not hold.
 
 The skills in this repository are the reusable part. This document is the context
-around them.
+around them. Claude Code is the main runtime, but the skills are not Claude Code
+skills. Each one lives once in a shared canonical home, and every agent CLI on the
+machine mounts that same copy, either by reading the home directly or through a
+directory junction. Instruction files and hooks are per runtime. Skills are not.
 
 ## The problem
 
@@ -98,8 +101,9 @@ exit condition stated at entry, never straight into a role where nobody will che
 A review panel made only of one vendor's models shares that vendor's blind spots, so its
 second opinion mostly agrees with the first. The adversarial-review skill in this
 repository puts one reviewer seat per vendor, makes them cross-examine each other, and
-uses a separate judge. The active set must span a minimum number of vendors, and the
-judge is never also a reviewer.
+uses a separate judge. The active set must span a minimum number of vendors. The judge
+shares a model lineage with one reviewer seat, a trade I accepted on cost, so a reviewer
+from a different vendor audits the judge's report.
 
 Review is split into two classes because they catch disjoint defects:
 
