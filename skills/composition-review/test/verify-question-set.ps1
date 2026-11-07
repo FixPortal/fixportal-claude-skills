@@ -87,8 +87,12 @@ function Test-SameRepositoryState($Before, $After) {
 # Exercise the documented state proof. Status-only comparison misses both a new commit
 # and a re-staged edit whose porcelain state remains unchanged.
 $fixture = Join-Path ([IO.Path]::GetTempPath()) "composition-review-$([Guid]::NewGuid())"
+# This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
+. (Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1')
+$created = $false
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
+    $created = $true
     & git -C $fixture init --quiet
     & git -C $fixture config user.email 'composition-review@example.invalid'
     & git -C $fixture config user.name 'Composition Review Test'
@@ -118,8 +122,10 @@ try {
     }
 }
 finally {
-    if (Test-Path -LiteralPath $fixture) {
-        Remove-Item -LiteralPath $fixture -Recurse -Force
+    # Delete only a fixture this run created; the helper prints and re-validates the path.
+    if ($created) {
+        try { Remove-OwnedTempTree -Path $fixture }
+        catch { Write-Warning "fixture cleanup refused: $($_.Exception.Message)" }
     }
 }
 

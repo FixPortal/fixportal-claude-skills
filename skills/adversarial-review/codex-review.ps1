@@ -67,6 +67,9 @@ param(
     # is intermittent on this host.
     [switch] $AllowRepoCommands,
 
+    # Omit the Phase-1 STYLE REQUIREMENT line, for a caller whose -Instruction already fixes the output format.
+    [switch] $SkipStyleRequirement,
+
     [string] $Effort,           # accepted for contract symmetry; codex exec has no clean effort flag
 
     [string] $OutPath,
@@ -112,8 +115,12 @@ $sb = [System.Text.StringBuilder]::new()
 if (-not $FindingsPath) {
     # Phase-1 style directive only: in Phase 2 (-FindingsPath) the brief owns the
     # verdict format, and a per-finding directive appended AFTER it contradicts it.
-    [void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate.')
-    [void]$sb.AppendLine()
+    # A caller whose instruction fixes its own output shape (audit-ai-quality's
+    # strict-JSON triage brief) opts out the same way.
+    if (-not $SkipStyleRequirement) {
+        [void]$sb.AppendLine('STYLE REQUIREMENT: Terse output only. No preamble, no summary, no closing remarks. Per finding: severity + location + one-sentence description + one-sentence fix. Skip any finding you cannot substantiate.')
+        [void]$sb.AppendLine()
+    }
 }
 [void]$sb.AppendLine('--- DIFF UNDER REVIEW ---')
 [void]$sb.AppendLine((Read-InputFile $DiffPath 'Diff file'))

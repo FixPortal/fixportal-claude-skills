@@ -62,8 +62,12 @@ Core section of `~/.agents/notes/dotnet-runtime-traps.md`.
   Reuse one when the codebase already has that boundary or when repeated query
   composition demonstrates a real need; otherwise test pure collaborators
   directly and integration-test the real context.
-- When replacing a provider in `WebApplicationFactory` on EF Core 8+, remove
-  `IDbContextOptionsConfiguration<TContext>` as well as the context and options.
+- When replacing a provider in `WebApplicationFactory`, remove the context and
+  options registrations before adding the test provider. On **EF Core 9+**, also
+  remove `IDbContextOptionsConfiguration<TContext>` registrations (namespace
+  `Microsoft.EntityFrameworkCore.Infrastructure`); this interface is not available
+  in EF Core 8. Inspect the installed EF version before naming the service type.
+  See the [EF Core 9 source](https://github.com/dotnet/efcore/blob/v9.0.0/src/EFCore/Infrastructure/IDbContextOptionsConfiguration.cs).
 
 ## NodaTime
 

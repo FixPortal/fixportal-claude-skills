@@ -83,13 +83,20 @@ foreach ($placeholder in '<clone>', '<skill-dir>') {
         throw "diagram verifier command retains unresolved root: $placeholder"
     }
 }
-foreach ($needle in '$diagramVerifierRoot = Resolve-Path $env:DIAGRAM_DESIGN_VERIFIER_ROOT',
-                    '$diagramVerifierRunner = Join-Path $scaffoldDocRoot ''scripts/run-diagram-verifiers.ps1''',
-                    'Test-Path -LiteralPath $diagramVerifierRunner -PathType Leaf',
-                    'pwsh -NoProfile -File $diagramVerifierRunner -File $diagramFile -VerifierRoot $diagramVerifierRoot') {
-    if ($diagramRenderers -notmatch [regex]::Escape($needle)) {
-        throw "diagram verifier root is not executable or owned: $needle"
+# One fence = one tool call, and variables do not survive between calls. The runner
+# resolves and asserts every path itself, so the documented call is one self-contained
+# line followed by an exit-code check, never a chain of dependent fences.
+$runnerCall = 'pwsh -NoProfile -File (Join-Path $HOME ''.agents/skills/scaffold-doc/scripts/run-diagram-verifiers.ps1'') -File ./diagram.html -VerifierRoot $env:DIAGRAM_DESIGN_VERIFIER_ROOT; if ($LASTEXITCODE -ne 0) { throw ''diagram verifiers failed'' }'
+if ($diagramRenderers -notmatch [regex]::Escape($runnerCall)) {
+    throw "diagram verifier call is not one self-contained line: $runnerCall"
+}
+foreach ($stale in '$diagramVerifierRunner =', '$scaffoldDocRoot =', '$diagramFile =', '$diagramVerifierRoot =') {
+    if ($diagramRenderers -match [regex]::Escape($stale)) {
+        throw "diagram verifier procedure still sets a variable a later fence depends on: $stale"
     }
+}
+if ($diagramRenderers -notmatch [regex]::Escape('mermaid-cli@11.16.0 -i d.mmd -o d.svg; if ($LASTEXITCODE -ne 0)')) {
+    throw 'Mermaid validation must check its exit code.'
 }
 if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
     throw 'diagram verifier runner is missing'

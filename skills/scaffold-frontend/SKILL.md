@@ -186,6 +186,12 @@ record the assumption).
   `npm exec --silent --yes --package=typescript@<version> --call "tsc --showConfig --project <config>"`.
   `--call` avoids npm-version-specific argument separator handling; treat empty
   output as failure before parsing JSON.
+- Read `VITE_*` variables through declared keys: add each to `interface ImportMetaEnv`
+  in `src/vite-env.d.ts`. Vite's `ImportMetaEnv` keeps a fallback string index
+  signature (Vite 8.3.4 `types/importMeta.d.ts`), so under
+  `noPropertyAccessFromIndexSignature` a dotted read of an undeclared key fails with
+  TS4111. An undeclared key takes bracket access, as
+  `../scaffold-typescript/references/language-rules.md` §7 sets out for `process.env`.
 - `templates/src/test/setup.ts` — jest-dom matchers + explicit RTL cleanup
   (needed because globals are off). Add project-specific shims below the core.
 
@@ -333,3 +339,5 @@ When scaffolding or normalizing a frontend, verify:
 - [ ] All deps on latest mutually compatible releases (except `archunit`, pinned exactly)
 
 Supporting files: Run `test/verify-template-contract.ps1`, `test/verify-version-floor.ps1`, `test/verify-build-gate.ps1` for local contract checks.
+
+Check purposes, prerequisites, effects and skip conditions: [Validation](references/validation.md).

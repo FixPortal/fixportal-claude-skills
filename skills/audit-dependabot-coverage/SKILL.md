@@ -5,6 +5,11 @@ description: Use when checking for unactioned GitHub Dependabot alerts across an
 
 # Audit Dependabot Coverage
 
+Requires PowerShell 7, GitHub CLI and authentication permitted to read the selected
+repositories' Dependabot alerts and PR metadata. Supporting configuration:
+`routing.json` declares delegation selectors; it is configuration, not a script.
+
+
 Answer one question per repository: does each selected Dependabot alert have an open
 Dependabot PR for the same package and target, or is it an unmatched alert requiring
 human review?
@@ -62,11 +67,23 @@ failure mode and investigation sequence.
 
 | Flag | Purpose |
 |---|---|
-| `-Org` | Organisation or user to enumerate; repeatable. Default `YourOrg`. |
-| `-Repo` | Explicit `owner/repo`; repeatable. Skips enumeration. |
+| `-Org` | Organisations or users to enumerate; comma-separated under `pwsh -File`. Default `YourOrg`. |
+| `-Repo` | Explicit `owner/repo` values; comma-separated under `pwsh -File`. Skips enumeration. |
 | `-GraceHours` | Finding threshold. Default 48 hours. Use `0` when every unmatched alert must enter a parent audit ledger. |
 | `-AlertState` | `open` (default), `fixed`, `dismissed`, or `auto_dismissed`. Historical states backtest emission, not past PR state. |
 | `-Json` | Machine-readable output, including findings, graced unmatched alerts, unhealthy settings, and NOT CHECKED rows. |
+
+Under `pwsh -File`, pass several values as ONE comma-separated argument:
+`pwsh -File reconcile.ps1 -Repo owner/a,owner/b` (same for `-Org`). The script splits on
+commas. Repeating the flag (`-Repo a -Repo b`) is rejected by PowerShell's binder before
+the script runs.
+
+## Report location
+
+When the result is kept as a report, save it to
+`<vault>/Claude/Estate Audit/<estate>/<YYYY-MM-DD>-github-dependabot.md` (for example
+`<vault>/Claude/Estate Audit/my-estate/2026-10-12-github-dependabot.md`). Never
+overwrite an existing file.
 
 Run after each repository's configured Dependabot schedules have had enough time to
 produce PRs. Do not assume one universal estate schedule. This is not a SessionStart

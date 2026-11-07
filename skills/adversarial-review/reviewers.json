@@ -4,7 +4,7 @@
   "_minVendorsComment": "Raised 2 -> 3 on 2026-09-18, when the panel went to one seat per vendor across five vendors. 2 was slack enough that a run could proceed on two vendors while reporting cross-vendor coverage. It is NOT set to 4, which the seat count would otherwise suggest: this value is enforced at THREE sites and two are RUNTIME, not config -- run-review.ps1 checks the enabled set once up front, then Dies if fewer than this many vendors PRODUCE Phase 1 findings, and again on Phase 2 cross-examinations. A seat is dropped from those counts by a wrapper outage OR by writing an off-contract finding heading, and the latter is observed twice (2026-08-16, 2026-08-17 -- the second left five reviewers counting as four vendors). At 4 a single outage plus one formatting quirk kills the chunk and forces a re-run of every seat; 3 absorbs the documented double-loss and still cannot be satisfied by a self-review panel.",
   "minVendors": 3,
 
-  "_selectComment": "A seat's `select` block is passed to model-registry/resolve.py as --tier/--vendor/--family/--channel, and the best-ranked match becomes the seat's model. RESOLUTION IS FATAL WHEN EMPTY: a seat whose constraint matches nothing kills the run rather than quietly leaving the panel a vendor short, because a silently dropped vendor is indistinguishable from a clean review (model-routing-traps.md traps 2 and 9). `family` is an id prefix and exists for the constraint a tier cannot express -- reviewer F must be a DIFFERENT Anthropic lineage from the Opus judge, and both sit in `frontier`. A literal `model` may still be written instead of `select` to pin a seat; it bypasses the registry entirely, so state why in the seat's comment. The registry is OPTIONAL to the driver: a literal `model` written BESIDE `select` is used only when ../model-registry is absent (a host without the registry, e.g. the public mirror), and a select-only seat on such a host kills the run naming the seat. PUBLIC MIRROR: the model-registry skill is not published alongside this one, so EVERY `select` here carries a literal `model` fallback, pinned to the id the registry resolved for that constraint when this copy was published. With ../model-registry installed beside this skill the `select` wins and the pin is ignored; without it the pin runs. The pins age -- update them, or install a registry, when a vendor ships a newer model.",
+  "_selectComment": "A seat's `select` block is passed to model-registry/resolve.py as --tier/--vendor/--family/--channel, and the best-ranked match becomes the seat's model. RESOLUTION IS FATAL WHEN EMPTY: a seat whose constraint matches nothing kills the run rather than quietly leaving the panel a vendor short, because a silently dropped vendor is indistinguishable from a clean review (model-routing-traps.md traps 2 and 9). `family` is an id prefix and exists for the constraint a tier cannot express -- reviewer F explicitly selects the Opus lineage within `frontier`. On 2026-10-15 the owner replaced Fable with Opus after moving to Pro, accepting reviewer/judge lineage overlap; the cross-vendor OpenAI judge audit remains configured. A literal `model` may still be written instead of `select` to pin a seat; it bypasses the registry entirely, so state why in the seat's comment. The registry is OPTIONAL to the driver: a literal `model` written BESIDE `select` is used only when ../model-registry is absent (a host without the registry, e.g. the public mirror), and a select-only seat on such a host kills the run naming the seat. PUBLIC MIRROR: the model-registry skill is not published alongside this one, so EVERY `select` here carries a literal `model` fallback, pinned to the id the registry resolved for that constraint when this copy was published. With ../model-registry installed beside this skill the `select` wins and the pin is ignored; without it the pin runs. The pins age -- update them, or install a registry, when a vendor ships a newer model.",
 
   "wrappers": {
     "_comment": "Each wrapper is a sibling .ps1. Required minimum parameters: -Instruction -DiffPath -FindingsPath -ContextPath -Model. Optional capabilities: -InstructionPath -Effort -RepoPath -OutPath -UsageSidecarPath. All return review text on stdout and non-zero on failure; the driver introspects optional parameters. Subscription-backed CLI wrappers are primary, with declared fallbacks only.",
@@ -16,6 +16,7 @@
     "grok": "grok-review.ps1",
     "glm": "glm-review.ps1",
     "deepseek": "deepseek-review.ps1",
+    "moonshot": "moonshot-review.ps1",
     "openai": "openai-review.ps1",
     "copilot": "external-review.ps1"
   },
@@ -43,11 +44,11 @@
       "enabled": true
     },
     {
-      "_comment": "Anthropic reviewer (Fable lineage), the panel's only Anthropic seat since B was retired to alternates. Were a second Anthropic seat re-enabled, it would be a correlated, not independent, vote, handled by vendor-weighted consensus (Phase-3 brief) and a merged Observatory row. Constrained by FAMILY, not by id: frontier alone would resolve to whatever Anthropic ranks highest and could collide with the Opus judge, which is precisely the collapse the alternates note below warns about. Fable is available in perpetuity on the Claude subscription.",
+      "_comment": "Anthropic reviewer (Opus lineage), selected by the owner on 2026-10-15: sideline Fable and use Opus after the move to Claude Pro and the end of heavy estate work. Keep seat ID F for historical continuity. Opus is included on Pro; Fable requires usage credits. This deliberately shares a lineage with the Opus judge and synthesis roles, replacing the former different-lineage policy. The OpenAI judge-audit role remains the cross-vendor check. This is one Anthropic vendor vote, not an independent vote from the judge.",
       "id": "F",
-      "label": "Claude Fable",
+      "label": "Claude Opus",
       "wrapper": "claude",
-      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-fable", "channel": "cli" }, "model": "claude-fable-5-1",
+      "select": { "vendor": "anthropic", "tier": "frontier", "family": "claude-opus", "channel": "cli" }, "model": "claude-opus-5-5",
       "vendor": "anthropic",
       "effort": "high",
       "repoAccess": true,
@@ -67,11 +68,11 @@
       "enabled": true
     },
     {
-      "_comment": "DeepSeek reviewer via the metered API (deepseek-review.ps1; DPAPI key under %LOCALAPPDATA%/YourOrg/deepseek-trial). Entered 2026-10-12 as a supplemental trial seat and PROMOTED TO A COUNTED SEAT THE SAME DAY by the owner (\"I want the next review to include DeepSeek in a 5 seat panel\"), replacing Kimi, so the panel is five vendors again. This is an owner override of the admission rule's contained slot, not a result of evidence: UNVERIFIED that its findings are accepted at a rate comparable to the other seats, and it has had no full panel run. Because it now counts, an outage or a failed preflight kills the chunk rather than being skipped (run-review.ps1 Dies when a counted seat has no PREFLIGHT_SUCCESS). RE-DEMOTE (restore `supplemental: true`) IF per-seat acceptance trails the lowest other seat across the next few full runs, the preflight fails on repeat, or the API balance cannot sustain it. It never judges or verifies (absent from every role pool). A literal `model` pin bypasses the registry deliberately: deepseek-v4-pro is registered with tier null (untriaged), which is structurally unmatchable by `select`, and the wrapper passes the id through and checks the response's own model field. Metered cost is observable (usage sidecar, registry price is the peak list price, an upper bound). repoAccess is false: the wrapper is one HTTPS call with every input inlined, no tools, no cwd.",
+      "_comment": "DeepSeek reviewer via the metered API (deepseek-review.ps1; DPAPI key under %LOCALAPPDATA%/YourOrg/deepseek-trial). Entered 2026-10-12 as a supplemental trial seat and PROMOTED TO A COUNTED SEAT THE SAME DAY by the owner (\"I want the next review to include DeepSeek in a 5 seat panel\"), replacing Kimi, so the panel is five vendors again. This is an owner override of the admission rule's contained slot, not a result of evidence: UNVERIFIED that its findings are accepted at a rate comparable to the other seats, and it has had no full panel run. Because it now counts, a missing or failed pre-flight stops the run rather than skipping the seat (run-review.ps1 Dies when a counted seat has no PREFLIGHT_SUCCESS; only a supplemental seat is skipped); an outage mid-run instead marks it unavailable and the run continues while minVendors is still met in Phase 1 and Phase 2, and Dies below that (re-run the chunk). RE-DEMOTE (restore `supplemental: true`) IF per-seat acceptance trails the lowest other seat across the next few full runs, the preflight fails on repeat, or the API balance cannot sustain it. It never judges or verifies (absent from every role pool). TRIAGED frontier by the owner 2026-10-15 (\"it's frontier and should be classed as such and feature in the 1st round of any panel\"), so the seat resolves through the registry like the others, on the API channel because the registry holds no CLI availability for it; the wrapper passes the id through and checks the response's own model field. Owner classification, not review-quality evidence. Metered cost is observable (usage sidecar, registry price is the peak list price, an upper bound). repoAccess is false: the wrapper is one HTTPS call with every input inlined, no tools, no cwd.",
       "id": "D",
       "label": "DeepSeek (trial)",
       "wrapper": "deepseek",
-      "model": "deepseek-v4-pro",
+      "select": { "vendor": "deepseek", "tier": "frontier", "channel": "api" }, "model": "deepseek-v4-pro",
       "vendor": "deepseek",
       "effort": "high",
       "repoAccess": false,
@@ -84,6 +85,17 @@
       "wrapper": "agy",
       "select": { "vendor": "google", "tier": "workhorse", "channel": "cli" }, "model": "gemini-3.8-flash-high",
       "vendor": "google",
+      "effort": "high",
+      "repoAccess": false,
+      "enabled": true
+    },
+    {
+      "_comment": "Moonshot reviewer via the metered Kimi API (moonshot-review.ps1; DPAPI key under %LOCALAPPDATA%/YourOrg/moonshot-api). Added disabled 2026-10-28 for the move off the Kimi subscription, then ENABLED AS A COUNTED SIXTH SEAT THE SAME DAY by the owner (\"we've moved to API usage for the next round\"): Moonshot joins the five vendors already seated rather than replacing one. Owner decision, not review-quality evidence: UNVERIFIED that its findings are accepted at a rate comparable to the other seats. It has had a preflight and one trial call on a planted off-by-one (found it; 327 in / 331 out tokens, 0.004 USD) and no full panel run. Because it counts, an exhausted balance or any other failed pre-flight stops the run rather than skipping the seat (run-review.ps1 Dies when a counted seat has no PREFLIGHT_SUCCESS; only a supplemental seat is skipped); the same failure mid-run instead marks it unavailable and the run continues while minVendors is still met in Phase 1 and Phase 2, and Dies below that (re-run the chunk). RE-DEMOTE (`supplemental: true`, or move back to `alternates`) IF per-seat acceptance trails the lowest other seat across the next few full runs, the preflight fails on repeat, or the balance cannot sustain it. Never judges or verifies (absent from every role pool). repoAccess false: the wrapper is one HTTPS call with every input inlined, no tools, no cwd. Resolves kimi-k3.1-pro through the registry, workhorse tier, with the exit condition recorded on that registry entry. Metered: usage sidecar carries billingRoute api and the registry list price, an upper bound. The retired CLI seat K in alternates stays untouched.",
+      "id": "M",
+      "label": "Moonshot (API)",
+      "wrapper": "moonshot",
+      "select": { "vendor": "moonshot", "tier": "workhorse", "channel": "api" }, "model": "kimi-k3.1-pro",
+      "vendor": "moonshot",
       "effort": "high",
       "repoAccess": false,
       "enabled": true
@@ -116,7 +128,7 @@
       "enabled": false
     },
     {
-      "_comment": "Anthropic WORKHORSE, retired from the active panel 2026-09-18 when the xAI seat landed. It held the anthropic axis at workhorse to keep it decorrelated from the Opus judge -- but reviewer F's `family: claude-fable` constraint already makes reviewer==judge collapse unreachable, so that job was being done twice while this seat paid for it in Claude allowance. The vault corpus is what settled it: across 60 pooled-maps / 508 findings / 12 repos it was the LOWEST-yielding seat (73 findings, leading 2 of 12 repos) against Fable's 145 leading 9 of 12. Retiring it leaves exactly one seat per vendor. RE-ENABLE IF: a five-frontier panel starts converging -- this was the only workhorse reviewer, and a cheaper model trips over obvious defects that frontier models can reason past. The evidence that would show it is per-seat acceptance, which is NOT recorded today (aggregate-verdict.json keys on vendor, so B and F merged); wire that first, or the argument for bringing it back cannot be settled by observation either.",
+      "_comment": "Anthropic WORKHORSE, retired from the active panel 2026-09-18 when the xAI seat landed. It held the anthropic axis at workhorse to keep it decorrelated from the Opus judge -- but reviewer F's `family: claude-fable` constraint already makes reviewer==judge collapse unreachable, so that job was being done twice while this seat paid for it in Claude allowance. The vault corpus is what settled it: across 60 pooled-maps / 508 findings / 12 repos it was the LOWEST-yielding seat (73 findings, leading 2 of 12 repos) against Fable's 145 leading 9 of 12. Retiring it leaves exactly one seat per vendor. RE-ENABLE IF: a five-frontier panel starts converging -- this was the only workhorse reviewer, and a cheaper model trips over obvious defects that frontier models can reason past. The evidence that would show it is per-seat acceptance, which is NOT recorded today (aggregate-verdict.json keys on vendor, so B and F merged); wire that first, or the argument for bringing it back cannot be settled by observation either. Historical rationale above describes the pre-2026-10-15 Fable panel. The owner has since switched F to Opus and accepted its overlap with the judge.",
       "id": "B",
       "label": "Claude (workhorse)",
       "wrapper": "claude",
@@ -127,7 +139,7 @@
       "enabled": false
     },
     {
-      "_comment": "The Anthropic frontier Opus lineage is reserved as judge (Phase 3) and verifier (Phase 4) -- not a blind reviewer. Do NOT enable as a reviewer: reviewer==judge collapses the anthropic axis to the adjudicator's model seen twice. Reviewer F's `family` constraint is what makes that collapse unreachable by accident rather than merely discouraged.",
+      "_comment": "Legacy duplicate Opus reviewer seat, disabled. Since the owner decision on 2026-10-15, active seat F supplies the Opus reviewer while judge and synthesis also use Opus. Do not enable O alongside F: it would duplicate the Anthropic reviewer and would not add a vendor. The former prohibition on reviewer/judge lineage overlap was superseded by that owner decision.",
       "id": "O",
       "label": "Claude Opus",
       "wrapper": "claude",

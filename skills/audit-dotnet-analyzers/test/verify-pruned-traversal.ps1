@@ -52,7 +52,9 @@ try {
     git -C $cleanRepo config user.email 'fixture@example.test'
     git -C $cleanRepo config user.name 'Prune Fixture'
     Set-Content -LiteralPath (Join-Path $cleanRepo 'Directory.Build.props') -Value '<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>'
-    Set-Content -LiteralPath (Join-Path $cleanRepo 'src/App.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Update="Override.Analyzer" Version="2.0.0" /></ItemGroup></Project>'
+    Set-Content -LiteralPath (Join-Path $cleanRepo 'src/App.csproj') -Value '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Update="Override.Analyzer" Version="2.0.0" /><PackageReference Include="Real.Analyzer" Version="1.0.0" /><PackageReference Update="Real.Analyzer" Version="1.1.0" /></ItemGroup></Project>'
+    # A PackageVersion with no PackageReference of the same id is version evidence only.
+    Set-Content -LiteralPath (Join-Path $cleanRepo 'Directory.Packages.props') -Value '<Project><ItemGroup><PackageVersion Include="Orphan.Analyzer" Version="3.0.0" /></ItemGroup></Project>'
     git -C $cleanRepo add --all
     if ($LASTEXITCODE -ne 0) { throw "fixture git add failed (exit $LASTEXITCODE)" }
     git -C $cleanRepo -c commit.gpgsign=false commit --quiet -m 'chore: fixture'
@@ -67,6 +69,20 @@ try {
     }
     if ('Override.Analyzer' -notin @($clean.AllPackageRefs.Id)) {
         throw 'PackageReference Update= (Central Package Management override) must be inventoried'
+    }
+    # L29: an Update-only id adds no reference, so it is not an installed analyzer; an id that
+    # is also Included somewhere stays (its Update carries the version override).
+    if ('Override.Analyzer' -in @($clean.AnalyzerPackages.Id)) {
+        throw 'An Update-only PackageReference must not be reported as an installed analyzer package'
+    }
+    if ('Orphan.Analyzer' -in @($clean.AnalyzerPackages.Id)) {
+        throw 'A PackageVersion with no PackageReference must not be reported as an installed analyzer package'
+    }
+    if (@($clean.AnalyzerPackages | Where-Object { $_.Id -eq 'Real.Analyzer' }).Count -ne 2) {
+        throw 'An Include plus Update of the same analyzer id must keep both records in AnalyzerPackages'
+    }
+    if ('Update' -notin @($clean.AllPackageRefs | Where-Object { $_.Id -eq 'Override.Analyzer' }).Operation) {
+        throw 'AllPackageRefs must record Operation = Update for an Update item'
     }
 }
 finally {

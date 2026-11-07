@@ -48,6 +48,33 @@ function Get-ProductPathspec {
     return @($pathspec)
 }
 
+# A pathspec that matches nothing gives empty git output, which the caller cannot tell from
+# "scanned and clean": the gate would print passed = true over a scope it never read.
+# Matching means: a tracked or untracked-unignored file, or a path the diff against the base
+# reports (a tracked file deleted since the base is in the diff, not in ls-files).
+function Assert-PathspecMatches {
+    param([string] $Repository, [string] $BaseCommit, [string[]] $Pathspec, [string[]] $Original)
+
+    for ($i = 0; $i -lt $Pathspec.Count; $i++) {
+        $files = @(Invoke-GitReadOnly -Repository $Repository -GitArguments @('ls-files', '--cached', '--others', '--exclude-standard', '--', $Pathspec[$i]))
+        if ($files.Count -gt 0) { continue }
+        $changed = @(Invoke-GitReadOnly -Repository $Repository -GitArguments @('diff', '--no-ext-diff', '--name-only', $BaseCommit, '--', $Pathspec[$i]))
+        if ($changed.Count -eq 0) {
+            throw "ProductPath '$($Original[$i])' matches no tracked file and no working-tree file; refusing to report a pass over an empty scope."
+        }
+    }
+}
+
+# core.quotePath=false still C-quotes a path holding `"`, `\` or a control character:
+# `bad".dll` arrives as `"bad\".dll"`, which ends in a quote and so matches no extension
+# test. Fail closed rather than guess at the unquoting.
+function Assert-PlainGitPath {
+    param([string] $Path)
+    if ($Path.StartsWith('"')) {
+        throw "git reported a C-quoted path ($Path); the guard cannot name the file, so it cannot scan it. Review this range by hand."
+    }
+}
+
 function Get-FSharpCode {
     param([string] $Line, [ref] $State)
 
@@ -181,7 +208,32 @@ function Get-CSharpCode {
         if ($character -eq '$' -and $index + 1 -lt $Line.Length -and $Line[$index + 1] -eq '"') {
             # $""" is a raw interpolated string, not a plain one.
             if ($index + 3 -lt $Line.Length -and $Line.Substring($index + 1, 3) -eq '"""') { $State.Value = 'raw'; $ambiguous = $true; $index += 4; continue }
-            $State.Value = 'string'; $ambiguous = $true; $index += 2; continue
+            # A plain single-line interpolated string: hole depth is tracked, hole contents
+            # reach the rules as code, and the line is ambiguous only when a hole holds a
+            # nested quote or the string/hole is still open at end of line.
+            $index += 2
+            $depth = 0
+            $closed = $false
+            while ($index -lt $Line.Length) {
+                $inner = $Line[$index]
+                if ($depth -eq 0) {
+                    if ($inner -eq [char]'\' -and $index + 1 -lt $Line.Length) { $index += 2; continue }
+                    if ($inner -eq '"') { $closed = $true; $index++; break }
+                    if ($inner -eq '{') {
+                        if ($index + 1 -lt $Line.Length -and $Line[$index + 1] -eq '{') { $index += 2; continue }
+                        $depth = 1; [void]$code.Append(' '); $index++; continue
+                    }
+                    $index++
+                    continue
+                }
+                if ($inner -eq '{') { $depth++ }
+                elseif ($inner -eq '}') { $depth--; if ($depth -eq 0) { [void]$code.Append(' '); $index++; continue } }
+                elseif ($inner -eq '"' -or $inner -eq "'") { $ambiguous = $true }
+                [void]$code.Append($inner)
+                $index++
+            }
+            if (-not $closed) { $ambiguous = $true }
+            continue
         }
         if ($character -eq "'") {
             $index++
@@ -208,13 +260,17 @@ try {
     # closed on the first modified file with a message that does not say why.
     $topLevel = @(Invoke-GitReadOnly -Repository $repository -GitArguments @('rev-parse', '--show-toplevel'))[0]
     if (-not $topLevel) { throw "Could not resolve the work-tree root for '$repository'." }
-    $topLevel = (Resolve-Path -LiteralPath $topLevel).Path
+    # Resolve-Path keeps a caller's trailing separator and git's root has none; compare the
+    # two without it so a valid root is not reported as a subdirectory (CX16).
+    $topLevel = [IO.Path]::TrimEndingDirectorySeparator((Resolve-Path -LiteralPath $topLevel).Path)
+    $repository = [IO.Path]::TrimEndingDirectorySeparator($repository)
     if ($topLevel -ne $repository) {
         throw ("RepositoryPath '$repository' is a subdirectory of the work tree rooted at '$topLevel'. " +
             'Pass the work-tree root: diff paths are root-relative and cannot be joined onto a subdirectory.')
     }
     $baseCommit = @(Invoke-GitReadOnly -Repository $repository -GitArguments @('rev-parse', '--verify', "$BaseRef^{commit}"))[0]
     $pathspec = Get-ProductPathspec -Repository $repository -Paths $ProductPath
+    Assert-PathspecMatches -Repository $repository -BaseCommit $baseCommit -Pathspec $pathspec -Original $ProductPath
     $limitations = @(
         'Generated code requires manual review.',
         'Reflection requires manual review.',
@@ -281,6 +337,7 @@ try {
         $parts = $entry -split "`t"
         $status = $parts[0]
         $path = $parts[$parts.Count - 1]
+        Assert-PlainGitPath -Path $path
         # R### and C### are routine: diff.renames has defaulted on since git 2.9, and the
         # destination path is already the last field. Matching only 'A' let a tracked file
         # RENAMED to .dll/.so/.exe enter with no violation, and the untracked pass cannot
@@ -292,6 +349,7 @@ try {
 
     $untracked = Invoke-GitReadOnly -Repository $repository -GitArguments (@('ls-files', '--others', '--exclude-standard', '--') + $pathspec)
     foreach ($path in $untracked) {
+        Assert-PlainGitPath -Path $path
         if ($path -match '(?i)\.(dll|so|dylib|a|lib|exe)$') {
             Add-Finding -Target $violations -Rule 'native-binary' -Path $path -Line 0 -Message 'Untracked native binary or executable is outside the managed product-code boundary.'
             continue

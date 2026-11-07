@@ -82,6 +82,9 @@ try {
     if ($r.Code -ne 1) { throw "tampered fixture must exit 1; got $($r.Code)`n$($r.Output)" }
     if ($r.Output -notmatch [regex]::Escape("DIVERGED $assetB")) { throw "tampered fixture must name the diverged asset`n$($r.Output)" }
     if ($r.Output -notmatch 'sync-canonical-asset-manifest\.ps1') { throw "failure output must teach the regeneration command`n$($r.Output)" }
+    # Public consumers: an outside contributor cannot run the private-checkout command, so
+    # the output must also tell them what they CAN do.
+    if ($r.Output -notmatch 'outside the maintaining organisation' -or $r.Output -notmatch 'pull request\s+description or in an issue') { throw "failure output must give an outside contributor a route that needs no private checkout`n$($r.Output)" }
     if ($r.Output -notmatch [regex]::Escape("ok       $assetA")) { throw "the untouched asset must still read ok`n$($r.Output)" }
     Write-Asset $clean $assetB $linesB  # restore
 

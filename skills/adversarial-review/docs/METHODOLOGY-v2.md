@@ -1,64 +1,68 @@
-# Adversarial Review — v2 methodology (all-frontier, subscription-backed)
+# Adversarial Review — v2 methodology (cross-vendor, six seats)
 
 ## Contents
 
 - [Motivation](#motivation)
-- [Panel roster (5 reviewers / 5 vendors)](#panel-roster-5-reviewers--5-vendors)
-- [Where Kimi sits, and why](#where-kimi-sits-and-why)
-- [Subscription-first, API-fallback](#subscription-first-api-fallback)
+- [Panel roster (6 reviewers / 6 vendors)](#panel-roster-6-reviewers--6-vendors)
+- [How seats are billed, and what happens when one fails](#how-seats-are-billed-and-what-happens-when-one-fails)
 - [Wrapper contract](#wrapper-contract)
-- [Cost & tokens under subscriptions](#cost--tokens-under-subscriptions)
+- [Cost & tokens](#cost--tokens)
 - [Phase design](#phase-design)
-- [Phase 1 — blind independent find (5 reviewers, parallel)](#phase-1--blind-independent-find-5-reviewers-parallel)
-- [Phase 2 — cross-examine (same 5, parallel)](#phase-2--cross-examine-same-5-parallel)
+- [Phase 1 — blind independent find (6 reviewers, parallel)](#phase-1--blind-independent-find-6-reviewers-parallel)
+- [Phase 2 — cross-examine (same 6, parallel)](#phase-2--cross-examine-same-6-parallel)
 - [Phase 3 — adjudicate (Opus judge)](#phase-3--adjudicate-opus-judge)
 - [Phase 3.5 — judge-audit (mandatory on a merge-gating or HIGH-tier target, else opt-in)](#phase-35--judge-audit-mandatory-on-a-merge-gating-or-high-tier-target-else-opt-in)
-- [Phase 4 — verify (NOW cross-vendor pool)](#phase-4--verify-now-cross-vendor-pool)
+- [Phase 4 — verify (cross-vendor pool)](#phase-4--verify-cross-vendor-pool)
 - [Telemetry (Observatory)](#telemetry-observatory)
 - [Files](#files)
 - [Non-goals / guardrails](#non-goals--guardrails)
 
-
 Status: implemented v2 methodology. This document records the contract shared by
-the wrappers, `reviewers.json`, the driver, and Observatory telemetry.
+the wrappers, `reviewers.json`, the driver, and Observatory telemetry. It records
+the **shape** of the panel, not its occupants: `reviewers.json` says who sits where
+and why, and each seat's `_comment` carries the evidence and the conditions for
+changing it. Anything below that names a seat is a description of the manifest on
+the day it was written; read the manifest, not this page, when the two disagree.
 
 ## Motivation
 
 V2 is built on two changes:
 
-1. **Every frontier vendor is now reachable on a flat-rate subscription**, not
-   metered API credits — Anthropic (Claude Max 20x, incl. Fable in perpetuity),
-   OpenAI (ChatGPT Pro 20x via the Codex CLI), Moonshot (Kimi Allegretto via the
-   Kimi Code CLI), Google (Gemini via Google One). Cost stops being a design
-   constraint; methodology quality is the only axis.
-2. **Kimi Code and Codex are headless agentic CLIs** (`kimi -p`,
-   `codex exec`) — direct analogues of `claude -p`. So a second and third
-   non-Anthropic vendor can now walk the repository, not just read the diff.
+1. **Every frontier vendor is reachable without a per-call meter.** Most seats run
+   on a flat-rate subscription through a headless CLI; the rest run on a metered
+   API whose balance is a deliberate, visible cost. Either way, methodology
+   quality is the axis that matters, and the cost of a seat is a fact to disclose,
+   not a reason to drop a vendor.
+2. **Headless agentic CLIs exist for more than one vendor** (`claude -p`,
+   `codex exec`). A non-Anthropic vendor can therefore walk the repository, not
+   just read the diff.
 
 V2 addresses two structural weaknesses in the v1 panel:
 
 - **Repo-blind abstention.** Only the Anthropic reviewers had repo access; the
-  cross-vendor reviewers (Gemini, OpenAI-API) abstained ("needs evidence")
-  whenever a mechanism lived outside the diff. Those abstentions masqueraded as
-  doubt at adjudication.
+  cross-vendor reviewers abstained ("needs evidence") whenever a mechanism lived
+  outside the diff. Those abstentions masqueraded as doubt at adjudication.
 - **Judge and verifier were an Anthropic monoculture.** The two most
   decision-heavy steps — Phase-3 adjudication and Phase-4 verification — ran on a
   single vendor, re-correlating the error the panel exists to decorrelate.
 
-## Panel roster (5 reviewers / 5 vendors)
+## Panel roster (6 reviewers / 6 vendors)
 
-| id | vendor | registry constraint | primary wrapper | fallback wrapper | repoAccess |
-|----|--------|---------------------|-----------------|------------------|------------|
-| F  | anthropic | `frontier`, family `claude-fable` | `claude` | — | yes |
-| X  | openai | `frontier` | `codex` (ChatGPT Pro sub) | `openai` (API) | yes (sandbox read-only) |
-| K  | moonshot | `workhorse` | `kimi` (Allegretto sub) | — | no (hermetic; see note) |
-| G  | google | `frontier` | `agy` (paid Google plan) | — | no (diff + `-ContextPath`) |
-| Z  | zai | `frontier` | `glm` (GLM Coding Plan, isolated Claude Code) | — | no (no tools, no repo access) |
+| id | vendor | registry constraint | wrapper (fallback) | billing route | repoAccess |
+|----|--------|---------------------|--------------------|---------------|------------|
+| Z  | zai | `frontier`, channel `cli` | `glm` (isolated Claude Code on the GLM Coding Plan) | coding plan | no (no tools, no repo) |
+| F  | anthropic | `frontier`, family `claude-opus` | `claude` | subscription | yes (read-only plan mode) |
+| X  | openai | `frontier`, channel `cli` | `codex` (`openai` API as the declared fallback) | subscription, API on fallback | yes (sandbox read-only) |
+| D  | deepseek | `frontier`, channel `api` | `deepseek` | metered API | no (one HTTPS call, no tools) |
+| G  | google | `workhorse`, channel `cli` | `agy` | subscription | no (diff + `-ContextPath`) |
+| M  | moonshot | `workhorse`, channel `api` | `moonshot` | metered API | no (one HTTPS call, no tools) |
 
-Seat **B** (anthropic `workhorse`) was retired to `alternates` when R was seated, leaving
-one seat per vendor. Seat **R** (xai, `grok`) was disabled to `alternates` on 2026-10-11
-because Grok is no longer available; Z took the fifth vendor slot. `reviewers.json`
-carries the evidence and the re-enable conditions; they are deliberately not repeated here.
+Retired or disabled seats live in `alternates` with their evidence and re-enable
+conditions, deliberately not repeated here: **K** (Moonshot over the Kimi Code CLI,
+retired when the subscription lapsed), **R** (xAI Grok, unavailable), **B**
+(Anthropic `workhorse`, retired as the lowest-yielding seat) and **O** (a legacy
+duplicate of F). Moving a seat between `reviewers` and `alternates` is how the
+panel changes; this table follows the manifest, not the other way round.
 
 **The roster names constraints, not models.** A seat carries a `select` block that
 `run-review.ps1` resolves against the canonical model registry at run time, so a release
@@ -77,70 +81,63 @@ lookups degrade the same way — no registry means `costUnknown`, never an inven
 price.
 
 - Consensus is **vendor-weighted**: one vote per vendor, not per seat. With one
-  seat per vendor that is **five vendor votes** and nothing merges. The weighting
-  survives the roster because it is defined per vendor: seat B and F once shared
-  Anthropic's single vote, and a second same-vendor seat would share one again,
-  including in telemetry, which emits one `anthropic/reviewer` row either way.
-- **Two of five finders are repo-aware** — F (Claude, hard read-only plan
-  mode) and X (Codex, hard read-only sandbox). Gemini, Kimi and GLM stay diff-blind,
-  fed the key files via `-ContextPath`. Kimi ships blind deliberately (and Grok did,
-  while seated) for the same reason: the CLI has no per-invocation read-only flag (Kimi
-  Code's global mode is `yolo`; grok-review.ps1 passes `--always-approve`), so pointing
-  it at the live checkout would let it WRITE the tree it is reviewing, which the
-  hard-sandbox reviewers cannot. That is a **write-isolation** constraint, not a
-  claim it is untrusted with the source — a detached-commit worktree satisfies it,
-  and `SKILL.md` §4 states the one case (a target carrying uncommitted work) where
-  the worktree route is not sufficient on its own. Flip
-  `repoAccess:true` to enable `--add-dir` tracing, guarded only by prompt +
-  git-tree. This still fixes v1's repo-blind abstention (v1 had only Anthropic
-  repo-aware; v2 adds Codex).
-- **Kimi's seat is `workhorse` and that is a COST constraint, not a capability
-  one.** It resolves to whichever Moonshot model the registry ranks highest in the
-  `workhorse` tier, independent of the user's current CLI default — read the current
-  answer with `resolve.py --tier workhorse --vendor moonshot --channel cli` rather
-  than off this page, which records the SHAPE of the panel and not its occupants.
-  (Observed 2026-09-05: `kimi-code/kimi-for-coding`, K2.7 Coding, Standard. Named
-  only so the cost reasoning below is checkable against something; it is not a pin,
-  and it is exactly the sort of line the paragraph above warns against writing.)
-  The seat previously used `-highspeed`, but that variant
-  bills ~3x the credits for equivalent review output (the highspeed multiplier,
-  not extra work), so a modest panel burned ~30% of the weekly allowance; Standard
-  is the credit-sane default. `kimi-code/k3` (1M context, deeper) is a DISTINCT
-  model — not the Standard tier of K2.7 — and was capacity-congested at its
-  mid-Jul 2026 launch; swap to it per chunk only if the 1M window is needed, or
-  to `-highspeed` only when speed is worth the 3x burn.
+  seat per vendor that is **six vendor votes** and nothing merges. The weighting
+  is defined per vendor so that it survives roster changes: a second same-vendor
+  seat would share its vendor's single vote, including in telemetry, which emits
+  one row per vendor-participant either way.
+- **`minVendors` is 3, below the seat count on purpose.** It is enforced up front
+  and again at runtime when a phase produces its findings, and a seat drops out of
+  those counts through a wrapper outage or an off-contract finding heading. Set
+  at the seat count, one outage plus one formatting quirk would kill the chunk and
+  force every seat to re-run; at 3 it absorbs that and still cannot be satisfied
+  by a self-review panel.
+- **A counted seat is a hard dependency.** The driver dies when an enabled seat has
+  no passing pre-flight, rather than skipping it, because a silently dropped vendor
+  reads as a clean review. That is why a metered seat needs a funded balance before a
+  run, and why adding a seat is an owner decision with a stated way back out.
+- **Two of six finders are repo-aware** — F (Claude, hard read-only plan mode) and
+  X (Codex, hard read-only sandbox). The other four are repo-blind, for different
+  reasons: D and M are single API calls with every input inlined and no tools; Z runs a
+  tool-less isolated CLI; G is diff-only. Blind seats are fed the key files via
+  `-ContextPath`. For the CLI wrappers that have no per-invocation read-only mode
+  (the retired Kimi and Grok ones, listed in `noSandboxWrappers`) blindness is a
+  **write-isolation** constraint, not a claim they are untrusted with the source:
+  pointing them at the live checkout under their global auto-approve default would let
+  them WRITE the tree they are reviewing, which the hard-sandbox reviewers cannot. A
+  detached-commit worktree satisfies it, and `SKILL.md` §4 states the one case (a
+  target carrying uncommitted work) where the worktree route is not sufficient on its
+  own. This still fixes v1's repo-blind abstention: v1 had only Anthropic repo-aware;
+  v2 adds Codex.
+- **A seat's tier is an honest label, not a ranking of worth.** G sits at
+  `workhorse` because the best Gemini its CLI still serves is a Flash-class model; M
+  sits at `workhorse` while it is new to the registry and has had no full panel run.
+  Both are owner decisions recorded with the condition that would change them. Weigh
+  a workhorse seat's findings accordingly, and read the current answer with
+  `resolve.py --tier <tier> --vendor <vendor> --channel <channel>` rather than off
+  this page.
 - The judge stays the **Opus lineage** (Anthropic frontier, family `claude-opus`) —
-  one coherent adjudicating voice, whose inputs are already five-vendor.
-  Reviewer≠judge decorrelation is preserved, and now structurally: F, the only
-  Anthropic seat, is constrained to the Fable family, so it cannot drift onto the
-  judge's model when Anthropic's frontier ranking changes. Under a bare `frontier`
-  constraint it could, silently, and the panel would still report five vendors.
+  one coherent adjudicating voice, whose inputs are already six-vendor. Seat F is also
+  Opus, an owner decision that accepts reviewer/judge lineage overlap in exchange for
+  running on the plan already paid for; the cross-vendor judge-audit (Phase 3.5) is the
+  check that overlap leaves in place. F is one Anthropic vendor vote, not an
+  independent vote from the judge.
 
-## Where Kimi sits, and why
-
-Kimi is placed where it fixes v1's weaknesses, not merely as a fifth voice:
-
-1. **Diff-blind Phase-1 finder** (with `-ContextPath`) — a fourth vendor whose
-   errors decorrelate from the other three. (Design intent was repo-aware, but it
-   ships blind for the yolo trust-boundary reason above; Codex is the
-   non-Anthropic vendor that carries the repo-aware role instead.)
-2. **Phase-4 verifier pool member** — see below; it breaks the Sonnet-only
-   verification monoculture with an agentic, repro-constructing skeptic from a
-   different vendor.
-
-## Subscription-first, API-fallback
+## How seats are billed, and what happens when one fails
 
 `reviewers.json` uses a `fallbackWrapper` field. The driver resolves a
-reviewer's wrapper as: **try `wrapper` (the sub-backed CLI); on non-zero exit
-(CLI missing, not logged in, sub lapsed) fall back to `fallbackWrapper` (the API
-path) and mark the run degraded-to-API for that vendor.** The v1 API wrappers
-(`openai-review.ps1`, `gemini-review.ps1`) are retained on disk, but only OpenAI
-is wired as an automatic fallback. The retired Gemini CLI path is dormant for a
-possible deliberate API re-enable.
+reviewer's wrapper as: **try `wrapper` (the subscription-backed CLI); on non-zero exit
+(CLI missing, not logged in, subscription lapsed) fall back to `fallbackWrapper` (the API
+path) and mark the run degraded-to-API for that vendor.** Only OpenAI carries a
+fallback today (`codex` → `openai`). Google runs through Antigravity (`agy`) with none,
+and the GLM seat has none by construction (its credential and isolation are the point).
 
-Only OpenAI carries a fallback today (`codex` → `openai`). Google runs through
-Antigravity (`agy`) with no fallback; Kimi is also sub-only. Anthropic runs in-process
-via the Agent tool under Claude Code (no fallback needed).
+Two seats are metered by design and have no subscription path to fall back from:
+DeepSeek and Moonshot are API-only seats, each with a DPAPI-held credential on the
+Windows host and a funded account balance. For them an exhausted balance is an outage.
+An outage found at pre-flight stops the run, because the seat counts; one that happens
+mid-run drops the seat from the phase's counts (marked unavailable, unpooled), and the
+run continues only while `minVendors` is still met. Anthropic runs in-process under
+Claude Code with no fallback needed.
 
 ## Wrapper contract
 
@@ -157,44 +154,51 @@ Every wrapper declares this required minimum:
 `-InstructionPath`, `-Effort`, `-RepoPath`, `-OutPath`, and
 `-UsageSidecarPath` are optional capabilities. The driver introspects them and
 passes only supported flags. Every wrapper returns review text on stdout and a
-non-zero exit on failure.
-Read-only and hermetic: `codex exec --sandbox read-only`; Kimi (`kimi -p`, which
-cannot combine with `--plan`) is run hermetically instead — throwaway scratch cwd,
-copied context, repo not in the workspace, prompt forbids mutation;
-`claude --permission-mode plan`. Repo access, when granted, is read-only
-(`--add-dir` / `--add-dir` / `-RepoPath`).
+non-zero exit on failure, and declares a `PREFLIGHT_COMMAND` the host runs before
+fan-out so an unauthenticated CLI or an unfunded API account is found before the
+parallel round, not inside it.
 
-### Cost & tokens under subscriptions
+Read-only and hermetic, by whatever the wrapper's tool allows: `codex exec
+--sandbox read-only`; `claude --permission-mode plan`; for the API wrappers, a single
+request with every input inlined. Repo access, when granted, is read-only
+(`-RepoPath`). The two metered-API wrappers check that the response's own model field
+equals the id they asked for, so a silent substitution fails loudly instead of being
+scored as the seat's vote.
 
-Sub-backed calls are flat-rate, so **real per-token cost is ~0**. Telemetry
+### Cost & tokens
+
+Subscription-backed calls are flat-rate, so **real per-token cost is ~0**. Telemetry
 therefore reports **putative cost** (the v1 treatment for Claude), computed from
 best-effort token counts extracted from each CLI's JSON output
-(`codex exec --json`, `kimi --output-format stream-json`, `claude -p
---output-format json`). V2 added registry-backed pricing and an explicit
-unknown-cost state because unavailable pricing and zero marginal subscription spend are
-different facts. The live lookup and rendering policy now sits in `SKILL.md` beside the
-emission rules. Collectors recorded zero tokens when a CLI exposed no usage (including
-`agy`), without changing outcome telemetry (issuesRaised / issuesAccepted).
+(`codex exec --json`, `claude -p --output-format json`). The two metered API seats
+report a usage sidecar with `billingRoute: api`, priced at the registry list rate, which
+is an upper bound because cache discounts are not modelled; the coding-plan seat
+reports tokens with the cost left unknown. V2 added registry-backed pricing and an
+explicit unknown-cost state because unavailable pricing and zero marginal subscription
+spend are different facts. The live lookup and rendering policy sits in `SKILL.md`
+beside the emission rules. Collectors recorded zero tokens when a CLI exposed no usage
+(including `agy`), without changing outcome telemetry (issuesRaised / issuesAccepted).
 
 ## Phase design
 
-### Phase 1 — blind independent find (5 reviewers, parallel)
-Kimi (K) participates; X (Codex) is repo-aware, while K (Kimi) is
-diff-blind (hermetic; fed `-ContextPath`). Gemini via Antigravity remains
-diff-blind with `-ContextPath`. Each reviewer is blind to the others.
+### Phase 1 — blind independent find (6 reviewers, parallel)
+F (Claude) and X (Codex) are repo-aware; Z, D, G and M are repo-blind and fed
+`-ContextPath`. Each reviewer is blind to the others.
 
-### Phase 2 — cross-examine (same 5, parallel)
-Unchanged. All five attack the pooled, anonymised findings.
+### Phase 2 — cross-examine (same 6, parallel)
+All six attack the pooled, anonymised findings. Output is the per-finding verdict
+format the phase brief owns; a seat that cannot take part is marked unavailable and
+uncounted rather than substituted.
 
 ### Phase 3 — adjudicate (Opus judge)
-Unchanged. Vendor-weighted consensus over five vendors. Judge reads the repo to
-settle contested mechanisms.
+Vendor-weighted consensus over six vendors. Judge reads the repo to settle contested
+mechanisms.
 
 ### Phase 3.5 — judge-audit (mandatory on a merge-gating or HIGH-tier target, else opt-in)
-A single cross-vendor pass (default a non-Anthropic vendor — Kimi or Codex)
-that audits the Opus judge's report for: findings silently dropped between the
-pooled set and the report, severity mis-rating vs the evidence, and consensus
-tags that don't match the vendor split. It does **not** re-review the code; it
+A single cross-vendor pass (a non-Anthropic vendor; the manifest's `judgeAudit` pool
+names it, today Codex) that audits the Opus judge's report for: findings silently
+dropped between the pooled set and the report, severity mis-rating vs the evidence, and
+consensus tags that don't match the vendor split. It does **not** re-review the code; it
 checks the adjudication against its own inputs. Output: a short list of
 `{findingId, issue, suggested correction}` the host folds back before Phase 4.
 **Required** when the review gates a merge or the target classifies HIGH under the
@@ -210,14 +214,16 @@ Phase 4 cannot cover for it either — it only sees findings that reached the
 report, verifies only Criticals/Highs/contested, and never inspects consensus
 tags, so dropped, demoted and mislabelled findings all pass it untouched.
 
-### Phase 4 — verify (NOW cross-vendor pool)
+### Phase 4 — verify (cross-vendor pool)
 Every Critical/High and every `[contested]` finding is verified by a fresh agent
-that took no part in the report. v2 draws verifiers from a **cross-vendor pool**
-— Sonnet, Kimi, Codex — assigned round-robin by vendor, so no single vendor
-owns verification. For a finding with more than one failure mode, assign
-**diverse lenses** across vendors (correctness / security / does-it-reproduce).
-Verifiers are agentic and construct repros where cheap. Verdicts fold back
-exactly as v1 (CONFIRMED / REFUTED / INDETERMINATE, additive annotations).
+that took no part in the report. Verifiers are drawn from the manifest's `verifier`
+pool, assigned round-robin by vendor so no single vendor owns verification; the pool
+is today an Anthropic workhorse member and Codex, both repo-aware. For a finding with
+more than one failure mode, assign **diverse lenses** across vendors (correctness /
+security / does-it-reproduce). Verifiers are agentic and construct repros where cheap.
+Verdicts fold back as CONFIRMED / REFUTED / INDETERMINATE, additive annotations.
+Access is declared per pool member, never role-wide, so a member without a hard
+read-only mode can never be handed the live tree.
 
 ## Telemetry (Observatory)
 
@@ -229,11 +235,22 @@ not which consensus labels it later supported. Unknown-cost state exists separat
 from numeric cost because subscription usage and missing registry prices cannot safely
 be represented by the same zero.
 
+The dashboard compares each run to a roster of active reviewer vendors that is
+**mirrored by hand** from `reviewers.json` into the web app. A seat change is therefore
+two edits, one per repository, and forgetting the second fails silently in both
+directions: a vendor missing from the mirror is ignored when counting, so a full panel
+reads "complete" with that vendor invisible and a panel that lost the vendor reads
+"complete" too. It reads as success, which is why it is written down. Seats retired
+from the manifest move to the mirror's retired list, where their historical runs still
+sort among the reviewers and count toward validity but not completeness.
+
 ## Files
 
 Canonical skill (`~/.agents/skills/adversarial-review`), surfaced to other
 runtimes through their configured junctions/discovery roots:
-- `codex-review.ps1`, `kimi-review.ps1`, `agy-review.ps1`, `grok-review.ps1`
+- `codex-review.ps1`, `agy-review.ps1`, `glm-review.ps1`, `deepseek-review.ps1`,
+  `moonshot-review.ps1` — the live wrappers; `kimi-review.ps1`, `grok-review.ps1` stay
+  on disk, with their tests, for a reinstatement
 - `reviewers.json` — roster + `fallbackWrapper` + wrapper mapping (a wrapper file
   that exists but is absent from `wrappers` is unreachable; that is how `grok` sat
   unused after audit-ai-quality already had it)
@@ -248,20 +265,18 @@ runtimes through their configured junctions/discovery roots:
 Observatory (its own repository, separate GitHub PR):
 - `src/AiObservatory.Data/Entities/Provider.cs` — the provider enum member
 - runs endpoint / `AdversarialReviewService.cs` — accept the vendor id
-- `src/AiObservatory.Web/src/components/adversarialReviewGrouping*` + `api/client.ts` — vendor completeness count, label/colour + test
-
-Historical note, now moot while seat R is disabled (2026-10-11) and relevant again only on
-reinstatement. OUTSTANDING for `xai` as of 2026-09-18: `Provider.cs` on `main` already carries `Xai`,
-but `adversarialReviewGrouping.ts` still hardcodes
-`REVIEWER_ORDER = ['anthropic','google','openai','moonshot']` and derives
-`EXPECTED_REVIEWER_VENDORS` from its length. xAI rows are therefore filtered out of the
-completeness count, so a full five-vendor run renders "4 of 4 reviewers · complete" while
-xAI is invisible — it reads as success, which is why it needs writing down rather than
-noticing later.
+- `src/AiObservatory.Web/src/components/adversarialReviewGrouping*` + `api/client.ts` — the
+  active and retired vendor lists that decide "N of M reviewers · complete", label/colour,
+  and the test that pins both directions
 
 ## Non-goals / guardrails
 
-- No transcript/DOM scraping. Every vendor runs headless via its CLI; the
-  Observatory ingests telemetry, never transcripts.
-- No retiring of the API wrappers — they remain the documented fallback.
-- Opus stays judge-only, never a blind reviewer (preserves reviewer≠judge).
+- No transcript/DOM scraping. Every vendor runs headless via its CLI or a single API
+  call; the Observatory ingests telemetry, never transcripts.
+- No deleting a wrapper when its seat is retired — it stays on disk with its tests as
+  the documented route back.
+- The judge adjudicates and takes no Phase-1 seat of its own; the Opus lineage of
+  seat F is the accepted overlap described under the roster.
+- A new or materially updated model enters through a contained slot with its exit
+  condition stated, never straight into a solo low-verifiability role; routing selects
+  who does the work and never changes how the work is checked.

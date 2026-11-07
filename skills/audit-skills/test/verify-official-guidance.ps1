@@ -49,6 +49,20 @@ foreach ($needle in 'guidance_drift.py', 'guidance-drift.json', 'suspended_axes'
     if ($skill -notmatch [regex]::Escape($needle)) { throw "SKILL.md Phase 0 is missing the guidance check: $needle" }
 }
 
+# PUBLIC MIRROR: the private copy ships an optional reach probe and asserts the reasons a
+# run may record for not running it. This mirror ships no probe, so the contract here is
+# that SKILL.md says so and the report method line records it as not run.
+$skillFlat = $skill -replace '\s+', ' '
+if ($skillFlat -notmatch [regex]::Escape('This skill ships no decision-model reach probe')) {
+    throw 'SKILL.md must state that this copy ships no reach probe'
+}
+if ($skillFlat -notmatch [regex]::Escape('reach probe: not run')) {
+    throw 'SKILL.md report method line must record the reach probe as not run'
+}
+if (Test-Path -LiteralPath (Join-Path $root 'reach_probe.py')) {
+    throw 'reach_probe.py is present, so the not-shipped wording above is now false'
+}
+
 # RED CHECK: the brief as it stood before this change must fail on every retired rule.
 $retired = @'
 Grade the frontmatter `description` against `writing-skills` CSO rules:

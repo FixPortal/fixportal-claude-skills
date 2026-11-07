@@ -51,11 +51,44 @@ try {
     $deletedPath = Join-Path $fingerprintRepo 'zz-deleted.txt'
     [IO.File]::WriteAllText($deletedPath, 'gone')
     $null = Invoke-FixtureGit -C $fingerprintRepo add zz-deleted.txt
+    $presentFingerprint = Get-ContentFingerprint -Repo $fingerprintRepo
     Remove-Item -LiteralPath $deletedPath -Force
-    if ($null -ne (Get-ContentFingerprint -Repo $fingerprintRepo)) {
-        throw 'A listed file that is missing after earlier files hashed must make the whole fingerprint null, not a partial array.'
+    # M33: a tracked path absent from the work tree is a fixed record, not a reason to
+    # make MutationState permanently Unknown. Its absence is distinct from its presence.
+    $absentFingerprint = Get-ContentFingerprint -Repo $fingerprintRepo
+    if ($null -eq $absentFingerprint) {
+        throw 'A tracked path absent from the work tree (deleted or sparse) must be hashed as a fixed record, not null the fingerprint.'
+    }
+    if ($absentFingerprint -ceq $presentFingerprint) {
+        throw 'A tracked path going absent must change the fingerprint.'
     }
     $null = Invoke-FixtureGit -C $fingerprintRepo rm --cached --quiet zz-deleted.txt
+
+    # M33: a submodule gitlink (mode 160000) is a directory in the work tree; it is skipped.
+    # Index-only entry plus an empty directory reproduces it without a second repository.
+    $gitlinkSha = Invoke-FixtureGit -C $fingerprintRepo rev-parse HEAD
+    $null = Invoke-FixtureGit -C $fingerprintRepo update-index --add --cacheinfo "160000,$gitlinkSha,vendored-sub"
+    New-Item -ItemType Directory -Path (Join-Path $fingerprintRepo 'vendored-sub') -Force | Out-Null
+    if ($null -eq (Get-ContentFingerprint -Repo $fingerprintRepo)) {
+        throw 'A submodule gitlink must not null the content fingerprint.'
+    }
+    $null = Invoke-FixtureGit -C $fingerprintRepo update-index --force-remove vendored-sub
+    Remove-Item -LiteralPath (Join-Path $fingerprintRepo 'vendored-sub') -Force
+
+    # XM12: paths differing only by case are distinct records. Index-only entries (case
+    # sensitivity forced on for the call) reproduce the pair on a case-insensitive disk.
+    $caseRepo = Join-Path $tempRoot 'case-repo'
+    New-Item -ItemType Directory -Path $caseRepo -Force | Out-Null
+    $null = Invoke-FixtureGit -C $caseRepo init --quiet
+    [IO.File]::WriteAllText((Join-Path $caseRepo 'A.txt'), 'same')
+    $null = Invoke-FixtureGit -C $caseRepo add A.txt
+    $onlyUpper = Get-ContentFingerprint -Repo $caseRepo
+    $caseBlob = Invoke-FixtureGit -C $caseRepo rev-parse ':A.txt'
+    $null = Invoke-FixtureGit -C $caseRepo -c core.ignorecase=false update-index --add --cacheinfo "100644,$caseBlob,a.txt"
+    $bothCases = Get-ContentFingerprint -Repo $caseRepo
+    if ($null -eq $bothCases -or $bothCases -ceq $onlyUpper) {
+        throw 'Tracked paths differing only by case must both enter the fingerprint (ordinal de-duplication).'
+    }
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         $newlinePath = Join-Path $fingerprintRepo "line`nbreak.txt"
         [IO.File]::WriteAllText($newlinePath, 'first')
@@ -68,8 +101,8 @@ try {
             throw 'Content fingerprint must safely include Git paths containing newlines.'
         }
         Remove-Item -LiteralPath $newlinePath -Force
-        if ($null -ne (Get-ContentFingerprint -Repo $fingerprintRepo)) {
-            throw 'A listed Git path that cannot be hashed must make the fingerprint unknown.'
+        if ((Get-ContentFingerprint -Repo $fingerprintRepo) -ceq $newlineFingerprintB) {
+            throw 'A listed Git path that is now absent must change the fingerprint (hashed as a fixed absent record).'
         }
     } else {
         Write-Host 'SKIP: Windows filesystems do not allow newline characters in file names.'

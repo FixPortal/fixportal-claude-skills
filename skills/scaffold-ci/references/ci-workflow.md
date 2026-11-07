@@ -60,6 +60,19 @@ These are the deltas an unaided agent gets wrong. Get them right:
    a timeout: optimize or move the test. End-to-end, stress, load, soak, repeated or
    randomized concurrency, real package/publish/install exercises over 30 seconds, and
    broad compatibility matrices run in the weekly/manual extended lane described below.
+8. **ReSharper InspectCode is a blocking gate on a repo that is clean.** The step sits
+   between Build and Test (it needs the Release build) and counts the findings in the
+   SARIF report itself, because `jb inspectcode` exits 0 whatever it finds. Three details
+   are load-bearing: `--dotnetcoresdk="$(dotnet --version)"` (without it `jb` picks a
+   Visual Studio MSBuild and dies with "Can't connect to protocol model"); `jq -es` with
+   `length == 1` (plain `jq -e` over two concatenated documents exits on the last one, so a
+   finding followed by a clean document passes); and the `case` digits-only check, so a
+   count that is not a number fails the step. The same `jq` condition requires every run's
+   `invocations` to be a non-empty array of `executionSuccessful: true`, which a clean report
+   carries; its `rules` and `artifacts` are empty, so they cannot be the "analysis ran" signal.
+   Pin `JetBrains.ReSharper.GlobalTools` in the
+   tool manifest. Add the step only once the repo's count under this exact invocation is
+   zero; measure in a Linux .NET container, because a Windows Debug sweep undercounts.
 
 ### Runners — `ubuntu-latest` by default, Blacksmith for heavy lanes
 
@@ -176,6 +189,18 @@ jobs:
         run: dotnet restore YourSolution.sln
       - name: Build
         run: dotnet build YourSolution.sln --configuration Release --no-restore
+      - name: Inspect code (ReSharper)
+        run: |
+          set -euo pipefail
+          sarif="$RUNNER_TEMP/inspectcode.sarif"
+          dotnet jb inspectcode YourSolution.sln --output="$sarif" --format=Sarif --severity=WARNING --no-build --properties:Configuration=Release --dotnetcoresdk="$(dotnet --version)"
+          count="$(jq -es 'if length == 1 and (.[0].version == "2.1.0") and (.[0].runs | type) == "array" and (.[0].runs | length) > 0 and all(.[0].runs[]; (.tool.driver.name | type) == "string" and (.results | type) == "array" and (.invocations | type) == "array" and (.invocations | length) > 0 and all(.invocations[]; .executionSuccessful == true)) then [.[0].runs[].results[]] | length else error("invalid SARIF: need one document, version 2.1.0 and, per run, tool.driver.name, a results array and successful invocations") end' "$sarif")"
+          case "$count" in '' | *[!0-9]*) echo "::error::InspectCode report did not yield a finding count"; exit 1 ;; esac
+          if [ "$count" -ne 0 ]; then
+            jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // 0): \(.ruleId): \(.message.text)"' "$sarif"
+            echo "::error::InspectCode reported $count finding(s)"
+            exit 1
+          fi
       # `YourSolution.sln` here means the FAST projects only. The moment an extended test
       # project exists (scaffold-tests directs you to create one), running the solution
       # runs it too: on every PR, against the 15-runner-minute budget, the 30s hang

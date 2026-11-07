@@ -39,7 +39,8 @@ produce:
 
 Blank line between every block. Keep the severity tally as a markdown table.
 Render the Low tail as a bulleted list (one line each, code spans intact), not
-full blocks. In "Cross-cutting themes", give each theme a bold lead sentence
+full blocks. A [contested] finding is never a tail bullet: give it a full block
+carrying its chunk's **Verification** line. In "Cross-cutting themes", give each theme a bold lead sentence
 followed by a bullet listing every finding/location that belongs to it. Rank
 highest severity first.
 

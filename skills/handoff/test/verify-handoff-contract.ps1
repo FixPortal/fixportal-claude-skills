@@ -37,6 +37,15 @@ foreach ($value in $forbidden) {
 if ($skill -match '(?<![\w-])medium-high(?![\w-])') {
     throw 'Invalid handoff reasoning effort: medium-high'
 }
+# Mount claims name roots that exist only where the runtime is installed: PI is recorded as
+# uninstalled and the Antigravity skill roots are absent on this box, so a hard-coded list
+# (including ~/.pi/...) asserts junctions that are not there.
+if (($skill -replace '\s+', ' ') -notmatch [regex]::Escape('junctioned into ~/.claude/skills/ and into each other runtime''s skills root where that runtime is installed')) {
+    throw 'handoff mount claim must say "where that runtime is installed" instead of naming roots that may not exist'
+}
+if ($skill -match '~/\.pi/') {
+    throw 'handoff names a ~/.pi skills root, but PI is recorded as uninstalled'
+}
 
 $step2Start = $skill.IndexOf('### 2. Gather git state')
 $step3Start = $skill.IndexOf('### 3. Establish the task')

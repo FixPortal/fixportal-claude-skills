@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot '..'
 $skill = Get-Content -Raw -LiteralPath (Join-Path $root 'SKILL.md')
 $contract = $skill + "`n" + (Get-Content -Raw -LiteralPath (Join-Path $root 'references/nodatime-sql-server.md'))

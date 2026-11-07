@@ -24,7 +24,7 @@ foreach ($pattern in 'remote branch gone \+ matching commit titles,\s*or an empt
 }
 
 foreach ($needle in 'both', 'remote branch is gone', 'commit titles match', 'supplemental evidence', 'outside the review worktree') {
-    if ($text -notmatch [regex]::Escape($needle)) { throw "SKILL.md missing safe teardown contract: $needle" }
+    if (($text -replace '\s+', ' ') -notmatch [regex]::Escape($needle)) { throw "SKILL.md missing safe teardown contract: $needle" }
 }
 
 if ($text -notmatch '(?m)^description:.*selecting or implementing remediation actions') {
@@ -52,13 +52,37 @@ if ($text -notmatch '(?is)closed, unmerged PR.*?stop before batch selection.*?re
     throw 'A closed, unmerged review PR must stop before batch selection and require an explicit resume or abandon choice.'
 }
 
-foreach ($needle in 'disposition: remediated', 'remediation-tip:', 'validate-report.ps1', '-RepoPath') {
+foreach ($needle in 'disposition: remediated', 'remediation-tip:', 'remediation-commits:', 'validate-report.ps1', '-RepoPath') {
     if ($text -notmatch [regex]::Escape($needle)) {
         throw "SKILL.md does not close the machine-readable review artefact after remediation: $needle"
     }
 }
 if ($text -notmatch '(?is)only after.*all.*findings.*fixed.*declined.*deferred') {
     throw 'Review artefact must close only after every finding has a recorded disposition.'
+}
+
+foreach ($needle in 'demonstrated red', 'pre-fix code', 'for the finding''s reason', 'alternative check', 'Record both runs') {
+    if ($normalized -notmatch [regex]::Escape($needle)) {
+        throw "SKILL.md missing red-before-closure contract: $needle"
+    }
+}
+
+# M34: MERGED alone does not close a pass; a head that moved after the merge needs git cherry.
+if ($normalized -notmatch '(?s)A merged pass.*?headRefOid.*?equals `git rev-parse HEAD`.*?differs from `HEAD`.*?git cherry -v <mainline-ref> HEAD.*?any `\+` row as work still in flight') {
+    throw 'M34: a MERGED pass must compare headRefOid with HEAD and run git cherry when they differ.'
+}
+if ($normalized -notmatch 'headRefOid,baseRefName' -or $normalized -notmatch 'git log --merges --oneline <mainline-ref>\.\.HEAD') {
+    throw 'M34: a MERGED pass must check the PR base and inspect merge commits that git cherry skips.'
+}
+# XL18: teardown needs patch evidence, not matching titles alone.
+$teardown = [regex]::Match($normalized, 'Stale-after-merge cleanup.*?(?=Because the branch is checked out)').Value
+if ($teardown -notmatch 'matching titles are not patch evidence' -or $teardown -notmatch 'git cherry -v <mainline-ref> <branch>` shows no `\+` rows') {
+    throw 'XL18: teardown must require patch evidence (MERGED at the branch tip, or no + rows from git cherry).'
+}
+# L41: the confirmation names the checks teardown actually requires.
+if ($normalized -match 'empty-range') { throw 'L41: teardown confirmation still asks for an empty-range check.' }
+if ($normalized -notmatch 'remote-gone, title-match and patch-evidence checks') {
+    throw 'L41: teardown confirmation must report the remote-gone, title-match and patch-evidence checks.'
 }
 
 $fetch = $normalized.IndexOf('`git fetch --prune`', [System.StringComparison]::Ordinal)

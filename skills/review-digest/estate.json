@@ -1,1 +1,6 @@
-{"paths":[],"vaultRoot":"<vault>","exempt":[]}
+{
+  "_comment": "This machine's review-digest scope, stated once. Ships empty: fill in paths (repositories, or parents of them) and vaultRoot for your machine. Pass with collect.ps1 -EstateFile; explicit -Path / -VaultRoot / -Exempt still win. Exempt repositories are scanned and reported but never queued for a review they are deliberately never going to get; give each one a reason.",
+  "paths": [],
+  "vaultRoot": "<vault>",
+  "exempt": []
+}

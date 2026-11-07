@@ -14,6 +14,17 @@ file or lines that were missing, and report the tree you were given
 (`git rev-parse HEAD` and `git status --porcelain`). Refute only on evidence you
 actually read.
 
+
+If writing or running a test/probe, preserve deletion-target provenance: positively
+validate current-test/helper ownership of the actual resolved cleanup target even
+when setup fails before assignment; print that target before recursive deletion.
+A temp API, variable name or intended assignment is insufficient. Cleanup must refuse
+an unvalidated target. Run Pester/destructive PowerShell verifiers through safe-test-run
+in Windows Sandbox on disposable copies, never in the working profile. Destructive
+fault injection requires separate approval of the exact guest-only command; no host
+profile decoy or sentinel proof. A missing lane is INDETERMINATE, not a host fallback.
+Repeat these constraints in every test-writing subagent brief you delegate.
+
 Do this:
 - Open the cited code and the surrounding call paths. Follow the real callers,
   contracts, base types, and guards — not only the lines quoted in the finding.

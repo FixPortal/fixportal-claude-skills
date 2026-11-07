@@ -51,8 +51,27 @@ $unverifiedHigh = Get-Count 'unverified-high-items'
 $unsettled = [regex]::Matches($content, '(?ms)^## Unsettled — host evidence required\s*\r?\n(?<body>.*?)(?=^##\s|\z)') |
     ForEach-Object { $_.Groups['body'].Value }
 $unsettledText = $unsettled -join "`n"
-$unsettledCritical = [regex]::Matches($unsettledText, '(?im)^\s*[-*]\s+\*{0,2}Critical\*{0,2}(?=\s|—|:)').Count
-$unsettledHigh = [regex]::Matches($unsettledText, '(?im)^\s*[-*]\s+\*{0,2}High\*{0,2}(?=\s|—|:)').Count
+# The mandated item form is one bullet beginning `- **<Tier>** —` (orchestration.md). An item in
+# any other shape -- an ordered `1. **Critical** —`, a `- **Critical path** …` that only looks like
+# a tier, a missing dash -- would silently escape or inflate the counters, so it is rejected
+# rather than counted. Indented lines are continuation text unless they themselves start a
+# bold-tier item.
+$itemForm = '^\s*[-*]\s+\*\*(?<tier>Critical|High|Medium|Low)\*\*\s+—'
+$tierCounts = @{ Critical = 0; High = 0 }
+foreach ($line in ($unsettledText -split "\r?\n")) {
+    $isTop = $line -match '^ {0,1}(?:[-*+]|\d+[.)])\s+\S'
+    $isTierLike = $line -match '^\s*(?:[-*+]|\d+[.)])\s+\*\*(?:Critical|High|Medium|Low)\b'
+    # A two- or three-space indented bullet that is a bare tier word plus an item separator is a misformed
+    # item; nested detail that merely starts with a tier word (`  - High latency was seen`) stays valid.
+    $isIndentedTierLike = $line -match '^ {2,3}[-*+]\s+(?:Critical|High|Medium|Low)\s*(?:[—–:]|-\s)'
+    if (-not ($isTop -or $isTierLike -or $isIndentedTierLike)) { continue }
+    if ($line -notmatch $itemForm) {
+        throw "Unsettled item is not in the mandated form '- **<Tier>** —': $($line.Trim())"
+    }
+    if ($tierCounts.ContainsKey($Matches.tier)) { $tierCounts[$Matches.tier]++ }
+}
+$unsettledCritical = $tierCounts.Critical
+$unsettledHigh = $tierCounts.High
 if ($unverifiedCritical -lt $unsettledCritical) {
     throw "unverified-critical-items ($unverifiedCritical) is lower than the $unsettledCritical Critical Unsettled item(s)."
 }

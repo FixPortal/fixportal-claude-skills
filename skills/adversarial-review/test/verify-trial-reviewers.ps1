@@ -65,6 +65,13 @@ if ($FindingsPath) { 'F1: AGREE - evidence verified'; return }
     Write-PreflightFixture -Dir $root -ReviewerId A,B
     $status = Run-Case 'missing-trial-preflight'
     if ($status.phase1Reviewers.id -contains 'Z' -or $status.skippedSupplementalReviewers -notcontains 'Z' -or $status.supplementalReviewers.Count) { throw 'Unverified supplemental seat must be skipped and disclosed' }
+    # ...even when its model cannot be resolved: the skip must come before seat resolution, or
+    # a select-only trial seat with no registry beside it ends the run instead (XL3).
+    $trialSeat = $manifest.reviewers[2]
+    $manifest.reviewers[2] = @{ id='Z'; label='Trial'; wrapper='stub'; vendor='zai'; enabled=$true; supplemental=$true; select=@{ tier='workhorse'; vendor='zai' } }
+    $status = Run-Case 'unresolvable-unverified-trial'
+    if ($status.skippedSupplementalReviewers -notcontains 'Z') { throw 'An unverified supplemental seat must be skipped before its model is resolved' }
+    $manifest.reviewers[2] = $trialSeat
     $preflightPath = Join-Path $root 'preflight.json'
     $preflight = Get-Content $preflightPath -Raw | ConvertFrom-Json
     $preflight.checked += @{reviewer='Z';result='PREFLIGHT_FAILED'}
@@ -88,6 +95,40 @@ if ($FindingsPath) { 'F1: AGREE - evidence verified'; return }
     Invoke-Expression $function.Extent.Text
     if (-not (Test-ReviewerExpired '2026-11-01T00:00:00Z' ([datetimeoffset]'2026-11-01T00:00:00Z'))) { throw 'Trial must expire exactly at cutoff' }
     if (Test-ReviewerExpired '2026-11-01T00:00:00Z' ([datetimeoffset]'2026-10-31T23:59:59Z')) { throw 'Trial expired early' }
+
+    # A reviewer stopped at the Phase-2 round timeout failed that phase (XL4); recording only
+    # the rows that came back gave it failedPhases = 0.
+    @'
+param($Instruction, $DiffPath, $FindingsPath, $Model)
+if ($FindingsPath) { if ($Model -eq 'slow-p2') { Start-Sleep -Seconds 90 }; 'F1: AGREE - evidence verified'; return }
+"### Finding from $Model"
+'- **Severity:** Low'
+'- **Location:** sample.txt:1'
+'@ | Set-Content (Join-Path $fixture 'stub.ps1')
+    $manifest.reviewers = @(
+        @{ id='A'; label='A'; wrapper='stub'; model='a'; vendor='alpha'; enabled=$true },
+        @{ id='B'; label='B'; wrapper='stub'; model='slow-p2'; vendor='beta'; enabled=$true },
+        @{ id='C'; label='C'; wrapper='stub'; model='c'; vendor='gamma'; enabled=$true }
+    )
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fixture 'reviewers.json')
+    Write-PreflightFixture -Dir $root -ReviewerId A,B,C
+    $work = Join-Path $root 'round-timeout'
+    $output = & pwsh -NoProfile -File (Join-Path $fixture 'run-review.ps1') -RepoPath $repo -Target audit -Pathspec sample.txt -WorkDir $work -RoundTimeoutSeconds 60 2>&1 | Out-String
+    if ($LASTEXITCODE) { throw "round-timeout case failed: $output" }
+    $beta = @((Get-Content (Join-Path $work 'metrics.json') -Raw | ConvertFrom-Json).participants | Where-Object reviewer -eq 'beta')[0]
+    if ($beta.failedPhases -ne 1) { throw "A reviewer stopped at the Phase-2 timeout must record failedPhases=1, got $($beta.failedPhases)" }
+
+    # A relative -WorkDir from a caller outside the repo must hold the working-tree patch:
+    # git resolved `--output=<relative>` against the repo while the driver read it from the caller.
+    'uncommitted' | Set-Content (Join-Path $repo 'sample.txt')
+    $caller = New-Item -ItemType Directory -Path (Join-Path $root 'caller')
+    Write-PreflightFixture -Dir (Join-Path $caller 'relwork') -ReviewerId A,B,C
+    $manifest.reviewers[1].model = 'b'
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fixture 'reviewers.json')
+    Push-Location $caller
+    try { $output = & pwsh -NoProfile -File (Join-Path $fixture 'run-review.ps1') -RepoPath $repo -Target HEAD -WorkDir 'relwork' 2>&1 | Out-String; $code = $LASTEXITCODE }
+    finally { Pop-Location }
+    if ($code -or -not (Test-Path (Join-Path $caller 'relwork' 'working-tree.patch'))) { throw "a relative -WorkDir must keep the working-tree patch in the caller's WorkDir: $output" }
     'Trial reviewer contracts passed: expiry, pooling, cross-examination and all three quorum gates.'
 } finally {
     if ($root.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $root -Recurse -Force }

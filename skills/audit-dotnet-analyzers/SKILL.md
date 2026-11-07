@@ -69,7 +69,7 @@ A control is cheap and worth it: confirm the rule *does* fire on a genuine insta
 1. **Scope** — one repo, a workspace, or a single finding.
    <!-- routing: inventory -->
 
-2. **Inventory** — run `scripts/inventory-dotnet-analysis.ps1` for the deterministic sweep (SDK, TFM, LangVersion, analyzer packages, config hierarchy, warning policy). Read `references/audit-checklist.md` for what else to inspect and how to resolve effective config. A non-empty `UnreadablePaths`, `UnreadableFiles`, or `ParseErrors` collection makes every conclusion that depends on the affected path **undeterminable**; never report missing configuration, package references, or bundled analyzer dependencies as absent when their source did not parse.
+2. **Inventory** — requires PowerShell 7 and Git; build-level evidence also needs the repository SDK. Run `pwsh -NoProfile -File "<skill-dir>/scripts/inventory-dotnet-analysis.ps1" -Path "<repo>"` (`<skill-dir>` is the loaded skill directory) for the deterministic sweep (SDK, TFM, LangVersion, analyzer packages, config hierarchy, warning policy). Read `references/audit-checklist.md` for what else to inspect and how to resolve effective config. A non-empty `UnreadablePaths`, `UnreadableFiles`, or `ParseErrors` collection makes every conclusion that depends on the affected path **undeterminable**; never report missing configuration, package references, or bundled analyzer dependencies as absent when their source did not parse.
    <!-- routing: attribute -->
 
 3. **Attribute** — assign every diagnostic to its owning analyzer. Prefix is a hint, not proof: analyzers arrive bundled (a shared CodeStyle package may ship Sonar transitively). Do not attribute to Sonar merely because Sonar is installed.
@@ -90,7 +90,11 @@ A control is cheap and worth it: confirm the rule *does* fire on a genuine insta
 `GitStatusBefore` and `GitStatusAfter` each carry `Success`, `Status`, `ExitCode`, and
 `Error`. Mutation proof exists only when both probes succeeded. If either failed,
 `Mutated` is null and `MutationState` is `Unknown`: mark the read-only proof incomplete
-and report the failed probe rather than treating unknown state as unchanged.
+and report the failed probe rather than treating unknown state as unchanged. The content
+fingerprint also yields `Unknown` when a listed file cannot be read. It does not for a
+submodule gitlink (skipped; its content belongs to the submodule's own repository) or a
+tracked path absent from the work tree (a deleted file or a sparse-checkout entry, hashed
+as a fixed `ABSENT` record), and it keeps paths that differ only by case apart.
 
 ## Modern C# stance
 
@@ -171,3 +175,5 @@ If the report path already exists (a re-audit on the same day), write `<YYYY-MM-
 
 Every finding must still carry rule ID, owning analyzer, effective severity,
 config provenance, evidence, and confidence.
+
+Tests: [test/ inventory](references/validation.md).

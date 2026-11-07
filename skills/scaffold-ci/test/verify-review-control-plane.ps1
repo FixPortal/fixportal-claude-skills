@@ -515,7 +515,19 @@ if ($policy.high -notcontains '.github/canonical-assets.json' -or
 # control path cannot leave the example policy and its test behind.
 $requiredLoop = [regex]::Match($guard, '(?s)for required in (?<paths>.*?)\s*; do')
 if (-not $requiredLoop.Success) { throw 'review-policy-guard.yml required-high loop was not found' }
-$requiredPaths = @([regex]::Matches($requiredLoop.Groups['paths'].Value, '\.github/[^\s\\]+|\.claude/[^\s\\]+|\.coderabbit\.yaml') | ForEach-Object Value)
+# The HIGH-list loops live in their own named bash step (the shape a hardened consumer uses), so a
+# consumer contract checker can pin the step's whole body. Losing the name, the shell, the
+# strict mode, or moving a loop back out of the step fails here.
+$protectedStep = [regex]::Match($guard, '(?ms)^      - name: Policy-controlled paths must remain HIGH\r?\n(?<body>.*?)(?=^      - |\z)')
+if (-not $protectedStep.Success) { throw "review-policy-guard.yml has lost its 'Policy-controlled paths must remain HIGH' step" }
+$protectedBody = $protectedStep.Groups['body'].Value
+if ($protectedBody -notmatch '(?m)^        shell: bash\s*$' -or $protectedBody -notmatch '(?m)^          set -euo pipefail\s*$') {
+    throw "the 'Policy-controlled paths must remain HIGH' step must run under shell: bash with set -euo pipefail"
+}
+if ([regex]::Matches($protectedBody, 'for required in ').Count -ne 2 -or [regex]::Matches($guard, 'for required in ').Count -ne 2) {
+    throw "both required-HIGH loops must live in the 'Policy-controlled paths must remain HIGH' step and nowhere else"
+}
+$requiredPaths =@([regex]::Matches($requiredLoop.Groups['paths'].Value, '\.github/[^\s\\]+|\.claude/[^\s\\]+|\.coderabbit\.yaml') | ForEach-Object Value)
 foreach ($path in $requiredPaths) {
     if ($policy.high -notcontains $path) { throw "the example policy omits guard-required HIGH path: $path" }
 }

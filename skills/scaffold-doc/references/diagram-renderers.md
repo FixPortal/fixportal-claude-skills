@@ -87,39 +87,18 @@ is a coverage gap to state — say which gates were skipped and why. The portabl
 self-check passing on its own is not a substitute for them and must not be reported as
 one.
 
-```powershell
-$diagramVerifierRoot = Resolve-Path $env:DIAGRAM_DESIGN_VERIFIER_ROOT
-```
-
-Resolve the file and installed runner:
+Run all three Python verifiers in one call. The runner resolves the diagram file and
+the verifier root itself, and fails with a named message if either, or any child
+script, is missing:
 
 ```powershell
-$diagramFile = Resolve-Path './diagram.html'
-```
-
-```powershell
-$scaffoldDocRoot = Resolve-Path (Join-Path $HOME '.agents/skills/scaffold-doc')
-```
-
-```powershell
-$diagramVerifierRunner = Join-Path $scaffoldDocRoot 'scripts/run-diagram-verifiers.ps1'
-```
-
-Assert that the runner exists, then run all three Python verifiers. The runner
-also asserts each child script exists before invoking it.
-
-```powershell
-if (-not (Test-Path -LiteralPath $diagramVerifierRunner -PathType Leaf)) { throw "Diagram verifier runner not found: $diagramVerifierRunner" }
-```
-
-```powershell
-pwsh -NoProfile -File $diagramVerifierRunner -File $diagramFile -VerifierRoot $diagramVerifierRoot
+pwsh -NoProfile -File (Join-Path $HOME '.agents/skills/scaffold-doc/scripts/run-diagram-verifiers.ps1') -File ./diagram.html -VerifierRoot $env:DIAGRAM_DESIGN_VERIFIER_ROOT; if ($LASTEXITCODE -ne 0) { throw 'diagram verifiers failed' }
 ```
 
 Validate Mermaid separately with its pinned parser:
 
 ```powershell
-npx -y @mermaid-js/mermaid-cli@11.16.0 -i d.mmd -o d.svg
+npx -y @mermaid-js/mermaid-cli@11.16.0 -i d.mmd -o d.svg; if ($LASTEXITCODE -ne 0) { throw 'Mermaid validation failed' }
 ```
 
 > [!NOTE]

@@ -19,6 +19,7 @@ Each tracked file belongs to the newest usable run covering it. Everything else 
 with a reason or `uncovered`; neither is evidence of no review. A run carrying a
 `coverage-waiver: <reason>` is `coverage-waived` - its author read it, found its coverage
 unreconstructable, and said so in the record; it is reported apart from the unreadable ones.
+A waived record that would otherwise be usable is `coverage-waiver-conflicts-with-target`.
 #>
 [CmdletBinding()]
 param(
@@ -89,7 +90,11 @@ function Read-Frontmatter([string]$File) {
         if ($line -match '^([A-Za-z][\w-]*):\s*(.*)$') {
             $key = $Matches[1]; $value = $Matches[2].Trim()
             if ($value -match '^\[(.*)\]$') { $fm[$key] = @($Matches[1] -split ',' | ForEach-Object { $_.Trim().Trim('"', "'", '`') } | Where-Object { $_ }) }
-            elseif ($value) { $fm[$key] = $value.Trim('"', "'", '`') }
+            elseif ($value) {
+                # A quoted scalar is one literal value; `quoted:` cannot collide with a key, which starts with a letter.
+                if ($value -match '^(["''`]).*\1$') { $fm["quoted:$key"] = $true }
+                $fm[$key] = $value.Trim('"', "'", '`')
+            }
             else { $fm[$key] = @() }
         } elseif ($key -and $line -match '^\s*-\s*(.*)$') {
             $fm[$key] = @($fm[$key]) + @($Matches[1].Trim().Trim('"', "'", '`'))
@@ -112,7 +117,69 @@ function Resolve-OnHead([string]$Repo, [string]$Head, [string]$Sha) {
     ($same[0] -split ' ')[0]
 }
 
+# The rebased copy of an off-HEAD commit: the commit on HEAD's history since the two forked
+# whose patch-id equals its own. Nothing is returned when there is no such commit.
+function Find-PatchTwin([string]$Repo, [string]$Head, [string]$Commit) {
+    $forked = @(Invoke-Git $Repo @('merge-base', $Commit, $Head))[0]
+    if (-not $forked) { return }
+    $id = @(& git -C $Repo -c core.quotepath=false show --no-color $Commit 2>$null | & git -C $Repo patch-id --stable 2>$null)[0]
+    if (-not $id) { return }
+    $id = ($id -split ' ')[0]
+    # Newest first; the oldest match is the first application of the patch.
+    $twins = @(& git -C $Repo -c core.quotepath=false log -p --no-color --no-merges "$forked..$Head" 2>$null | & git -C $Repo patch-id --stable 2>$null | Where-Object { $_ -like "$id *" })
+    if ($twins.Count) { ($twins[-1] -split ' ')[1] }
+}
+
+# True when EVERY reviewed commit off HEAD has a patch-id copy on HEAD since the fork: the whole
+# reviewed branch reached mainline by rebase. A `reviewed` record has no remediation-tip to prove
+# the merge, so its tip's copy alone is not enough; a lone cherry-pick would credit history the
+# panel never saw. Mirrored by Test-RangeTwins in adversarial-review/validate-report.ps1.
+function Test-RangeTwins([string]$Repo, [string]$Head, [string]$Base, [string]$Tip) {
+    $exclude = @(if ($Base -ne $emptyTree) { "^$Base" })
+    $offHead = @(Invoke-Git $Repo (@('rev-list', '--no-merges', $Tip) + $exclude + @("^$Head")))
+    if (-not $offHead.Count) { return $false }
+    $forked = @(Invoke-Git $Repo @('merge-base', $Tip, $Head))[0]
+    if (-not $forked) { return $false }
+    $onHead = [Collections.Generic.HashSet[string]]::new([string[]]@(& git -C $Repo -c core.quotepath=false log -p --no-color --no-merges "$forked..$Head" 2>$null | & git -C $Repo patch-id --stable 2>$null | ForEach-Object { ($_ -split ' ')[0] }))
+    foreach ($commit in $offHead) {
+        $id = @(& git -C $Repo -c core.quotepath=false show --no-color $commit 2>$null | & git -C $Repo patch-id --stable 2>$null)[0]
+        if (-not $id -or -not $onHead.Contains(($id -split ' ')[0])) { return $false }
+    }
+    $true
+}
+
 function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
+    $run = Get-RunEvidence $Repo $Head $Index $Fm
+    # A run whose author has read it, decided its coverage cannot be reconstructed, and said so in
+    # the record.
+    #
+    # It exists because the alternative is worse. Measured across the estate 2026-09-19: 269 vault
+    # records, 167 of them unreadable here, 110 dated 2026-06 alone - and only FOUR were newer than
+    # a usable run their repository already had, so repairing the rest would have moved no date and
+    # no score. Left unmarked they are a permanent 167-record headline that a reader learns to skip,
+    # which is how a genuinely broken NEW record hides among them.
+    #
+    # The waiver is deliberately PER RECORD and carries its reason. A date cutoff in this script
+    # would have silenced the same records without any of them saying so, and would have silenced
+    # a real defect written inside the same window along with them.
+    #
+    # It is decided AFTER the record is fully resolved, never before: a waiver conflicts only with a
+    # record that would otherwise be usable. Deciding it first rejected waivers on off-HEAD tips and
+    # unresolvable bases, and let a `..HEAD` target skip the conflict check. A record too malformed
+    # to date is still waived, because any unusable outcome becomes `coverage-waived`.
+    $waiver = "$($Fm['coverage-waiver'])"
+    if (-not $waiver -or $run.reason -in @('document-review', 'superseded')) { return $run }
+    if ($run.usable) {
+        $run.usable = $false; $run.reason = 'coverage-waiver-conflicts-with-target'
+        $run.detail = 'the target resolves to usable coverage; remove the waiver or the target'
+        return $run
+    }
+    $run.detail = "$($run.reason)$(if ($run.detail) { ": $($run.detail)" })"
+    $run.reason = 'coverage-waived'; $run.waiver = $waiver
+    $run
+}
+
+function Get-RunEvidence([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
     $run = [ordered]@{
         indexPath = $Index; date = $null; scopeKind = $null; boundarySha = $null; baseSha = $null
         paths = @(); excludedPaths = @(); remediationCommits = @(); disposition = "$($Fm['disposition'])"; usable = $false; reason = $null; detail = $null; waiver = $null; files = @(); historyReset = $null
@@ -126,26 +193,11 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
     # left usable it competes with the good run and, on a same-date tie, can displace it. Excluding
     # it on the record's own declaration beats relying on it being too malformed to parse.
     if ("$($Fm['superseded-by'])") { return & $fail 'superseded' }
-    # A run whose author has read it, decided its coverage cannot be reconstructed, and said so in
-    # the record. Checked BEFORE `date` for the same reason as `superseded`: the records this
-    # exists for predate the frontmatter contract and need not be well-formed enough to date.
-    #
-    # It exists because the alternative is worse. Measured across the estate 2026-09-19: 269 vault
-    # records, 167 of them unreadable here, 110 dated 2026-06 alone - and only FOUR were newer than
-    # a usable run their repository already had, so repairing the rest would have moved no date and
-    # no score. Left unmarked they are a permanent 167-record headline that a reader learns to skip,
-    # which is how a genuinely broken NEW record hides among them.
-    #
-    # The waiver is deliberately PER RECORD and carries its reason. A date cutoff in this script
-    # would have silenced the same records without any of them saying so, and would have silenced
-    # a real defect written inside the same window along with them.
-    $waiver = "$($Fm['coverage-waiver'])"
-    $waiverTarget = "$($Fm['target'])"; if (-not $waiverTarget) { $waiverTarget = "$($Fm['range'])" }
-    $waiverHasTarget = [regex]::IsMatch($waiverTarget, '^[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b') -or $waiverTarget -match '^audit\b'
-    if ($waiver -and -not $waiverHasTarget) { $run.waiver = $waiver; return & $fail 'coverage-waived' }
+    # `coverage-waiver:` is decided by Get-Run once this evidence is resolved.
     $date = [datetime]::MinValue
     if (-not [datetime]::TryParseExact("$($Fm['date'])", 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) { return & $fail 'no-date' }
-    if ($date.Date -gt (Get-Date).Date) { return & $fail 'future-date' }
+    # UTC calendar day, as the validator compares: run ids and their `date:` are written in UTC.
+    if ($date.Date -gt [datetime]::UtcNow.Date) { return & $fail 'future-date' }
     $run.date = $date.ToString('yyyy-MM-dd')
     $target = "$($Fm['target'])"; if (-not $target) { $target = "$($Fm['range'])" }
     # Legacy audit shapes are snapshots based on the empty tree: an `audit ...` target whose tip
@@ -167,12 +219,11 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
         $target = "$emptyTree..$auditTip"
     }
     $m = [regex]::Match($target, '^([0-9a-f]{7,40})\.\.([0-9a-f]{7,40}|HEAD)\b')
-    if (-not $m.Success) { if ($waiver) { $run.waiver = $waiver; return & $fail 'coverage-waived' }; return & $fail 'no-exact-target' }
+    if (-not $m.Success) { return & $fail 'no-exact-target' }
     $tip = if ($m.Groups[2].Value -eq 'HEAD') { "$($Fm['head'])" } else { $m.Groups[2].Value }
     if ($tip -notmatch '^[0-9a-f]{7,40}$') { return & $fail 'symbolic-head-without-head-key' }
     $tipSha = Resolve-OnHead $Repo $Head $tip
-    if (-not $tipSha) { if ($waiver) { $run.waiver = $waiver; return & $fail 'coverage-waived' }; return & $fail 'tip-not-in-repo' }
-    if ($waiver) { return & $fail 'coverage-waiver-conflicts-with-target' }
+    if (-not $tipSha) { return & $fail 'tip-not-in-repo' }
     $reviewTipSha = $tipSha
     if ($tipSha -eq 'off-head') {
         $originalCommit = @(Invoke-Git $Repo @('rev-parse', '--verify', "$tip^{commit}"))[0]
@@ -180,15 +231,27 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
     }
     $boundarySha = $tipSha
     if ($tipSha -eq 'off-head') {
+        $merged = $false
         if ("$($Fm['disposition'])" -eq 'remediated' -and "$($Fm['remediation-tip'])" -match '^[0-9a-f]{7,40}$') {
             $fixed = Resolve-OnHead $Repo $Head $Fm['remediation-tip']
-            if ($fixed -and $fixed -ne 'off-head') { $boundarySha = $fixed }
+            $merged = $fixed -and $fixed -ne 'off-head'
+        } elseif ("$($Fm['disposition'])" -eq 'reviewed') {
+            # A pass that merged no fix leaves its record `reviewed`; its rebase-merged branch is
+            # rescued only when the whole reviewed range has copies on HEAD.
+            $merged = Test-RangeTwins $Repo $Head $m.Groups[1].Value $reviewTipSha
+        }
+        # The boundary is the reviewed tip's rebased copy on HEAD, so the copies of the reviewed
+        # commits fall before it and never count as drift. No copy means the reviewed work never
+        # reached HEAD: `tip-not-on-head`, below.
+        if ($merged) {
+            $twin = Find-PatchTwin $Repo $Head $reviewTipSha
+            if ($twin) { $boundarySha = $twin }
         }
     }
     if ($boundarySha -eq 'off-head') {
         foreach ($rootSha in @(Invoke-Git $Repo @('rev-list', '--max-parents=0', $Head))) {
             $root = @(Invoke-Git $Repo @('show', '-s', '--format=%H%x09%ad%x09%s', '--date=short', $rootSha))[0]
-            if ($root -match '^([0-9a-f]{40})\t(\d{4}-\d{2}-\d{2})\tInitial OSS release$' -and $Matches[2] -ge $run.date) {
+            if ($root -match '^([0-9a-f]{40})\t(\d{4}-\d{2}-\d{2})\tInitial OSS (?:release|commit)$' -and $Matches[2] -ge $run.date) {
                 $run.historyReset = "$($Matches[1]) ($($Matches[2]))"
                 break
             }
@@ -206,8 +269,12 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
     $baseSha = if ($emptyTree.StartsWith($base)) { $emptyTree } else { @(Invoke-Git $Repo @('rev-parse', '--verify', "$base^{commit}"))[0] }
     if (-not $baseSha) { return & $fail 'base-not-in-repo' }
     $declared = @($Fm['reviewed-paths'] | Where-Object { $_ })
-    # Legacy `subsystem: a;b;c` inline form, written by the 2026-08 driver.
-    if (-not $declared.Count) { $declared = @($Fm['subsystem'] | Where-Object { $_ } | ForEach-Object { $_ -split '[;,]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    # Legacy `subsystem: a;b;c` inline form, written by the 2026-08 driver. A quoted value is
+    # one path and is not split: `subsystem: "src/One,Two.cs"` names a single file.
+    if (-not $declared.Count) {
+        $declared = if ($Fm['quoted:subsystem']) { @("$($Fm['subsystem'])".Trim() | Where-Object { $_ }) }
+        else { @($Fm['subsystem'] | Where-Object { $_ } | ForEach-Object { $_ -split '[;,]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    }
     if (-not $kind) { $kind = if ($declared.Count) { 'subsystem' } else { 'repository' } }
     if ($kind -notin @('repository', 'subsystem')) { return & $fail "scope-kind-$kind" }
     $paths = @()
@@ -215,17 +282,34 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
     if ($kind -eq 'subsystem' -and -not $paths.Count) { return & $fail 'subsystem-without-paths' }
     $run.scopeKind = $kind; $run.paths = @($paths)
     $excluded = @($Fm['excluded-paths'] | Where-Object { $_ })
+    # Exclusion magic inverts a coverage pathspec: `:/!foo/**` matches everything outside foo.
+    # Short form is `:` plus magic symbols from `/!^`; `!` or `^` anywhere in that run excludes.
+    # Same rule as audit-ai-quality/detect.ps1 and adversarial-review/validate-report.ps1.
+    # Long form excludes only with an `exclude` token, so `:(attr:exclude=x)` is not an exclusion.
+    $inverted = @(@($paths) + @($excluded) | Where-Object { $_ -match '^:(?:[/!^]*[!^]|\((?:[^)]*,)?exclude(?:,[^)]*)?\))' })
+    if ($inverted.Count) { $run.detail = "pathspec exclusions are not allowed in coverage lists: $($inverted -join ', ')"; return & $fail 'pathspec-exclusion' $run.detail }
     $pathspec = @()
     if ($paths.Count -or $excluded.Count) { $pathspec = @('--') + $(if ($paths.Count) { $paths } else { @('.') }) + @($excluded | ForEach-Object { ":(exclude)$_" }) }
     $scopeTipSha = $reviewTipSha
     $files = @(Invoke-Git $Repo (@('diff', '--name-only', $baseSha, $scopeTipSha) + $pathspec))
     if ($LASTEXITCODE -ne 0) { return & $fail 'diff-failed' }
-    $unmatchedPaths = @($paths | Where-Object { -not @(Invoke-Git $Repo (@('diff', '--name-only', $emptyTree, $scopeTipSha, '--', $_))).Count })
-    if ($unmatchedPaths.Count) { $run.detail = "reviewed-paths entries match no tracked files at reviewed tip: $($unmatchedPaths -join ', ')"; return & $fail 'reviewed-paths-unmatched' }
+    # An entry must match a file at the reviewed tip or a file the reviewed range changed, as the
+    # validator requires: a reviewed deletion leaves nothing at the tip to match.
+    $unmatchedPaths = @($paths | Where-Object { -not @(Invoke-Git $Repo (@('diff', '--name-only', $emptyTree, $scopeTipSha, '--', $_))).Count -and -not @(Invoke-Git $Repo (@('diff', '--name-only', $baseSha, $scopeTipSha, '--', $_))).Count })
+    if ($unmatchedPaths.Count) { return & $fail 'reviewed-paths-unmatched' "reviewed-paths entries match no tracked file at the reviewed tip and no file the reviewed range changed: $($unmatchedPaths -join ', ')" }
     # Pathspecs may be globs, so validate them the same way the diff reads them.
     if ($paths.Count -and -not $files.Count -and -not @(Invoke-Git $Repo (@('diff', '--name-only', $emptyTree, $scopeTipSha) + $pathspec)).Count) { return & $fail 'paths-unmatched' }
-    $run.scopeKind = $kind; $run.boundarySha = $reviewTipSha; $run.baseSha = $baseSha
-    $run.remediationCommits = @($Fm['remediation-commits'] | Where-Object { $_ })
+    # A rescued remediated run takes its on-HEAD copy; every other run keeps its reviewed tip.
+    $run.scopeKind = $kind; $run.boundarySha = $(if ($boundarySha -ne 'off-head') { $boundarySha } else { $reviewTipSha }); $run.baseSha = $baseSha
+    # Each entry must name a commit on HEAD; anything else is reported, not silently counted as drift.
+    $fixes = @(); $unresolvedFixes = @()
+    foreach ($id in @($Fm['remediation-commits'] | Where-Object { $_ })) {
+        $fix = if ("$id" -match '^[0-9a-f]{7,40}$') { @(Invoke-Git $Repo @('rev-parse', '--verify', "$id^{commit}"))[0] }
+        if ($fix) { $null = Invoke-Git $Repo @('merge-base', '--is-ancestor', $fix, $Head); if ($LASTEXITCODE -ne 0) { $fix = $null } }
+        if ($fix) { $fixes += $fix } else { $unresolvedFixes += "$id" }
+    }
+    $run.remediationCommits = @($fixes)
+    if ($unresolvedFixes.Count) { $run.detail = "remediation-commits entries not resolved on HEAD, so not excluded from drift: $($unresolvedFixes -join ', ')" }
     $run.paths = $paths; $run.excludedPaths = $excluded; $run.files = @($files); $run.usable = $true
     [pscustomobject]$run
 }
@@ -233,11 +317,21 @@ function Get-Run([string]$Repo, [string]$Head, [string]$Index, [hashtable]$Fm) {
 # Commits and diff stats for literal paths. Batch log attribution; --follow only works for one
 # file, so isolate that slower path for files Git detects as renamed. ponytail: `:(literal)` only;
 # a file that became a directory of the same name would be counted with its children.
-function Measure-Files([string]$Repo, [string]$Boundary, [string[]]$Files, [string[]]$RemediationCommits = @(), [string]$LogBoundary = $Boundary) {
-    $shas = [Collections.Generic.HashSet[string]]::new()
-    $changed = [Collections.Generic.List[string]]::new()
-    $remediated = [Collections.Generic.List[string]]::new()
+# Paths are keyed ordinally throughout: git paths are case-sensitive and PowerShell's `@{}`,
+# `-contains` and `Sort-Object -Unique` are not.
+# After a history reset, $ResetRoot is the replacement root: a file that differs between the
+# reviewed tip and that root is drift with no commit to attribute, and anything later is
+# attributed to its commits like any other range, so listed remediation commits still count.
+function Measure-Files([string]$Repo, [string]$Boundary, [string[]]$Files, [string[]]$RemediationCommits = @(), [string]$LogBoundary = $Boundary, [string]$ResetRoot) {
+    $shas = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $changed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $remediated = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $resetChanged = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $fixes = [Collections.Generic.HashSet[string]]::new([string[]]@($RemediationCommits), [StringComparer]::Ordinal)
     $followFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $byFile = [Collections.Generic.Dictionary[string, Collections.Generic.HashSet[string]]]::new([StringComparer]::Ordinal)
+    if ($ResetRoot) { $LogBoundary = $ResetRoot }
+    $range = if ($LogBoundary -eq $emptyTree) { @('--root', 'HEAD') } else { @("$LogBoundary..HEAD") }
     if ($LogBoundary) {
         $fileSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($file in $Files) { [void]$fileSet.Add($file) }
@@ -245,45 +339,51 @@ function Measure-Files([string]$Repo, [string]$Boundary, [string[]]$Files, [stri
             $parts = $change -split "`t"
             if ($parts[0] -match '^R\d+$' -and $fileSet.Contains($parts[2])) { [void]$followFiles.Add($parts[2]) }
         }
+        # Once per call, not once per batch: each is a whole-history walk for one file.
+        foreach ($path in $followFiles) {
+            $byFile[$path] = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($line in @(Invoke-Git $Repo (@('log', '--follow', '--format=COMMIT:%H') + $range + @('--', ":(literal)$path")))) { if ($line -match '^COMMIT:([0-9a-f]{40})$') { [void]$byFile[$path].Add($Matches[1]) } }
+        }
     }
     $ins = 0; $del = 0
     for ($i = 0; $i -lt $Files.Count; $i += 200) {
         $batch = @($Files[$i..([Math]::Min($i + 199, $Files.Count - 1))] | ForEach-Object { ":(literal)$_" })
-        $byFile = @{}
         if ($LogBoundary) {
-            $regularFiles = @($batch | Where-Object { $file = $_ -replace '^:\(literal\)', ''; -not $followFiles.Contains($file) })
-            if ($regularFiles.Count) {
-                $logArgs = @('log', '--find-renames', '--format=COMMIT:%H', '--name-only')
-                $logArgs += if ($LogBoundary -eq $emptyTree) { @('--root', 'HEAD') } else { @("$LogBoundary..HEAD") }
-                $logArgs += @('--') + $regularFiles
+            $regular = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($file in $Files[$i..([Math]::Min($i + 199, $Files.Count - 1))]) { if (-not $followFiles.Contains($file)) { [void]$regular.Add($file) } }
+            if ($regular.Count) {
+                # `-c` lists a merge's files that differ from every parent, so a change made only in
+                # a merge (an evil merge) is attributed to that merge instead of to no commit.
+                $logArgs = @('log', '-c', '--find-renames', '--format=COMMIT:%H', '--name-only') + $range + @('--') + @($regular | ForEach-Object { ":(literal)$_" })
                 $commit = $null
                 foreach ($line in @(Invoke-Git $Repo $logArgs)) {
                     if ($line -match '^COMMIT:([0-9a-f]{40})$') { $commit = $Matches[1]; continue }
-                    if ($commit -and $line -and $regularFiles -contains ":(literal)$line") {
-                        if (-not $byFile.ContainsKey($line)) { $byFile[$line] = [Collections.Generic.HashSet[string]]::new() }
+                    if ($commit -and $line -and $regular.Contains($line)) {
+                        if (-not $byFile.ContainsKey($line)) { $byFile[$line] = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal) }
                         [void]$byFile[$line].Add($commit)
                     }
                 }
             }
-            foreach ($path in $followFiles) {
-                $historyArgs = @('log', '--follow', '--format=COMMIT:%H')
-                $historyArgs += if ($LogBoundary -eq $emptyTree) { @('--root', 'HEAD') } else { @("$LogBoundary..HEAD") }
-                $historyArgs += @('--', ":(literal)$path")
-                $byFile[$path] = [Collections.Generic.HashSet[string]]::new()
-                foreach ($line in @(Invoke-Git $Repo $historyArgs)) { if ($line -match '^COMMIT:([0-9a-f]{40})$') { [void]$byFile[$path].Add($Matches[1]) } }
-            }
         }
+        if ($ResetRoot) { foreach ($f in @(Invoke-Git $Repo (@('diff', '--name-only', $Boundary, $ResetRoot, '--') + $batch))) { [void]$resetChanged.Add($f) } }
+        $batchChanged = [Collections.Generic.List[string]]::new()
         foreach ($f in @(Invoke-Git $Repo (@('diff', '--name-only', $Boundary, 'HEAD', '--') + $batch))) {
             if (-not $f) { continue }
+            if ($resetChanged.Contains($f)) { [void]$changed.Add($f); $batchChanged.Add($f); continue }
             $fileCommits = if ($byFile.ContainsKey($f)) { @($byFile[$f]) } else { @() }
-            foreach ($sha in $fileCommits) { if ($sha -notin $RemediationCommits) { [void]$shas.Add($sha) } }
-            if (-not $LogBoundary -or @($fileCommits | Where-Object { $_ -notin $RemediationCommits }).Count) { $changed.Add($f) } elseif ($fileCommits.Count) { $remediated.Add($f) } else { $changed.Add($f) }
+            $ownCommits = @($fileCommits | Where-Object { -not $fixes.Contains($_) })
+            foreach ($sha in $ownCommits) { [void]$shas.Add($sha) }
+            if (-not $LogBoundary -or $ownCommits.Count -or -not $fileCommits.Count) { [void]$changed.Add($f); $batchChanged.Add($f) }
+            else { [void]$remediated.Add($f) }
         }
-        $stat = @(Invoke-Git $Repo (@('diff', '--shortstat', $Boundary, 'HEAD', '--') + $batch)) -join ' '
-        if ($stat -match '(\d+) insertion') { $ins += [int]$Matches[1] }
-        if ($stat -match '(\d+) deletion') { $del += [int]$Matches[1] }
+        # Diff stats cover drift only, so a file changed only by listed remediation adds nothing.
+        if ($batchChanged.Count) {
+            $stat = @(Invoke-Git $Repo (@('diff', '--shortstat', $Boundary, 'HEAD', '--') + @($batchChanged | ForEach-Object { ":(literal)$_" }))) -join ' '
+            if ($stat -match '(\d+) insertion') { $ins += [int]$Matches[1] }
+            if ($stat -match '(\d+) deletion') { $del += [int]$Matches[1] }
+        }
     }
-    [pscustomobject]@{ commits = $shas.Count; commitIds = @($shas); changedFiles = @($changed | Sort-Object -Unique); remediationFiles = @($remediated | Sort-Object -Unique); insertions = $ins; deletions = $del }
+    [pscustomobject]@{ commits = $shas.Count; commitIds = @($shas); changedFiles = @($changed | Sort-Object -CaseSensitive); remediationFiles = @($remediated | Sort-Object -CaseSensitive); resetChanged = @($resetChanged); insertions = $ins; deletions = $del }
 }
 function Error-Row([string]$Label, [string]$Repo, [string]$Reason) {
     [pscustomobject]@{
@@ -298,7 +398,9 @@ function Error-Row([string]$Label, [string]$Repo, [string]$Reason) {
     }
 }
 function Oldest-CommitDate([string]$Repo, [string[]]$Commits) {
-    $dates = @($Commits | ForEach-Object { Invoke-Git $Repo @('show', '-s', '--format=%cs', $_) } | Sort-Object)
+    if (-not @($Commits).Count) { return $null }
+    # One git process for the whole set; ids go on stdin, so no command-line length limit applies.
+    $dates = @($Commits | & git -C $Repo log --no-walk --stdin --format=%cs 2>$null | Where-Object { $_ } | Sort-Object)
     if ($dates.Count) { return $dates[0] }
     return $null
 }
@@ -326,6 +428,7 @@ $indexes = @(
 if (-not $indexes.Count) { throw "VaultRoot contains no _index.md review records: $VaultRoot" }
 
 $today = (Get-Date).Date
+$scannedKeys = [Collections.Generic.HashSet[string]]::new([string[]]@($repos | ForEach-Object { Normalize $_.FullName }), [StringComparer]::Ordinal)
 $results = foreach ($r in $repos) {
     $repo = $r.FullName
     $label = Canonical-Label $repo $r.Name
@@ -335,17 +438,26 @@ $results = foreach ($r in $repos) {
     if ($LASTEXITCODE -ne 0) { Error-Row $label $repo 'Could not read tracked files at HEAD'; continue }
     $key = Normalize $repo
     $runs = @($indexes | Where-Object { if ($_.repoPath) { $_.repoPath -eq $key } else { $_.folder -eq $r.Name } } | ForEach-Object { Get-Run $repo $head $_.index $_.fm })
+    # A `repo-path` naming no scanned checkout (a worktree, a moved clone) falls back to its folder
+    # name and is listed, so it cannot vanish from every list.
+    $runs += @($indexes | Where-Object { $_.repoPath -and -not $scannedKeys.Contains($_.repoPath) -and $_.folder -eq $r.Name } | ForEach-Object {
+            $waiver = "$($_.fm['coverage-waiver'])"
+            [pscustomobject]@{ indexPath = $_.index; date = $null; usable = $false; reason = $(if ($waiver) { 'coverage-waived' } else { 'repo-path-unscanned' }); detail = "repo-path names no scanned repository: $($_.fm['repo-path'])"; waiver = $(if ($waiver) { $waiver } else { $null }); paths = @() }
+        })
     $usable = @($runs | Where-Object usable | Sort-Object @{Expression = 'date'; Descending = $true }, @{Expression = 'indexPath'; Descending = $true })
-    $owner = @{}
+    $owner = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $trackedSet = [Collections.Generic.HashSet[string]]::new([string[]]$tracked, [StringComparer]::Ordinal)
     $allRemediationCommits = @($usable | ForEach-Object { @($_.remediationCommits) } | Sort-Object -Unique)
     foreach ($run in $usable) {
-        $renameMap = @{}
+        # A two-tree diff without -B never chains renames, so one lookup maps a file.
+        $renameMap = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
         foreach ($change in @(Invoke-Git $repo @('diff', '--find-renames', '--name-status', $run.boundarySha, 'HEAD'))) {
             $parts = $change -split "`t"
             if ($parts[0] -match '^R\d+$') { $renameMap[$parts[1]] = $parts[2] }
         }
-        $run | Add-Member -NotePropertyName coveredFiles -NotePropertyValue @($run.files | ForEach-Object { $file = $_; while ($renameMap.ContainsKey($file)) { $file = $renameMap[$file] }; $file }) -Force
+        $run | Add-Member -NotePropertyName coveredFiles -NotePropertyValue @($run.files | ForEach-Object { if ($renameMap.ContainsKey($_)) { $renameMap[$_] } else { $_ } }) -Force
         $runLogBoundary = $run.boundarySha
+        $run | Add-Member -NotePropertyName resetRoot -NotePropertyValue $(if ($run.historyReset) { ($run.historyReset -split ' ')[0] } else { $null }) -Force
         if ($run.historyReset) { $runLogBoundary = $null }
         else {
             & git -C $repo merge-base --is-ancestor $run.boundarySha HEAD 2>$null
@@ -357,12 +469,15 @@ $results = foreach ($r in $repos) {
         $run | Add-Member -NotePropertyName logBoundary -NotePropertyValue $runLogBoundary -Force
         foreach ($file in $run.coveredFiles) { if (-not $owner.ContainsKey($file)) { $owner[$file] = $run } }
     }
+    $newestResetChanged = 0
     $coverage = @(foreach ($run in $usable) {
         $files = @($run.coveredFiles | Where-Object { [object]::ReferenceEquals($owner[$_], $run) })
-        $measure = if ($files.Count) { Measure-Files $repo $run.boundarySha $files $allRemediationCommits $run.logBoundary } else { [pscustomobject]@{ commits = 0; commitIds = @(); changedFiles = @(); remediationFiles = @(); insertions = 0; deletions = 0 } }
+        $measure = if ($files.Count) { Measure-Files $repo $run.boundarySha $files $allRemediationCommits $run.logBoundary $run.resetRoot } else { [pscustomobject]@{ commits = 0; commitIds = @(); changedFiles = @(); remediationFiles = @(); resetChanged = @(); insertions = 0; deletions = 0 } }
         $reviewAgeDays = [int]($today - [datetime]::ParseExact($run.date, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays
         $oldestGroupChange = Oldest-CommitDate $repo $measure.commitIds
-        if ($run.historyReset) { $oldestGroupChange = [regex]::Match($run.historyReset, '\((\d{4}-\d{2}-\d{2})\)$').Groups[1].Value }
+        # A file the reset itself changed has no commit; its change is dated by the new root.
+        if ($run.historyReset -and @($measure.resetChanged).Count) { $oldestGroupChange = [regex]::Match($run.historyReset, '\((\d{4}-\d{2}-\d{2})\)$').Groups[1].Value }
+        if ([object]::ReferenceEquals($run, $usable[0])) { $newestResetChanged = @($measure.resetChanged).Count }
         $days = if ($oldestGroupChange) { [Math]::Max(0, [int]($today - [datetime]::ParseExact($oldestGroupChange, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays) } else { 0 }
         [pscustomobject]@{
             indexPath = $run.indexPath; date = $run.date; scopeKind = $run.scopeKind; disposition = $run.disposition
@@ -371,6 +486,10 @@ $results = foreach ($r in $repos) {
             insertions = $measure.insertions; deletions = $measure.deletions; days = $days; oldestChangeDate = $oldestGroupChange
             hasTrackedSource = [bool]@($files | Where-Object { $_ -match $sourceExtRegex }).Count
             historyReset = $run.historyReset
+            # The scope a follow-up review names: changed files under their current names that
+            # still exist at HEAD. `paths` stays as the record's declared scope, for provenance.
+            reviewPaths = @($measure.changedFiles | Where-Object { $trackedSet.Contains($_) })
+            detail = $run.detail
             # A squashed history has one commit touching everything, so after a reset the unit of
             # drift is the changed file, not the commit.
             score = $measure.changedFiles.Count
@@ -401,9 +520,9 @@ $results = foreach ($r in $repos) {
     # showed 200 commits beside tip c85af4a, and git rev-list of that tip was 34.
     $newSourceCandidates = if ($newest) { @((Invoke-Git $repo @('diff', '--name-only', '--diff-filter=d', $newest.boundarySha, 'HEAD')) | Where-Object { $_ -match $sourceExtRegex -and -not $owner.ContainsKey($_) }) } else { @($uncoveredSource) }
     $newestLogBoundary = if ($usable.Count) { $usable[0].logBoundary } else { $null }
-    $newSourceMeasure = if ($newest -and $newSourceCandidates.Count) { Measure-Files $repo $newest.boundarySha $newSourceCandidates $allRemediationCommits $newestLogBoundary } else { [pscustomobject]@{ commitIds = @(); changedFiles = $newSourceCandidates; remediationFiles = @(); insertions = 0; deletions = 0 } }
+    $newSourceMeasure = if ($newest -and $newSourceCandidates.Count) { Measure-Files $repo $newest.boundarySha $newSourceCandidates $allRemediationCommits $newestLogBoundary $newest.resetRoot } else { [pscustomobject]@{ commitIds = @(); changedFiles = $newSourceCandidates; remediationFiles = @(); resetChanged = @(); insertions = 0; deletions = 0 } }
     $newSource = @($newSourceMeasure.changedFiles)
-    $remediationFiles = @(@($coverage | ForEach-Object { @($_.remediationFiles) }) + @($newSourceMeasure.remediationFiles) | Sort-Object -Unique)
+    $remediationFiles = @(@($coverage | ForEach-Object { @($_.remediationFiles) }) + @($newSourceMeasure.remediationFiles) | Sort-Object -Unique -CaseSensitive)
     $changedFiles = @()
     $commitIds = @()
     $sinceIns = [int]$newSourceMeasure.insertions
@@ -429,7 +548,8 @@ $results = foreach ($r in $repos) {
     $changeDates = @()
     if ($commitIds.Count) { $changeDates += Oldest-CommitDate $repo $commitIds }
     if ($newSourceMeasure.commitIds.Count) { $changeDates += Oldest-CommitDate $repo $newSourceMeasure.commitIds }
-    if ($newest -and $newest.historyReset -and $changedFiles.Count -and -not $commitIds.Count -and $coverage[0].oldestChangeDate) { $changeDates += $coverage[0].oldestChangeDate }
+    # A file the reset itself changed, covered or new source, is dated by the replacement root.
+    if ($newest -and $newest.historyReset -and ($newestResetChanged -or @($newSourceMeasure.resetChanged | Where-Object { $newSource -ccontains $_ }).Count)) { $changeDates += [regex]::Match($newest.historyReset, '\((\d{4}-\d{2}-\d{2})\)$').Groups[1].Value }
     $isExempt = $exemptReason.ContainsKey($label) -or $exemptReason.ContainsKey($r.Name)
     $hasSource = [bool]@($tracked | Where-Object { $_ -match $sourceExtRegex }).Count
     # A repository with no review dates its unreviewed source. An exempt repository
@@ -452,14 +572,20 @@ $results = foreach ($r in $repos) {
     # and never queued, and everything else with no usable review is queued FIRST by its
     # distinct uncovered source-file count.
     $hasCoveredSource = [bool]@($coverage | Where-Object hasTrackedSource).Count
-    $queue = if ($isExempt) { 'exempt' } elseif (-not $hasSource) { 'none' } elseif (-not $coverage.Count) { 'no-usable-review' } elseif ($newSource.Count) { 'new-source' } elseif ($changedFiles.Count -or $groupDrift) { 'drift' } elseif ($openReviews.Count) { 'open-review' } else { 'none' }
+    # Covered source that changed is drift even when no source is left at HEAD: deleting a
+    # repository's last reviewed source file is a change nobody has reviewed.
+    $coveredSourceDrift = [bool]@($coverage | ForEach-Object { @($_.changedFiles) } | Where-Object { $_ -match $sourceExtRegex }).Count
+    $queue = if ($isExempt) { 'exempt' } elseif (-not $hasSource -and -not $coveredSourceDrift) { 'none' } elseif (-not $coverage.Count) { 'no-usable-review' } elseif ($newSource.Count) { 'new-source' } elseif ($changedFiles.Count -or $groupDrift) { 'drift' } elseif ($openReviews.Count) { 'open-review' } else { 'none' }
     if ($queue -eq 'no-usable-review') {
         $score = $uncoveredSource.Count
     }
     if ($isExempt) { $score = 0 }
     if (@(Invoke-Git $repo @('rev-parse', 'HEAD'))[0] -ne $head) { Error-Row $label $repo 'Repository changed during collection'; continue }
     $rowPaths = @()
-    if ($invalidScope.Count -and (-not $newest -or $invalidScope[0].date -ge $newest.date)) { $rowPaths = @($invalidScope[0].paths) }
+    # One recency rule for every scope field: an invalid scope counts only when it is at least
+    # as new as the newest usable review.
+    $scopeInvalid = [bool]($invalidScope.Count -and (-not $newest -or $invalidScope[0].date -ge $newest.date))
+    if ($scopeInvalid) { $rowPaths = @($invalidScope[0].paths) }
     elseif ($newest) { $rowPaths = @($newest.paths) }
     [pscustomobject]@{
         repo = $label; resolvedPath = $repo; headSha = $head; outsideScanPath = $false; unresolved = $false
@@ -474,8 +600,8 @@ $results = foreach ($r in $repos) {
             sinceReviewFiles = $(if ($coverage.Count) { $changedFiles.Count } else { $null })
             sinceReviewIns = $sinceIns; sinceReviewDel = $sinceDel; daysSinceReview = $(if ($oldestChange) { [int]($today - [datetime]::ParseExact($oldestChange, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)).TotalDays } else { 0 })
         }
-        subsystemPaths = $rowPaths; isSubsystem = [bool](($newest -and $newest.paths.Count) -or $invalidScope.Count)
-        scopeValidation = $(if ($invalidScope.Count -and (-not $newest -or $invalidScope[0].date -ge $newest.date)) { 'invalid' } elseif ($newest -and $newest.paths.Count) { 'valid' } else { 'none' })
+        subsystemPaths = $rowPaths; isSubsystem = [bool](($newest -and $newest.paths.Count) -or $scopeInvalid)
+        scopeValidation = $(if ($scopeInvalid) { 'invalid' } elseif ($newest -and $newest.paths.Count) { 'valid' } else { 'none' })
         hasTrackedSource = $hasSource; hasCoveredSource = $hasCoveredSource
         queue = $queue; exempt = $isExempt; exemptReason = $(if ($isExempt) { $exemptReason[$(if ($exemptReason.ContainsKey($label)) { $label } else { $r.Name })] } else { $null })
         firstCommitDate = $firstCommit

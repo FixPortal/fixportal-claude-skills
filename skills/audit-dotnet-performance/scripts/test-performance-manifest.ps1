@@ -198,7 +198,17 @@ if ($schemaVersion -eq 2) {
             # `Existing`, `Retained external` - the way to avoid filling anything in while
             # still asserting something about the world. report-contract.md says what each
             # must say. (CodeRabbit, PR #135.)
-            Require-Text (Require-Property $workloadOutcome 'harnessDispositionBasis' 'workload') 'workload.harnessDispositionBasis'
+            #
+            # CUTOVER: the requirement landed 2026-09-06T14:37:07Z with no version
+            # bump, and four already-published v2 manifests (completed before that
+            # instant, non-Promote, no basis) stopped validating. Published manifests are
+            # never rewritten, so a manifest completed BEFORE the cutover may omit it; a
+            # present basis is still checked. Anything completed on or after the cutover
+            # must state it.
+            $basisCutover = [DateTimeOffset]::Parse('2026-09-06T14:37:07Z', [Globalization.CultureInfo]::InvariantCulture)
+            if ($completedUtc -ge $basisCutover -or $workloadOutcome.PSObject.Properties.Name -contains 'harnessDispositionBasis') {
+                Require-Text (Require-Property $workloadOutcome 'harnessDispositionBasis' 'workload') 'workload.harnessDispositionBasis'
+            }
         }
         # Outside the disposition branch on purpose: nested under the non-Promote arm, a
         # Promote workload skipped both checks, so status Completed with stability

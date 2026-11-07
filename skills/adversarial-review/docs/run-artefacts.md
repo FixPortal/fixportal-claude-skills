@@ -6,6 +6,7 @@
 - [`status.json` — trial participation (work directory)](#statusjson--trial-participation-work-directory)
 - [`pooled-map.json` — F-id to reviewer (work directory)](#pooled-mapjson--f-id-to-reviewer-work-directory)
 - [`aggregate-verdict.json` — accepted counts and the judge row (run root)](#aggregate-verdictjson--accepted-counts-and-the-judge-row-run-root)
+- [findings array](#findings-array)
 - [`working-tree.patch` — snapshot of uncommitted reviewed content (work directory)](#working-treepatch--snapshot-of-uncommitted-reviewed-content-work-directory)
 - [What a Phase-4 verdict records about its own provenance](#what-a-phase-4-verdict-records-about-its-own-provenance)
 - [`_index.md` coverage block — the machine-readable shape](#_indexmd-coverage-block--the-machine-readable-shape)
@@ -69,7 +70,9 @@ NEEDS REPO); a bare mention is not a verdict. A reply whose verdicts name only i
 outside the pool lands in `offContract` and does not count toward `vendorsP2`.
 `pooledCount` is what `batch-review.ps1` reads to report a chunk CLEAN; its
 `batch-summary.json` rows also carry `timedOut` (exitCode null) for a chunk stopped
-at `-ChunkTimeoutSeconds`, which `aggregate-and-emit.ps1` treats as failed.
+at `-ChunkTimeoutSeconds`, which `aggregate-and-emit.ps1` treats as failed, with
+`killConfirmed` (the process was seen to exit after the stop) and `drained` (its
+output pipes closed); the warning says "stopped" only when both are true.
 
 ## `pooled-map.json` — F-id to reviewer (work directory)
 
@@ -106,6 +109,9 @@ verification, and what the judge cost.
 Both keys are optional to the script and neither is optional in practice: a missing
 `accepted` publishes zeros for every vendor, and a missing `judge` publishes a run
 with no judge.
+
+The optional third key, `findings`, carries per-finding attribution and final
+dispositions. Its exact shape and evidence requirements are in [findings array](#findings-array).
 
 **Derive `accepted` from the FINAL dispositions, then attribute with
 `pooled-map.json`** — in that order, because the two files answer different
@@ -235,7 +241,9 @@ A later rename that stops the list resolving is correctly UNKNOWN, not a bug.
   skipped range forever is the worse failure. A skip must carry `skip-reason:`
   (below), so the two cases stay distinguishable by machine rather than by tone.
 - `remediated` — written by `review-worktree-pass` once every finding has a
-  disposition, together with `remediation-tip: <40-character mainline SHA>`.
+  disposition, together with `remediation-tip: <40-character mainline SHA>` and a
+  `remediation-commits:` list of the merged fix SHAs (required on runs dated
+  2026-11-02 or later).
 - `open` — a run that produced an `_index.md` and did NOT finish: the panel aborted,
   Phase 3 never ran, the report is absent or partial. It exists so a folder on disk
   cannot be mistaken for a completed review.
@@ -244,3 +252,85 @@ A successful pass never emits `open`, and nothing upgrades it automatically. An 
 folder is discharged by re-running the review over that target and overwriting it, or by
 retiring it with `_retired.md`. Leaving one is not an error; reading one as `reviewed`
 is, which is why the value exists rather than the key being absent.
+
+## findings array
+
+Investigation (2026-10-19, before implementation):
+
+- Pooling does not merge duplicates: `run-review.ps1:1134` assigns a fresh F-id
+  to every block and `run-review.ps1:1141` records its one originating seat.
+  Original raisers survive as separate entries in `pooled-map.json`, not as a
+  complete list attached to a merged finding. Deduplication is instructed in
+  `briefs/phase3-adjudicate.txt:7` and again in `SKILL.md:163` at synthesis.
+  Neither defines a machine-readable merged-id-to-source-ids record. Therefore
+  adding a singleton list during pooling would not recover later merge decisions;
+  the host must retain every source F-id when adjudicating and union their raisers
+  when writing the final finding. No pooling change is required.
+- Severity is prose, not a structured per-finding field: Phase 1 requests a
+  Markdown Severity field (`briefs/phase1-review.txt:35`), Phase 3 requests severity
+  in the report (`briefs/phase3-adjudicate.txt:8`), and `SKILL.md:189` requires it in
+  `report.md`. The pooled-map writer (`run-review.ps1:1141`) records identity only.
+  Emit `unknown` when the only source is prose; do not guess a severity.
+- Phase 2 outputs are `p2-<seat-id>.txt` (`run-review.ps1:987`, `:1223`), copied into
+  per-reviewer sections of `judge-packet.md` (`run-review.ps1:1461`). Verdict lines
+  identify F-ids and AGREE / FALSE POSITIVE / NEEDS EVIDENCE / NEEDS REPO
+  (`run-review.ps1:1222`). Missing verdicts for participating reviewers are stored
+  as F-id arrays in `status.json.phase2Abstentions` (`run-review.ps1:1523`) and
+  printed in the packet (`run-review.ps1:1468`). Bare mentions are not verdicts;
+  off-contract and unavailable reviewers must not be invented as assessors.
+- UNVERIFIED: whether historic host-written reports retained every source F-id
+  after merging. Refutation condition: inspecting those reports demonstrates a
+  complete source-id mapping for every merged finding. No historic run was inspected.
+
+The host may add `findings` to `aggregate-verdict.json` at section 5 synthesis:
+
+```json
+{
+  "accepted": { "openai": 1 },
+  "findings": [
+    {
+      "chunkId": "single",
+      "findingId": "F1",
+      "severity": "unknown",
+      "outcome": "accepted",
+      "raisedBy": [{ "reviewer": "openai", "model": "gpt-6-astra" }],
+      "assessments": [
+        { "reviewer": "zai", "model": "glm-5.3", "verdict": "agree" }
+      ]
+    }
+  ]
+}
+```
+
+`findings` is optional for backward compatibility. Absence emits no finding request;
+`[]` explicitly replaces the run's finding set with an empty set. Supply the full
+run across all chunks, at most 2000 findings. `chunkId` is `single` for unchunked
+runs; otherwise use the chunk id. `(chunkId, findingId)` must be unique. Both ids
+match `^[A-Za-z0-9._-]{1,40}$`. No finding text, paths or code belongs in this array.
+
+- `severity`: `critical|high|medium|low|unknown` (exact lowercase values).
+- `outcome`: `accepted` means survived Phase 3 AND Phase 4 verification; `refuted`
+  means Phase 4 REFUTED; `dropped` means removed at Phase 3 before verification;
+  `indeterminate` means Phase 4 INDETERMINATE or unverifiable. A finding left
+  unverified is not accepted merely because it survived adjudication.
+- `raisedBy`: non-empty array of `{reviewer, model}`. Reviewer is the vendor slug,
+  not the seat id; model is the actual resolved model from that seat's run evidence.
+  Preserve every independent Phase 1 raiser of merged source F-ids, deduplicating
+  identical vendor/model pairs. Never derive raisers from Phase 2 agreement.
+- `assessments`: array (possibly empty) of `{reviewer, model, verdict}`. Verdict is
+  `agree|false-positive|needs-evidence|needs-repo|abstained`. Read the source F-id
+  verdicts and explicit abstentions above. Resolve merged-source disagreements
+  from the evidence; do not invent agreement from silence or consensus tags.
+  At most 12 participants per finding; model strings are at most 200 characters.
+
+`emit-review-findings.ps1 -RunId -Repo -VerdictPath` sends
+`{runId, repo, findings}` to `/api/adversarial-review/findings`, with the same
+`OBSERVATORY_URL`, `OBSERVATORY_API_KEY` and `X-Observatory-Key` header as participant
+telemetry. It silently does nothing when either environment variable is absent,
+validates enums before sending, and fails on invalid input or HTTP errors.
+`aggregate-and-emit.ps1` invokes it once after all participant emissions when the
+verdict contains the property. For direct single-run participant emission, invoke
+this findings emitter after the final participant with the same run id and repo.
+The endpoint replaces the full set for the run; re-emission is idempotent.
+Finding rows do not change participant counts or cost. Unknown cost remains unknown;
+no per-seat cost split is inferred from merged vendor rows.

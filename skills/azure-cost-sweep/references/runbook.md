@@ -73,6 +73,24 @@ genuinely needed, state it in the report and normalise the headline to a 30-day
 equivalent, saying that you did. Put JSON in a temporary file because PowerShell quoting
 can corrupt inline bodies.
 
+A request-body template for that custom window is below. Replace both UTC
+placeholders before saving it to the temporary JSON file; do not send placeholders.
+The [Cost Management query contract](https://learn.microsoft.com/en-us/rest/api/cost-management/query/usage?view=rest-cost-management-2025-03-01)
+defines the custom time period, aggregation and dimension grouping. Preserve the
+response Currency; do not assume GBP or silently convert it.
+
+```json
+{
+  "type": "ActualCost",
+  "timeframe": "Custom",
+  "timePeriod": { "from": "<start-UTC-ISO8601>", "to": "<end-UTC-ISO8601>" },
+  "dataset": {
+    "aggregation": { "totalCost": { "name": "Cost", "function": "Sum" } },
+    "grouping": [{ "type": "Dimension", "name": "ResourceId" }]
+  }
+}
+```
+
 Use independent, copyable commands rather than a dependent shell variable:
 
 ```powershell

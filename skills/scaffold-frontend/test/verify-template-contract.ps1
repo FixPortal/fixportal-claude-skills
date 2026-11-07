@@ -21,9 +21,27 @@ foreach ($note in '~/.agents/notes/npm-publishing-traps.md','~/.agents/notes/web
     if ($skill -notmatch [regex]::Escape($note)) { throw "skill missing canonical note: $note" }
 }
 if ($architecture -notmatch [regex]::Escape('*.{test,spec,archunit}.*')) { throw 'architecture wrapper is not excluded from its own graph' }
-if ($skill -notmatch [regex]::Escape('npm exec --silent --yes --package=typescript@<version> --call "tsc --showConfig --project <config>"')) {
+$documentedShowConfig = 'npm exec --silent --yes --package=typescript@<version> --call "tsc --showConfig --project <config>"'
+if ($skill -notmatch [regex]::Escape($documentedShowConfig)) {
     throw 'skill missing npm 11-compatible TypeScript config verification command'
 }
+# The resolution check below RUNS this documented command, its arguments taken from the
+# string itself, so the skill and the test cannot document one form and execute another.
+$showConfig = [regex]::Match($documentedShowConfig, '^npm (?<args>.+) --call "(?<call>[^"]+)"$')
+if (-not $showConfig.Success) { throw 'the documented tsc --showConfig command no longer has the npm <args> --call "<command>" shape' }
+
+# Vite's ImportMetaEnv carries a fallback string index signature, so under
+# noPropertyAccessFromIndexSignature a dotted read of an undeclared VITE_ key fails TS4111.
+# The skill must say how to read one.
+if ($skill -notmatch '(?s)interface ImportMetaEnv.{0,200}src/vite-env\.d\.ts' -or $skill -notmatch 'TS4111') {
+    throw 'skill must document declaring VITE_* keys on ImportMetaEnv in src/vite-env.d.ts (TS4111 under noPropertyAccessFromIndexSignature)'
+}
+
+# TS18003 fallback: PowerShell's ConvertFrom-Json already accepts // and /* */ comments, so
+# the raw config is parsed as is. Stripping `//.*` cut any string holding `//` (a $schema URL).
+function Get-RawCompilerOptions([string] $Text) { ($Text | ConvertFrom-Json).compilerOptions }
+$probe = Get-RawCompilerOptions "{`n  // comment`n  `"compilerOptions`": { `"strict`": true, `"baseUrl`": `"a//b`" }`n}"
+if ($probe.strict -ne $true -or $probe.baseUrl -ne 'a//b') { throw 'the TS18003 fallback must keep string values containing // intact' }
 
 # Test sources must belong to a project: without tsconfig.test.json referenced from the
 # root solution file, `tsc -b` type-checks app and node config while Vitest transpiles
@@ -146,7 +164,9 @@ try {
         # and "npm notice run 'tsc' ..." lines, which land in this capture and make the
         # ConvertFrom-Json below fail with "Unexpected character encountered" - a parse
         # error that reads as a broken tsconfig. Observed in node:22 with npm 12 installed.
-        $shown = Invoke-NpmWithRetry "tsc --showConfig for $config" @('exec', '--silent', '--yes', '--package=typescript@6.0.3', '--', 'tsc', '--showConfig', '--project', $path) 'TS18003'
+        $npmArgs = @($showConfig.Groups['args'].Value -split ' ' | ForEach-Object { $_.Replace('<version>', '6.0.3') })
+        $call = $showConfig.Groups['call'].Value.Replace('<config>', "`"$path`"")
+        $shown = Invoke-NpmWithRetry "tsc --showConfig for $config" ($npmArgs + @('--call', $call)) 'TS18003'
         if ($null -eq $shown) {
             Write-Host "SKIP: npm registry unreachable after retries; tsconfig checks for $config not run"
             return
@@ -156,7 +176,7 @@ try {
             # test-family files (the app project legitimately resolves empty HERE; a
             # scaffolded project has app sources). Fall back to the raw compilerOptions.
             Write-Host "SKIP: $config has no inputs in the bare templates tree; strict asserted from raw JSON"
-            $resolved = [pscustomobject]@{ compilerOptions = ((Get-Content $path -Raw) -replace '//.*', '' | ConvertFrom-Json).compilerOptions }
+            $resolved = [pscustomobject]@{ compilerOptions = Get-RawCompilerOptions (Get-Content $path -Raw) }
         }
         else { $resolved = $shown | ConvertFrom-Json }
         if ($resolved.compilerOptions.strict -ne $true) { throw "$config does not resolve strict=true" }

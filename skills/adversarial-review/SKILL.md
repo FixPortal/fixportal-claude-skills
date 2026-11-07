@@ -5,9 +5,9 @@ description: Use when the user requests an adversarial, cross-vendor, or multi-m
 
 # Adversarial Review
 
-Run a multi-vendor panel whose value is uncorrelated error: blind findings,
-anonymous cross-examination, adjudication, and live-code verification. Always
-invoke this skill for its trigger phrases. Never substitute a panel of
+Run a multi-vendor panel for uncorrelated error: blind findings,
+anonymous cross-examination, adjudication, and live-code verification. Invoke
+this skill for its trigger phrases. Never substitute a panel of
 general-purpose same-host workers.
 
 Read `reviewers.json` every run; do not name a remembered panel or model. Pass
@@ -180,10 +180,10 @@ Contents:
   Phase 4 evidence, chunk coverage;
 - `working/` — per-phase transcripts and the judge packet.
 
-**Also write `aggregate-verdict.json` into the `RunRoot` here** (shape:
-`docs/run-artefacts.md`). It carries the accepted-per-vendor counts and the judge
-row — the two facts no script can derive — and without it `aggregate-and-emit.ps1`
-publishes zeros that read as a verdict.
+**Also write `aggregate-verdict.json` into the `RunRoot`** (shape, including
+`findings`: `docs/run-artefacts.md`). It carries what no script can derive: accepted
+counts, the judge row, per-finding raisers, outcome and verdicts. Without it
+`aggregate-and-emit.ps1` publishes zeros that read as a verdict.
 
 **`report.md` carries every finding, every severity — never a curated subset.**
 Rank freely; never omit to shorten. Only same-report duplication removes one; a
@@ -250,4 +250,4 @@ and its contract tests instead.
 - A remembered model/wrapper is about to override the manifest.
 - A report would call unverified Highs confirmed or silently erase contention.
 
-Tests: `test/`.
+Tests: [test/](references/validation.md).

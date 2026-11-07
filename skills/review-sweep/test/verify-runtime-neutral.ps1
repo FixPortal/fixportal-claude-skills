@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot '..'
 $main = Get-Content (Join-Path $root 'SKILL.md') -Raw
 $text = $main + "`n" + (Get-Content (Join-Path $root 'references' 'runbook.md') -Raw)

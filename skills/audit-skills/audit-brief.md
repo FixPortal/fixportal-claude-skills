@@ -1,7 +1,7 @@
-# Audit Brief — one skill, five axes, six runtime surfaces
+# Audit Brief — one skill, four axes, six runtime surfaces
 
 You are auditing **one** skill the user authored. Read its `SKILL.md` (and any
-supporting files in its directory). Score the five axes below, **verify every
+supporting files in its directory). Score the four axes below, **verify every
 reference on disk**, and return the JSON contract at the end. Report only —
 make no edits to any skill.
 
@@ -12,7 +12,6 @@ make no edits to any skill.
 - Axis 1 — Reach
 - Axis 2 — Implementation
 - Axis 3 — Correctness of references + conventions
-- Axis 5 — Exposure
 - Cross-home drift
 - Axis 4 — Utility
 - Severity
@@ -147,31 +146,9 @@ Check only the conventions relevant to this skill's domain. Do NOT assert
 - **Azure/CI skills:** point at `~/.agents/notes/deploy-and-ci-traps.md`;
   EF/Wolverine/SignalR skills point at `dotnet-runtime-traps.md`.
 
-## Axis 5 — Exposure
-
-**What this skill discloses when its text leaves this machine.** Read
-`references/exposure-classes.md` in this skill's directory for the grade table,
-the token sweep pattern, and the three classes the pattern cannot catch.
-
-Two steps, in order:
-
-1. **Scope.** From the `homes` you found, name every one that is a **third-party**
-   runtime — a runtime configured to a model vendor other than the user's own
-   first-party provider. `~/.pi/skills` and `~/.pi/agent/skills` are the current
-   case: PI is routinely pointed at OpenRouter-hosted third-party models. If the
-   skill is mounted in no third-party home, grade Good and record that as the
-   reason. Do not grade content you have established nobody exports.
-2. **Content.** Run the token sweep over the skill directory and read for the
-   three unscannable classes. Grade to the worst class present.
-
-A skill body is loaded from the runtime's home, **not** from the working
-directory, so a workspace sandbox restricts file access and never prompt
-contents. Never treat a directory restriction as exposure containment; if a
-finding's fix depends on that assumption, the fix is wrong.
-
-Record exposure hits in `exposure_findings`, not `findings` — a skill that
-discloses the org name is not technically broken, and mixing the two makes the
-defect buckets unreadable.
+Do not grade or report what the skill discloses to a model vendor (org names,
+repo slugs, paths, runtime reads of private context). The owner removed that
+axis on 2026-10-11; it is not a concern for this estate.
 
 ## Cross-home drift (this skill only)
 
@@ -225,7 +202,7 @@ that succeeded in a high-severity event can be `keep`.
 - **Reliability** — won't self-trigger (including a description dropped from
   the Claude Code listing or a silently ignored frontmatter key), violates active
   runtime instructions, or cross-home drift.
-- **Polish** — bloat, a disclosure or workflow gap above, weak example. A
+- **Polish** — bloat, a supporting-file or workflow gap above, weak example. A
   missing named section is not a finding.
 
 Utility grades represent lifecycle decisions, not defect severities. Use Good for `keep`, Polish for
@@ -240,17 +217,13 @@ a sound but superseded skill is not technically broken.
 {
   "skill": "<name>",
   "homes": ["<every runtime surface where the skill exists>"],
-  "grades": { "reach": "Good|Polish|Reliability|Broken", "impl": "Good|Polish|Reliability|Broken", "correctness": "Good|Polish|Reliability|Broken", "utility": "Good|Polish|Reliability|Broken", "exposure": "Good|Polish|Reliability|Broken" },
+  "grades": { "reach": "Good|Polish|Reliability|Broken", "impl": "Good|Polish|Reliability|Broken", "correctness": "Good|Polish|Reliability|Broken", "utility": "Good|Polish|Reliability|Broken" },
   "references_checked": [
     { "ref": "<path/command/package/constant>", "kind": "path|command|package|constant|crossref", "status": "resolved|broken", "evidence": "<what you ran / result>" }
   ],
   "findings": [
     { "severity": "Broken|Reliability|Polish", "axis": "reach|impl|correctness", "evidence": "<exact path/line/phrase>", "fix": "<precise fix, described not applied>" }
   ],
-  "exposure_findings": [
-    { "severity": "Broken|Reliability|Polish", "class": "credential|identity-topology|attribution|runtime-fetch", "evidence": "<exact path:line and the disclosing text>", "third_party_homes": ["<home that exports it>"], "fix": "<precise fix, described not applied>" }
-  ],
-  "exposure_scope": "<first-party-only: no third-party home | swept: <third-party homes>>",
   "utility_evidence": [
     { "source": "<path/report/history/user-supplied evidence>", "window": "<dates or unknown>", "signal": "<observed fact, not inference>" }
   ],
@@ -264,14 +237,6 @@ a sound but superseded skill is not technically broken.
 `references_checked` must be non-empty and must include every concrete reference
 in the skill body. An empty or token `references_checked` means you didn't do the
 job — go back and verify.
-
-`exposure_findings` may be empty only after one of two things: the skill has no
-third-party home, recorded as `exposure_scope: first-party-only`, or the sweep over
-its third-party homes actually ran and found nothing, recorded as
-`exposure_scope: swept: <those homes>`. `exposure_scope` is where that decision
-lives; it is not an overload of `top_issue` or the grade rationale.
-A Good exposure grade with no stated scope is the failure this axis exists to prevent:
-it reads identically whether the skill is clean or was never scanned.
 
 `utility_evidence` must also be non-empty. If no attributable evidence exists,
 record the searched source and window with that negative result, then choose

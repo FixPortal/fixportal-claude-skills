@@ -32,7 +32,7 @@ Missing evidence is a named gap.
    | `NORMAL` | Gitar clean; CodeRabbit not requested; no unresolved Gitar threads |
    | `LOW` | AI review optional; any review that ran has no unresolved threads |
 
-   Only dependency-bump PRs authored by `dependabot[bot]` or `renovate[bot]` are exempt from both AI reviewers, not from CI; control/config changes are not exempt. At any tier, a reviewer that ran must have no unresolved threads, and an explicit negative verdict blocks regardless of whether that reviewer was required. A missing, stale, skipped, rate-limited, or verdict-less required review is a **coverage gap** and blocks `PASS`.
+   Only dependency-bump PRs authored by `dependabot[bot]` or `renovate[bot]` are exempt from both AI reviewers, not from CI; control/config changes are not exempt. At any tier, a reviewer that ran must have no unresolved threads, and an explicit negative verdict blocks even if optional. A missing, stale, skipped, or verdict-less required review is a **coverage gap** and blocks `PASS`; rate-limited CodeRabbit: see `coderabbit-rate-limited`.
 3. Consume `adversarial-review` output using its owned contract: Phase 3 severity plus `[unanimous]`, `[majority]`, or `[contested]`; preserve any `mechanism refuted` re-rating. Record Phase 4 `CONFIRMED` / `REFUTED` / `INDETERMINATE` separately. There is no Dismissed bucket.
 
    Phase 4 decides where it spoke: `REFUTED` closes; `INDETERMINATE` stays open. Absent where its producer requires one: coverage gap.

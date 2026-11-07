@@ -166,18 +166,20 @@ version is in use.
   ```
 
   Do not specify a literal `Version="<latest>"` — `<latest>` is not a valid NuGet
-  version. `<YourOrg.CodeStyle>` is private, so query its authenticated GitHub
-  Packages versions and select the highest stable release:
+  version. `<YourOrg.CodeStyle>` is published on nuget.org, so query the
+  public flat container (the package id in lower case) and select the highest
+  stable release:
 
   ```powershell
-  gh api -H "Accept: application/vnd.github+json" "/orgs/YourOrg/packages/nuget/YourOrg.CodeStyle/versions?per_page=100" --paginate --jq '.[].name'
+  (Invoke-RestMethod https://api.nuget.org/v3-flatcontainer/yourorg.codestyle/index.json).versions
   ```
 
   Pin that concrete result centrally in `Directory.Packages.props` — the version
-  below stands in for whatever that query returned:
+  below is an example published release (0.1.13 observed 2026-10-14); use the
+  current query result when scaffolding:
 
   ```xml
-  <PackageVersion Include="YourOrg.CodeStyle" Version="1.4.2" />
+  <PackageVersion Include="YourOrg.CodeStyle" Version="0.1.13" />
   ```
 
   Keep the versionless shared `PackageReference` in `Directory.Build.props`.
@@ -203,9 +205,9 @@ version is in use.
   `~/.claude/resources/.editorconfig`** (no `-thin` suffix) into a project — that
   file is the **full** house style (every analyzer/naming/CA/IDE severity, pre-`<YourOrg.CodeStyle>`
   legacy — see *Resource Files* below) and copying it wholesale reproduces the exact
-  rule-duplication this section exists to avoid. Do **not** use `<YourOrg.CodeStyle>`'s
-  `assets/consumer.editorconfig` instead — if the two formatter-only sources ever differ,
-  `~/.claude/resources/dotnet-thin.editorconfig` wins. Add a local rule override only for a
+  rule-duplication this section exists to avoid. Use
+  `~/.claude/resources/dotnet-thin.editorconfig` as the formatter-only source.
+  Add a local rule override only for a
   genuine project-specific need, with a comment why (e.g. re-enabling culture rules
   CA1304/1307/1308/1309/1311 in a service that serves localized text) — such an override
   necessarily carries a `:severity` suffix, so it belongs in the project's own `.editorconfig`,
@@ -266,11 +268,12 @@ version is in use.
 
   Refuted if `dotnet csharpier check .` ever passes at both widths on the same tree.
 
-#### GitHub Packages auth (required to restore)
+#### GitHub Packages feed (optional; package is also on nuget.org)
 
-The package is **private** on the <your-org> GitHub Packages feed, so a token is
-needed even to *restore* it — not only to publish. Add a `nuget.config` at the solution
-root mapping the feed, with a `read:packages` PAT (or `GITHUB_TOKEN` in CI) supplied via
+`<YourOrg.CodeStyle>` is published on nuget.org, so restoring it needs no token
+from nuget.org. The <your-org> GitHub Packages feed below needs a token to restore.
+If you map that feed, add a `nuget.config` at the solution root, with a
+`read:packages` PAT (or `GITHUB_TOKEN` in CI) supplied via
 an env var — never a committed literal:
 
 ```xml
@@ -294,12 +297,12 @@ an env var — never a committed literal:
 </configuration>
 ```
 
-`YOUR_ORG` is the GitHub org hosting the private feed; supply it explicitly.
+`YOUR_ORG` is the GitHub org hosting the GitHub Packages feed; supply it explicitly.
 
 Use `YourOrg.*` in the source mapping, not an exact package name like `<YourOrg.CodeStyle>`.
 Exact matches break as soon as a second first-party package is added (e.g. `<YourOrg.CodeStyle>.ArchRules`
 falls through to nuget.org and fails). The wildcard covers all current and future packages from
-the private feed.
+the GitHub Packages feed.
 
 #### Path handling (`Path.Join` vs `Path.Combine`)
 
@@ -381,3 +384,7 @@ different jobs — do not confuse them:
 > `<YourOrg.CodeStyle>.globalconfig` and release a new package version. Mirror a rule preference
 > into the thin file only when a regression test proves its fixer requires a hierarchical
 > `.editorconfig`, and document it as a compatibility entry.
+
+Tests: `test/`.
+
+Check purposes, prerequisites, effects and skip conditions: [Validation](references/validation.md).

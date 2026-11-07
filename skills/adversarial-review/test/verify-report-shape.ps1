@@ -2,6 +2,12 @@ $ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot '..'
 $validator = Join-Path $root 'validate-report.ps1'
 if (-not (Test-Path -LiteralPath $validator)) { throw 'adversarial-review/validate-report.ps1 is missing' }
+# Every recursive cleanup below goes through the house guard, and only for a root this run
+# created (the *Owned flags). No guard, no delete: the suite refuses to run without it.
+# This mirror does not publish the run-tests skill, so the cleanup guard ships beside this test.
+$ownedDelete = Join-Path $PSScriptRoot 'Remove-OwnedTempTree.ps1'
+if (-not (Test-Path -LiteralPath $ownedDelete)) { throw "test/Remove-OwnedTempTree.ps1 is missing; this suite deletes nothing without it" }
+. $ownedDelete
 
 # --- the two readers must agree -------------------------------------------------------------
 # This validator and review-digest's collector both parse the same frontmatter. Whenever they
@@ -166,11 +172,16 @@ if ($accepted.Code -ne 0) {
 # write-back that re-validates a legacy folder. The full vault sweep reported 0 such
 # violations after this rule landed.
 $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) "adversarial-verification-$([guid]::NewGuid().ToString('N'))"
+$verifyRootOwned = $false
 try {
-    function New-VerificationRun([string] $Name, [string] $Date, [string] $Report) {
+    # No -Force: a pre-existing directory is not ours, and the flag stays false so cleanup skips it.
+    New-Item -ItemType Directory -Path $verifyRoot | Out-Null
+    $verifyRootOwned = $true
+    function New-VerificationRun([string] $Name, [string] $Date, [string] $Report, [string[]] $Index) {
         $run = Join-Path $verifyRoot $Name
         New-Item -ItemType Directory -Force -Path $run | Out-Null
-        if ($Date) { @('---', 'project: fixture', "date: $Date", '---') | Set-Content (Join-Path $run '_index.md') }
+        if ($Index) { $Index | Set-Content (Join-Path $run '_index.md') }
+        elseif ($Date) { @('---', 'project: fixture', "date: $Date", '---') | Set-Content (Join-Path $run '_index.md') }
         $Report | Set-Content (Join-Path $run 'report.md')
         $run
     }
@@ -189,12 +200,54 @@ try {
         @{ Name = 'no-index-high';        Date = '';           Report = $highNoVerification; Fail = $false }
         # A chunk report in a subfolder is governed by its run folder's index.
         @{ Name = 'new-high-unverified/chunk-reports'; Date = ''; Report = $highNoVerification; Fail = $true }
+        # A block ends at the next level 1-3 heading, in both directions: a trailing
+        # contested bullet must not make a Medium need a Verification line, and a trailing
+        # Verification label must not satisfy a High that has none.
+        @{ Name = 'trailing-tag'; Date = '2026-10-05'; Fail = $false
+           Report = "# r`n`n### F4 · x`n**Medium** · [unanimous]`n`n## Low`n`n- **L1** · Low · [contested] · Phase 4 CONFIRMED.`n" }
+        @{ Name = 'trailing-label'; Date = '2026-10-05'; Fail = $true
+           Report = "# r`n`n### F5 · x`n**High** · [unanimous]`n`n## Notes`n`n**Verification** — CONFIRMED elsewhere`n" }
+        # A parenthetical after the severity still makes the block Critical/High.
+        @{ Name = 'parenthetical-high'; Date = '2026-10-05'; Fail = $true
+           Report = "# r`n`n### F8 · x`n**High** (downgraded from Critical) · [majority]`n" }
+        # The tag counts only on the severity line, not where Consensus quotes it.
+        @{ Name = 'quoted-tag'; Date = '2026-10-05'; Fail = $false
+           Report = "# r`n`n### F6 · x`n**Medium** · [unanimous]`n`n**Consensus** — unlike F2 [contested], all agree.`n" }
+        # A `### ` inside a code fence does not start a block.
+        @{ Name = 'fenced-heading'; Date = '2026-10-05'; Fail = $false
+           Report = "# r`n`n### F7 · x`n**High** · [unanimous]`n`n``````markdown`n### <short title>`n```````n`n**Verification** — CONFIRMED at ``a.cs:1```n" }
+        # A contested bullet or table row needs its own verdict (XM6).
+        @{ Name = 'contested-bullet'; Date = '2026-11-02'; Fail = $true; Rule = 'contested-without-block'
+           Report = $highVerified + "`n## Low`n`n- **L9** · Low · [contested] · no verification file.`n" }
+        @{ Name = 'contested-row'; Date = '2026-11-02'; Fail = $true; Rule = 'contested-without-block'
+           Report = "# r`n`n## Refuted`n`n| ID | Tag | Verdict |`n|---|---|---|`n| R-1 | [contested] | not checked |`n" }
+        @{ Name = 'contested-bullets-verified'; Date = '2026-11-02'; Fail = $false
+           Report = "# r`n`n## Low`n`n- **L9** · Low · [contested] · Phase 4 REFUTED.`n- **L10** · Low · [contested]`n  - Phase 4 INDETERMINATE.`n`n| ID | Tag | Verdict |`n|---|---|---|`n| R-1 | [contested] | **P4 REFUTED.** |`n`n## Themes`n`n- AR-8 [contested]: a cross-reference to a verified block.`n- the label ``[majority]`` became ``[contested]```n" }
+        # The Verification line must hold a verdict, not the placeholder (XM7).
+        @{ Name = 'pending-verification'; Date = '2026-11-02'; Fail = $true; Rule = 'verification-without-verdict'
+           Report = $highNoVerification + "`n**Verification** — PENDING (Phase 4)`n" }
+        @{ Name = 'documented-skip'; Date = '2026-11-02'; Fail = $false
+           Report = $highNoVerification + "`n**Verification** — Not Phase-4 verified: the judge audit relabelled it refuted.`n" }
+        @{ Name = 'inline-verification'; Date = '2026-10-05'; Fail = $false
+           Report = $highNoVerification + "`n**Consensus** — all agree. **Verification** — CONFIRMED in Phase 4.`n" }
+        # The verdict rules are grandfathered before 2026-11-02 (XM6/XM7 owner decision): an
+        # older run keeps passing on an unverified contested bullet or a PENDING line.
+        @{ Name = 'legacy-contested-bullet'; Date = '2026-11-01'; Fail = $false
+           Report = $highVerified + "`n## Low`n`n- **L9** · Low · [contested] · no verification file.`n" }
+        @{ Name = 'legacy-pending-verification'; Date = '2026-11-01'; Fail = $false
+           Report = $highNoVerification + "`n**Verification** — PENDING (Phase 4)`n" }
+        # An index with no parseable date is broken, not legacy.
+        @{ Name = 'undated-index'; Index = @('---', 'project: fixture', '---'); Report = $highNoVerification; Fail = $true }
+        # An index above a RunId-named run folder governs nothing in it.
+        @{ Name = 'parent-index'; Date = '2026-10-05'; Report = $lowOnly; Fail = $false }
+        @{ Name = 'parent-index/20261001T000000Z'; Date = ''; Report = $highNoVerification; Fail = $false }
     )
     foreach ($case in $cases) {
-        $result = Invoke-Validator -Target (New-VerificationRun $case.Name $case.Date $case.Report)
-        $failedForVerification = $result.Code -ne 0 -and $result.Output -match 'missing-verification'
-        if ($failedForVerification -ne $case.Fail) {
-            throw "Verification rule on '$($case.Name)': expected fail=$($case.Fail), got exit $($result.Code)`n$($result.Output)"
+        $result = Invoke-Validator -Target (New-VerificationRun $case.Name $case.Date $case.Report $case.Index)
+        $rule = if ($case.Rule) { $case.Rule } else { 'missing-verification' }
+        $failedForVerification = $result.Code -ne 0 -and $result.Output -match $rule
+        if ($failedForVerification -ne $case.Fail -or (-not $case.Fail -and $result.Code -ne 0)) {
+            throw "Verification rule on '$($case.Name)': expected fail=$($case.Fail) ($rule), got exit $($result.Code)`n$($result.Output)"
         }
     }
     # The judge brief must ask for the line the validator demands, or a report the brief
@@ -203,13 +256,34 @@ try {
     if ($phase3 -notmatch '\*\*Verification\*\*') {
         throw 'phase3-adjudicate.txt house style has no **Verification** line, so validate-report.ps1 rejects the reports it produces'
     }
+    # Both report-writing briefs must keep contested findings out of the bulleted Low tail, and
+    # the judge brief must name the skip form the validator accepts in place of a verdict.
+    $synthesis = Get-Content (Join-Path $root 'briefs' 'synthesis.txt') -Raw
+    foreach ($brief in @(@{ Name = 'phase3-adjudicate.txt'; Text = $phase3 }, @{ Name = 'synthesis.txt'; Text = $synthesis })) {
+        if (($brief.Text -replace '\s+', ' ') -notmatch '\[contested\] finding is never a tail bullet') {
+            throw "$($brief.Name) still lets a [contested] finding be a Low-tail bullet, which validate-report.ps1 rejects without a verdict"
+        }
+    }
+    if (($phase3 -replace '\s+', ' ') -notmatch 'Not Phase-4 verified: <reason>') {
+        throw 'phase3-adjudicate.txt does not document the Not Phase-4 verified skip form the validator accepts'
+    }
 }
 finally {
-    Remove-Item -LiteralPath $verifyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($verifyRootOwned) { Remove-OwnedTempTree -Path $verifyRoot }
+}
+
+# The future-date rule must use the UTC day, as review-digest does: a RunId is UTC, so a host
+# behind UTC rejected a record dated by its own run id.
+$validatorSource = Get-Content -LiteralPath $validator -Raw
+if ($validatorSource -notmatch '\$today = \[datetime\]::UtcNow\.Date' -or $validatorSource -notmatch '\$reviewDate\.Date -gt \$today') {
+    throw 'validate-report.ps1 future-date check does not compare against the UTC day'
 }
 
 $coverageRoot = Join-Path ([IO.Path]::GetTempPath()) "adversarial-coverage-$([guid]::NewGuid().ToString('N'))"
+$coverageRootOwned = $false
 try {
+    New-Item -ItemType Directory -Path $coverageRoot | Out-Null
+    $coverageRootOwned = $true
     $repo = Join-Path $coverageRoot 'repo'
     New-Item -ItemType Directory -Force -Path $repo | Out-Null
     & git init --quiet $repo
@@ -255,7 +329,7 @@ try {
     )
     $partialPathResult = & pwsh -NoProfile -File $validator -Path $partialPathCoverage -RepoPath $repo 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0 -or $partialPathResult -notmatch 'reviewed-paths entry matches no tracked files') { throw "validator accepted a partially unmatched reviewed-paths list`n$partialPathResult" }
-    Remove-Item -LiteralPath $partialPathCoverage -Recurse -Force
+    Remove-OwnedTempTree -Path $partialPathCoverage
     # A missing tip is already its own violation; the reviewed-paths probe diffs against
     # that tip, so git fails with no stdout and must not add a false "matches no tracked
     # files" for a path that does match.
@@ -268,14 +342,56 @@ try {
     $missingTipResult = & pwsh -NoProfile -File $validator -Path $missingTipCoverage -RepoPath $repo 2>&1 | Out-String
     if ($missingTipResult -notmatch "target commit does not exist in RepoPath: $missingTip") { throw "validator did not report the missing tip`n$missingTipResult" }
     if ($missingTipResult -match 'reviewed-paths entry matches no tracked files') { throw "a missing tip must not also report its reviewed-paths as unmatched`n$missingTipResult" }
-    Remove-Item -LiteralPath $missingTipCoverage -Recurse -Force
+    Remove-OwnedTempTree -Path $missingTipCoverage
+    # X1: a remediated record dated on/after 2026-11-02 must list its merged fix commits;
+    # an earlier record is grandfathered. Listing the reviewed tip is not a fix (CodeRabbit, PR #426),
+    # and the presence rule needs no -RepoPath, so a vault sweep enforces it too.
+    'fixed' | Set-Content (Join-Path $repo 'src/Fix.cs')
+    & git -C $repo add src/Fix.cs
+    & git -C $repo commit --quiet -m 'fix'
+    $fixSha = (& git -C $repo rev-parse HEAD).Trim()
+    foreach ($case in @(
+            @{ Name = 'commits-missing'; Date = '2026-11-02'; Commits = @(); Fail = $true; Needle = 'requires remediation-commits' }
+            @{ Name = 'commits-missing-no-repo'; Date = '2026-11-02'; Commits = @(); Fail = $true; Needle = 'requires remediation-commits'; NoRepo = $true }
+            @{ Name = 'commits-listed'; Date = '2026-11-02'; Commits = @('remediation-commits:', "  - $fixSha"); Fail = $false }
+            @{ Name = 'commits-tip'; Date = '2026-11-02'; Commits = @('remediation-commits:', "  - $tipSha"); Fail = $true; Needle = 'not after the reviewed tip' }
+            @{ Name = 'commits-legacy'; Date = '2026-11-01'; Commits = @(); Fail = $false })) {
+        $run = New-CoverageRun "remediation-$($case.Name)" (@(
+                '---', 'project: fixture', 'review-type: adversarial-review', "date: $($case.Date)",
+                'scope-kind: repository', "target: $baseSha..$tipSha", 'reviewed-paths:', '  - src/**',
+                'excluded-paths:', '  - tests/**', 'disposition: remediated', "remediation-tip: $fixSha") + $case.Commits + '---')
+        $out = if ($case.NoRepo) { & pwsh -NoProfile -File $validator -Path $run 2>&1 | Out-String } else { & pwsh -NoProfile -File $validator -Path $run -RepoPath $repo 2>&1 | Out-String }
+        $failed = [bool]($LASTEXITCODE -ne 0 -and $case.Needle -and $out -match $case.Needle)
+        if ($failed -ne $case.Fail -or (-not $case.Fail -and $LASTEXITCODE -ne 0)) { throw "remediation-commits rule ($($case.Name)): expected fail=$($case.Fail), got exit $LASTEXITCODE`n$out" }
+        Remove-OwnedTempTree -Path $run
+    }
+    # ...and a post-cutover record cannot skip it by omitting scope-kind (CodeRabbit, PR #426).
+    $noScope = New-CoverageRun 'remediation-no-scope' @('---', 'project: fixture', 'date: 2026-11-02', 'disposition: remediated', "remediation-tip: $fixSha", '---')
+    $noScopeResult = & pwsh -NoProfile -File $validator -Path $noScope 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -or $noScopeResult -notmatch 'requires remediation-commits') { throw "a post-cutover remediated record without scope-kind skipped the remediation-commits rule`n$noScopeResult" }
+    Remove-OwnedTempTree -Path $noScope
+    # A missing or malformed date falls back to the run id, so it cannot dodge the rule; a malformed
+    # SHA is refused before the scope-kind exit (CodeRabbit, PR #426).
+    foreach ($case in @(
+            @{ Name = '20261102T000000Z'; Lines = @(); Fail = $true; Needle = 'requires remediation-commits' }
+            @{ Name = '20261102T000001Z'; Lines = @('date: 2026/11/02'); Fail = $true; Needle = 'requires remediation-commits' }
+            @{ Name = 'remediation-no-date-no-id'; Lines = @(); Fail = $true; Needle = 'requires remediation-commits' }
+            @{ Name = '20261101T000000Z'; Lines = @(); Fail = $false }
+            @{ Name = 'remediation-bad-sha'; Lines = @('date: 2026-11-02', 'remediation-commits:', '  - not-a-sha'); Fail = $true; Needle = 'exact 40-character SHAs: not-a-sha' }
+            @{ Name = 'remediation-bad-sha-document'; Lines = @('date: 2026-11-02', 'scope-kind: document', 'remediation-commits:', '  - not-a-sha'); Fail = $true; Needle = 'exact 40-character SHAs: not-a-sha' })) {
+        $run = New-CoverageRun $case.Name (@('---', 'project: fixture', 'disposition: remediated', "remediation-tip: $fixSha") + $case.Lines + '---')
+        $out = & pwsh -NoProfile -File $validator -Path $run 2>&1 | Out-String
+        $failed = [bool]($LASTEXITCODE -ne 0 -and $case.Needle -and $out -match $case.Needle)
+        if ($failed -ne $case.Fail -or (-not $case.Fail -and $LASTEXITCODE -ne 0)) { throw "remediation-commits frontmatter rule ($($case.Name)): expected fail=$($case.Fail), got exit $LASTEXITCODE`n$out" }
+        Remove-OwnedTempTree -Path $run
+    }
     $futureDate = New-CoverageRun 'future-date' @(
         '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2099-01-01',
         'scope-kind: repository', "target: $baseSha..$tipSha", 'disposition: reviewed', '---'
     )
     $futureDateResult = & pwsh -NoProfile -File $validator -Path $futureDate -RepoPath $repo 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0 -or $futureDateResult -notmatch 'date must not be in the future') { throw "validator accepted a future review date`n$futureDateResult" }
-    Remove-Item -LiteralPath $futureDate -Recurse -Force
+    Remove-OwnedTempTree -Path $futureDate
 
     # A no-panel skip (SKILL.md §0) must carry its reason, checked both ways: a run
     # declaring no reviewers without a reason, and a reason attached to a run that
@@ -399,7 +515,8 @@ try {
     if ($LASTEXITCODE -eq 0 -or $excludeOnlyResult -notmatch 'pathspec exclusions are not allowed') {
         throw "validator accepted an exclusion-only pathspec as repository coverage`n$excludeOnlyResult"
     }
-    foreach ($combinedMagic in @(':(top,exclude)Migrations/**', ':(exclude,icase)generated/**')) {
+    # `:/!` and `:/^` are git's short form for top plus exclude (XM8).
+    foreach ($combinedMagic in @(':(top,exclude)Migrations/**', ':(exclude,icase)generated/**', ':/!src/**', ':/^src/**')) {
         $combined = New-CoverageRun ('combined-magic-' + [guid]::NewGuid().ToString('N')) @(
             '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
             'scope-kind: repository', "target: $baseSha..$tipSha", 'excluded-paths:', "  - $combinedMagic",
@@ -463,9 +580,108 @@ try {
     if ($commentedListResult -match 'Directory\.Build\.props') { throw "an interior # comment truncated the list, so an entry after it was never read`n$commentedListResult" }
     $uncoveredResult = & pwsh -NoProfile -File $validator -Path $uncoveredCoverage -RepoPath $repo 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0 -or $uncoveredResult -notmatch 'uncovered path') { throw "validator accepted incomplete repository coverage`n$uncoveredResult" }
+
+    # An entry whose files were all deleted in the reviewed range still names reviewed changes
+    # at either scope; an entry matching nothing at the tip or in the range stays rejected.
+    # The range starts at the commit before the deletion, so only the deleted files are in it.
+    $preDelete = (& git -C $repo rev-parse HEAD).Trim()
+    & git -C $repo rm --quiet tests/AppTests.cs
+    & git -C $repo commit --quiet -m 'drop tests'
+    $deletedTip = (& git -C $repo rev-parse HEAD).Trim()
+    foreach ($scope in @(
+        @{ Kind = 'repository'; Path = 'tests/**'; Fail = $false }
+        @{ Kind = 'subsystem'; Path = 'tests/**'; Fail = $false }
+        @{ Kind = 'subsystem'; Path = 'nowhere/**'; Fail = $true }
+    )) {
+        $deletedRun = New-CoverageRun "deleted-chunk-$($scope.Kind)-$([guid]::NewGuid().ToString('N'))" @(
+            '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+            "scope-kind: $($scope.Kind)", "target: $preDelete..$deletedTip", 'reviewed-paths:', "  - $($scope.Path)",
+            'disposition: reviewed', '---'
+        )
+        $deletedResult = & pwsh -NoProfile -File $validator -Path $deletedRun -RepoPath $repo 2>&1 | Out-String
+        $rejected = $LASTEXITCODE -ne 0 -and $deletedResult -match 'matches no tracked files at reviewed tip'
+        if ($rejected -ne $scope.Fail -or (-not $scope.Fail -and $LASTEXITCODE -ne 0)) {
+            throw "a $($scope.Kind)-scope entry naming only deleted files: expected fail=$($scope.Fail)`n$deletedResult"
+        }
+    }
+
+    # A waiver conflicts only with a record review-digest could use (AR-6): an off-HEAD tip whose
+    # tree a HEAD commit carries is usable, so its waiver is rejected; a tip on HEAD whose base is
+    # not in the repository is unusable, so its waiver stands.
+    & git -C $repo checkout -q -b twin-side
+    'twin' | Set-Content (Join-Path $repo 'Twin.cs')
+    & git -C $repo add -A; & git -C $repo commit -qm 'side'
+    $sideTip = (& git -C $repo rev-parse HEAD).Trim()
+    & git -C $repo checkout -q -
+    & git -C $repo cherry-pick --no-commit $sideTip *> $null
+    & git -C $repo commit --quiet -m 'tree twin of side'
+    if ((& git -C $repo rev-parse "HEAD^{tree}") -ne (& git -C $repo rev-parse "$sideTip^{tree}")) { throw 'fixture did not create a tree twin on HEAD' }
+    # A distinct commit, so the twin is found by tree identity and not because the tip is an ancestor.
+    & git -C $repo merge-base --is-ancestor $sideTip HEAD *> $null
+    if ($LASTEXITCODE -eq 0) { throw 'fixture tip is on HEAD ancestry; the tree-twin path is not exercised' }
+    $waiverTwin = New-CoverageRun 'waiver-tree-twin' @(
+        '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+        'scope-kind: repository', "target: $tipSha..$sideTip",
+        'coverage-waiver: the reviewed tip was rewritten and cannot be reconstructed', 'disposition: reviewed', '---'
+    )
+    $waiverTwinResult = & pwsh -NoProfile -File $validator -Path $waiverTwin -RepoPath $repo 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -or $waiverTwinResult -notmatch 'target already resolves') { throw "validator accepted a waiver on an off-HEAD tip that review-digest rescues through its tree twin`n$waiverTwinResult" }
+    $waiverNoBase = New-CoverageRun 'waiver-no-base' @(
+        '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+        'scope-kind: repository', "target: $('deadbeef' * 5)..$deletedTip",
+        'coverage-waiver: the reviewed base was pruned and cannot be reconstructed', 'disposition: reviewed', '---'
+    )
+    $waiverNoBaseResult = & pwsh -NoProfile -File $validator -Path $waiverNoBase -RepoPath $repo 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "validator rejected a waiver on a record whose base is not in the repository, which review-digest cannot use`n$waiverNoBaseResult" }
+
+    # A remediated record with an off-HEAD reviewed tip is usable only when that tip has a
+    # patch-id copy on HEAD (collect.ps1 Find-PatchTwin); an on-HEAD remediation-tip alone is not.
+    $mainBranch = (& git -C $repo branch --show-current).Trim()
+    $forkPoint = (& git -C $repo rev-parse HEAD).Trim()
+    & git -C $repo checkout -q -b patch-side
+    'patched' | Set-Content (Join-Path $repo 'Patched.cs')
+    & git -C $repo add -A; & git -C $repo commit -qm 'patch side'
+    $patchSide = (& git -C $repo rev-parse HEAD).Trim()
+    & git -C $repo checkout -q -b orphan-side $forkPoint
+    'orphan' | Set-Content (Join-Path $repo 'Orphan.cs')
+    & git -C $repo add -A; & git -C $repo commit -qm 'never applied'
+    $orphanSide = (& git -C $repo rev-parse HEAD).Trim()
+    & git -C $repo checkout -q $mainBranch
+    'main moves on' | Set-Content (Join-Path $repo 'Main.cs')
+    & git -C $repo add -A; & git -C $repo commit -qm 'main'
+    & git -C $repo cherry-pick $patchSide *> $null
+    $patchCopy = (& git -C $repo rev-parse HEAD).Trim()
+    if ((& git -C $repo rev-parse "$patchCopy^{tree}") -eq (& git -C $repo rev-parse "$patchSide^{tree}")) { throw 'fixture made a tree twin, not a patch-only copy' }
+    foreach ($case in @(@{ Name = 'patch-copy'; Tip = $patchSide; Conflict = $true }, @{ Name = 'no-copy'; Tip = $orphanSide; Conflict = $false })) {
+        $waiverRemediated = New-CoverageRun "waiver-remediated-$($case.Name)" @(
+            '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+            'scope-kind: repository', "target: $forkPoint..$($case.Tip)",
+            'coverage-waiver: the reviewed tip was rewritten and cannot be reconstructed',
+            'disposition: remediated', "remediation-tip: $patchCopy", '---'
+        )
+        $waiverRemediatedResult = & pwsh -NoProfile -File $validator -Path $waiverRemediated -RepoPath $repo 2>&1 | Out-String
+        $conflict = $LASTEXITCODE -ne 0 -and $waiverRemediatedResult -match 'target already resolves'
+        if ($conflict -ne $case.Conflict -or (-not $case.Conflict -and $LASTEXITCODE -ne 0)) {
+            throw "remediated waiver ($($case.Name)): expected conflict=$($case.Conflict)`n$waiverRemediatedResult"
+        }
+    }
+    # A reviewed record (no fix merged) is usable through the same copy when every reviewed commit
+    # off HEAD has one (collect.ps1 Test-RangeTwins), so its waiver conflicts; with no copy it stands.
+    foreach ($case in @(@{ Name = 'patch-copy'; Tip = $patchSide; Conflict = $true }, @{ Name = 'no-copy'; Tip = $orphanSide; Conflict = $false })) {
+        $waiverReviewed = New-CoverageRun "waiver-reviewed-$($case.Name)" @(
+            '---', 'project: fixture', 'review-type: adversarial-review', 'date: 2026-01-01',
+            'scope-kind: repository', "target: $forkPoint..$($case.Tip)",
+            'coverage-waiver: the reviewed tip was rewritten and cannot be reconstructed', 'disposition: reviewed', '---'
+        )
+        $waiverReviewedResult = & pwsh -NoProfile -File $validator -Path $waiverReviewed -RepoPath $repo 2>&1 | Out-String
+        $conflict = $LASTEXITCODE -ne 0 -and $waiverReviewedResult -match 'target already resolves'
+        if ($conflict -ne $case.Conflict -or (-not $case.Conflict -and $LASTEXITCODE -ne 0)) {
+            throw "reviewed waiver ($($case.Name)): expected conflict=$($case.Conflict)`n$waiverReviewedResult"
+        }
+    }
 }
 finally {
-    Remove-Item -LiteralPath $coverageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($coverageRootOwned) { Remove-OwnedTempTree -Path $coverageRoot }
 }
 
 # An unreferenced validator never fires. The persist step is the only place that can

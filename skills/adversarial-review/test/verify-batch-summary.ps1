@@ -185,6 +185,10 @@ exit 0
     if ($wedge.Count -ne 1 -or $wedge[0].timedOut -ne $true -or $null -ne $wedge[0].exitCode) {
         throw "the wedged chunk must be recorded once as timedOut with no exit code, got: $($wedge | ConvertTo-Json -Compress)"
     }
+    # "Stopped" is a claim about the exit, so the row carries the evidence for it.
+    if ($wedge[0].killConfirmed -ne $true -or $wedge[0].drained -ne $true -or $out16 -notmatch 'timeout and were stopped') {
+        throw "a stopped chunk must record killConfirmed and drained before the warning says 'were stopped', got: $($wedge | ConvertTo-Json -Compress)`n$out16"
+    }
     $cleanRow = @($rows16 | Where-Object chunkId -eq 'CLEAN')[0]
     $foundRow = @($rows16 | Where-Object chunkId -eq 'FOUND')[0]
     if ($cleanRow.pooledCount -ne 0 -or $foundRow.pooledCount -ne 2) {
@@ -240,6 +244,24 @@ exit 0
         }
     }
     "batch-review.ps1 OK — -ManifestPath reaches every chunk, and is absent when not given"
+
+    # Run in-process from a changed location, a relative -ManifestPath must still reach each
+    # chunk as the caller's file: chunks are separate processes started in the PROCESS
+    # directory, which Set-Location does not move. RunRoot stays absolute so a pre-fix run
+    # cannot write outside $root.
+    $callerDir = Join-Path $root 'caller29'
+    New-Item -ItemType Directory -Path $callerDir | Out-Null
+    '{}' | Set-Content -LiteralPath (Join-Path $callerDir 'roster.json') -Encoding utf8
+    $runRoot29 = Join-Path $root 'run29'
+    Push-Location $callerDir
+    try { & (Join-Path $fakeManifestSkill 'batch-review.ps1') -ChunkManifest $m18 -RepoPath $fakeRepo -RunRoot $runRoot29 -BatchSize 2 -ManifestPath 'roster.json' *> $null }
+    finally { Pop-Location }
+    $want29 = "[$(Join-Path $callerDir 'roster.json')]"
+    foreach ($id in 'M1', 'M2') {
+        $seen = (Get-Content -LiteralPath (Join-Path $runRoot29 $id 'manifest-seen.txt') -Raw).Trim()
+        if ($seen -ne $want29) { throw "chunk $id received relative -ManifestPath as $seen, want $want29" }
+    }
+    "batch-review.ps1 OK — relative paths are resolved against the caller's location before the fan-out"
 
     # batch-summary.json's write-then-rename (batch-review.ps1, near the union) is
     # deliberately NOT covered by a test here. The property it defends -- a process

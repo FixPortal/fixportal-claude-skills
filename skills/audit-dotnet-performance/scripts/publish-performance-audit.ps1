@@ -32,7 +32,17 @@ try {
     # publisher then reported the audit as unpublishable, and on a case-sensitive
     # filesystem an ignore-case comparison would accept two genuinely different
     # directories, which is why neither rule can be hard-coded.
-    $pathComparison = if ([OperatingSystem]::IsWindows()) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    # CX17: the rule follows the VOLUME, not the OS - a case-insensitive macOS volume needs
+    # the ignore-case rule too. Probe it: the staging path with its case swapped resolves
+    # to the same directory only on a case-insensitive volume. Swap only the leaf: a
+    # case-insensitive volume mounted under a case-sensitive ancestor would fail a
+    # whole-path swap at the ancestor, before the probe reached the staging volume.
+    $stagingLeaf = Split-Path $staging -Leaf
+    $swappedLeaf = -join ($stagingLeaf.ToCharArray() | ForEach-Object { if ([char]::IsUpper($_)) { [char]::ToLowerInvariant($_) } else { [char]::ToUpperInvariant($_) } })
+    $swapped = Join-Path (Split-Path $staging -Parent) $swappedLeaf
+    $volumeIgnoresCase = [OperatingSystem]::IsWindows() -or
+        (($swappedLeaf -cne $stagingLeaf) -and (Test-Path -LiteralPath $swapped -PathType Container))
+    $pathComparison = if ($volumeIgnoresCase) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     if (-not ([string](Split-Path $staging -Parent)).Equals($destination, $pathComparison) -or
         (Split-Path $staging -Leaf) -notlike '.staging-*') {
         throw 'StagingDirectory must be a .staging-* child of DestinationDirectory.'

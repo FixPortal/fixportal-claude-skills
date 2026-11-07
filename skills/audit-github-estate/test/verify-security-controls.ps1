@@ -386,9 +386,26 @@ foreach ($needle in '.visibility', '.owner.type', '.security_and_analysis', 'GET
         throw "Live repository identity/readback guidance is missing: $needle"
     }
 }
-# The private copy also asserts that one specific stale account name never returns to
-# SKILL.md. That literal is machine-specific and is omitted from this public mirror; the
-# live-derivation check below carries the same contract in general form.
+# Secret-scanning alert lists return the literal secret value unless hide_secret=true is
+# passed. The audit needs number, type, location and state, never the value, and the
+# response lands in a model's context (some runtimes route it to a third-party vendor).
+$alertCalls = [regex]::Matches($evidence, 'GET /(repos|orgs)/[^`]*secret-scanning/alerts[^`]*')
+if ($alertCalls.Count -lt 2) {
+    throw 'Expected both the repository and organization secret-scanning alert routes in github-evidence.md.'
+}
+foreach ($call in $alertCalls) {
+    if ($call.Value -notmatch '[?&]hide_secret=true') {
+        throw "Secret-scanning alert call must pass hide_secret=true: $($call.Value)"
+    }
+}
+# L30: audit-dependabot-coverage owns `github-dependabot.md`; this skill's example must not
+# reuse it, or a following agent saves over / is blocked by the other skill's report.
+if ($skill -match 'github-dependabot\.md') {
+    throw 'audit-github-estate report-location example must not use the audit-dependabot-coverage filename github-dependabot.md.'
+}
+if ($skill -notmatch '(?s)Secret-scanning configuration.*hide_secret=true') {
+    throw 'SKILL.md baseline must require hide_secret=true on secret-scanning alert calls.'
+}
 if ($skill -notmatch '(?is)visibility.*owner\.type.*each (repository|run)') {
     throw 'Visibility and owner type must be derived live for each repository.'
 }

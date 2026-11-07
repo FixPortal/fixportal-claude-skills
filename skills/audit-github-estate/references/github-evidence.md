@@ -44,14 +44,14 @@ Inventory legacy `advanced_security`, but do not use `advanced_security` as a su
 | `GET /repos/{owner}/{repo}/code-quality/setup` | Require the policy-expected enabled/configured state for public repositories. | Require the policy-expected disabled/not-configured state for private/internal repositories. |
 | Code Quality findings/analysis | Query for public repositories where Code Quality is enabled by policy. | Do not query when Code Quality is disabled by policy. |
 
-Organization Code Quality repository access and enforcement remain UI-only, and being
-free does not make them readable. When the operator has not supplied them, record
+Organization Code Quality repository access and enforcement remain UI-only; the
+accepted public coverage policy does not make them readable. When the operator has not supplied them, record
 `Code Quality org access: UNVERIFIED (UI-only, awaiting operator)`. Continue read-only
 repository setup inspection and every non-Code-Quality surface. Gate Code Quality
 mutations, not the whole audit — `classify-security-evidence.ps1` still raises
 `Code Quality org access is UNVERIFIED` as a gap, and it is a gap in what was READ.
 
-Free public Code Quality changed the EXPECTATION, not this evidence rule: public
+The accepted public Code Quality policy sets the EXPECTATION, not this evidence rule: public
 repositories are expected enabled and private/internal disabled. Do not record a
 paid-authorization gap for public Code Quality, and do not gate public findings reads on
 billing evidence.
@@ -59,10 +59,16 @@ billing evidence.
 ## Secret-scanning alert capability probe
 
 For each public repository, call
-`GET /repos/{owner}/{repo}/secret-scanning/alerts` first. A successful `200` is the
-inventory source, including an empty array. If it is unavailable and the owner is an
-organization, call `GET /orgs/{org}/secret-scanning/alerts` and filter the response by
-exact `repository.full_name`. Classify the inventory as UI-only/UNKNOWN only after every
+`GET /repos/{owner}/{repo}/secret-scanning/alerts?hide_secret=true` first. A successful
+`200` is the inventory source, including an empty array. If it is unavailable and the
+owner is an organization, call `GET /orgs/{org}/secret-scanning/alerts?hide_secret=true`
+and filter the response by exact `repository.full_name`.
+
+Always pass `hide_secret=true`. GitHub's default is `false`, which returns the literal
+secret value in every alert, and this response is read into the agent's context. The
+audit needs the alert number, secret type, location and state, never the value. The
+organization route returns every repository's alerts before the filter is applied, so
+omitting the parameter there exposes secrets from repositories outside the audit. Classify the inventory as UI-only/UNKNOWN only after every
 route available to that owner has failed. Never infer a zero queue from `404`.
 
 ## Executable response check

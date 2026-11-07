@@ -10,6 +10,11 @@ Review the diff for substantive defects only:
 - security issues: injection, authz/authn gaps, unsafe input handling,
   secret exposure
 - API and contract misuse, incorrect assumptions about callers or callees
+- deletion-target provenance in tests and cleanup: trace the actual resolved target
+  after failed setup or stale state, require positive current-test/helper ownership
+  evidence and a printed resolved path before recursive deletion; a temp API or
+  variable name is insufficient. Check that Pester/destructive verifiers execute
+  in an isolated disposable lane; lint and cleanup guards are not containment.
 
 Ignore pure style and formatting unless it changes behaviour.
 
@@ -44,8 +49,9 @@ If you find no substantive defect, say so as a HEADING, exactly:
 ### NO FINDINGS
 
 then one or two sentences on what you examined. The heading form is required
-because the driver counts participation by heading: a bare prose sentence reads
-as an off-contract reply and your review is dropped from the panel.
+because the driver pools findings by heading: a reply with no heading still
+counts as taking part, but nothing in it is pooled or cross-examined as a
+finding.
 
 Line numbers must be SOURCE-FILE lines, never offsets into the diff you were
 given. If you cannot read the repository, derive them from the diff's own
