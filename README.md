@@ -1,17 +1,24 @@
-# Claude Code Skills
+# Agent Skills
 
 [![CI](https://github.com/FixPortal/fixportal-claude-skills/actions/workflows/ci.yml/badge.svg)](https://github.com/FixPortal/fixportal-claude-skills/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/FixPortal/fixportal-claude-skills)](LICENSE)
 
-A curated, sanitised subset of the authored [Claude Code](https://claude.com/claude-code)
-skills I use day to day, published as a portfolio reference. These are the
-genuinely reusable ones — scaffolding, review, audit, and session workflows —
-with machine paths, client names, and personal vault locations replaced by
-placeholders.
+A curated, sanitised subset of the agent skills I author and use day to day,
+published as a portfolio reference. They are not written for one vendor's CLI.
+Each skill is a folder in the shared `SKILL.md` format, kept once in a single
+canonical home and mounted into every agent runtime I use: Claude Code, Codex,
+Kimi Code, Antigravity (IDE and CLI) and PI. See
+[One canonical home, every runtime](#one-canonical-home-every-runtime).
 
-> These are extracted from a larger private working set. Paths like `~/.claude/...`,
+These are the genuinely reusable ones — scaffolding, review, audit, and session
+workflows — with machine paths, client names, and personal vault locations
+replaced by placeholders.
+
+> These are extracted from a larger private working set. Paths like `~/.agents/...`,
 > `<vault>`, `<workdir>`, and example values like `you@example.com` / `Acme` /
 > `<your-org>` are placeholders — point them at your own locations before use.
+> A path under one runtime's own home (for example `~/.claude/...`) names that
+> runtime's configuration, not the place the skills live.
 
 For the setup these skills sit inside (the hooks, gates, memory and review routing, and the
 failures that shaped them), see [How I work with coding agents](docs/agentic-workflow.md).
@@ -33,7 +40,7 @@ failures that shaped them), see [How I work with coding agents](docs/agentic-wor
 
 | Skill | What it does |
 |---|---|
-| `adversarial-review` | Cross-vendor code review: one reviewer seat per vendor (the enabled seats in `reviewers.json` at the time of writing: Anthropic, OpenAI via the Codex CLI, Google via Antigravity, z.AI via an isolated Claude Code session, and DeepSeek via its API; Kimi and Grok seats are present but disabled), which cross-examine each other before a separate judge adjudicates. The panel is data, not code: `reviewers.json` defines it, pins a literal model per seat, and the driver enforces a minimum vendor-diversity invariant. |
+| `adversarial-review` | Cross-vendor code review: one reviewer seat per vendor (the enabled seats in `reviewers.json` at the time of writing: Anthropic, OpenAI via the Codex CLI, Google via Antigravity, z.AI via an isolated Claude Code session, and DeepSeek and Moonshot via their APIs; the Kimi CLI and Grok seats are present but disabled), which cross-examine each other before a separate judge adjudicates. The panel is data, not code: `reviewers.json` defines it, pins a literal model per seat, and the driver enforces a minimum vendor-diversity invariant. |
 | `review-sweep` | The same review across every repository under a parent folder, one subsystem at a time. |
 | `review-worktree-pass` | Remediate review findings in a dedicated, ephemeral review worktree on a numbered batch branch, so the primary checkout is never disturbed. |
 | `review-digest` | Mine *past* review records across a folder of repos into a dated report — per-repository review coverage, change counts since the last usable review, a ranked work queue (explicitly not a risk verdict), and a paste-ready `/adversarial-review` prompt per changed scope. Reads vault records and git only; runs no reviews and edits no scanned code. |
@@ -70,12 +77,51 @@ failures that shaped them), see [How I work with coding agents](docs/agentic-wor
 ## How skills work
 
 Each folder is a skill: a `SKILL.md` with YAML frontmatter (`name`, `description`)
-that Claude Code loads on demand when the description matches the task. Drop a
-folder into `~/.claude/skills/` (global) or a repo's `.claude/skills/` (project)
-and it becomes available.
-
+that an agent runtime loads on demand when the description matches the task.
 Larger skills keep `SKILL.md` short and push detail into `references/`, so the
 loaded context stays small until the detail is actually needed.
+
+The skill bodies are written for any runtime that reads the format. They do not
+name one CLI's tools, and they resolve their own support files relative to the
+folder they were loaded from. Where a skill drives specific vendor CLIs, as
+`adversarial-review` does, those CLIs are what the skill is about. The runtime
+it is loaded into does not change that.
+
+### One canonical home, every runtime
+
+Every skill lives exactly once, in `~/.agents/skills/<skill>/`, and every runtime
+reads that one copy. Nothing is duplicated per CLI. Per-runtime copies drift, and
+a fix made in one of them leaves the others broken without any sign of it.
+
+| Runtime | How it reaches `~/.agents/skills/` |
+|---|---|
+| Codex | Scans it directly |
+| Kimi Code | Scans it directly. `~/.kimi-code/skills/` holds only Kimi-specific overlays, which shadow the canonical skill of the same name |
+| Claude Code | A directory junction per skill: `~/.claude/skills/<skill>` → `~/.agents/skills/<skill>` |
+| Antigravity IDE | A junction per skill under `~/.gemini/config/skills/` |
+| Antigravity CLI | A junction per skill under `~/.gemini/antigravity-cli/skills/` |
+| PI | A junction per skill under both roots it reads, `~/.pi/skills/` and `~/.pi/agent/skills/` |
+
+On Windows a junction needs no administrator rights:
+
+```powershell
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\ef-core" -Target "$HOME\.agents\skills\ef-core"
+```
+
+A junction is used rather than a copy or a hard link because an edit made through
+it changes the one real file. A hard link breaks silently the first time a tool
+saves by writing a new file in place of the old one. On macOS or Linux a symbolic
+link (`ln -s`) is the equivalent. I have only run this setup on Windows.
+
+Mounting into every runtime is the default, not an absolute rule. A runtime that
+routes through a third-party model provider sends the full text of every skill it
+mounts to that provider. In the private working set, a few skills that need
+private identity or local context are therefore left out of those runtimes. The
+copies published here are sanitised, so that restriction does not apply to them.
+
+To use a skill from this repository, copy `skills/<name>/` to
+`~/.agents/skills/<name>/` and mount it as above. For a single project, use that
+repository's own skills folder instead.
 
 ## A note on the adversarial-review skill
 
@@ -86,10 +132,14 @@ what makes one vendor's blind spot another's finding.
 
 Two rules fall out of that. The driver enforces the first in code: the active
 reviewer set must span a minimum number of distinct vendors (`minVendors` in
-`reviewers.json`). The manifest enforces the second by construction: the judge
-is never also a reviewer — the Opus lineage is reserved for judging, and the
-Anthropic reviewer seat is constrained to a different model family — because an
-adjudicator that voted earlier is just its own opinion, counted twice.
+`reviewers.json`). The second is that an adjudicator that voted earlier is just
+its own opinion, counted twice. Until 2026-10-15 the manifest held that rule by
+construction: the Opus lineage judged, and the Anthropic reviewer seat was
+constrained to a different model family. I have since moved that seat to Opus
+as well, a cost decision, and the manifest records the overlap as a deliberate
+trade rather than hiding it. What now keeps adjudication from being one vendor's
+opinion is the judge audit: a reviewer from a different vendor checks the
+adjudicated report, and that audit is mandatory when the review gates a merge.
 
 In the private working set each seat names a model *constraint* that a separate
 model registry resolves to whatever is current. This mirror does not ship that

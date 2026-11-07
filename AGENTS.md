@@ -1,14 +1,16 @@
 # AGENTS.md
 
-Repo-specific conventions for the public Claude Code skills portfolio. Global
-agent rules live in the runtime homes (`~/.claude/CLAUDE.md` etc.) and are not
-repeated here.
+Repo-specific conventions for the public agent skills portfolio. These skills
+are not specific to one CLI: each one is authored once in the canonical home
+`~/.agents/skills/` and mounted into every agent runtime (Claude Code, Codex,
+Kimi Code, Antigravity, PI), as the README describes. Global agent rules live in
+each runtime's own instruction file and are not repeated here.
 
 ## Public-repo constraints
 
 - Everything in this repo is world-readable. Never commit machine-specific
   paths, client names, or personal vault locations — use the established
-  placeholders (`~/.claude/...`, `<vault>`, `<workdir>`, `you@example.com`,
+  placeholders (`~/.agents/...`, `<vault>`, `<workdir>`, `you@example.com`,
   `Acme`, `<your-org>`). The `sanitisation` job in `ci.yml`
   (`.github/scripts/assert_no_private_tokens.py`) fails the build on leaked
   Windows user-profile paths, drive-root absolute paths, org-name wiring forms,
@@ -36,7 +38,12 @@ repeated here.
   frontmatter: `name` (must equal the folder name) and `description`
   (≤ 1024 chars — the Copilot limit; third-person, trigger-phrase led).
 - `SKILL.md` must resolve support files relative to its own loaded skill
-  directory, never via a hardcoded `~/.claude/skills/<name>` path.
+  directory, never via a hardcoded path such as `~/.agents/skills/<name>` or a
+  runtime's `~/.claude/skills/<name>`. The same folder is reached through a
+  different path in each runtime.
+- Write skill bodies runtime-neutral. Do not depend on one CLI's tool names or
+  configuration unless that runtime is the subject of the skill, and say so in
+  the skill when it is.
 
 ## CI contract
 
