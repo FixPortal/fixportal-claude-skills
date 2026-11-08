@@ -100,23 +100,29 @@ scope". You have the tools. Use them.
   by name only, without a description. The listing has a size budget and drops
   descriptions on overflow, so those skills cannot trigger from context however
   well they are written. Hand that fact to each affected worker.
-- Discover the owned-skill set across **all seven runtime roots** — never
-  hardcode the list:
-  - `~/.claude/skills/*/SKILL.md` (Claude Code home)
-  - `~/.agents/skills/*/SKILL.md` (Codex and Kimi shared home)
+- Discover the owned-skill set across **all five skill roots and the two
+  runtime configs** — never hardcode the list:
+  - `~/.agents/skills/*/SKILL.md` (canonical home; Codex, Kimi and PI scan it
+    directly)
+  - `~/.claude/skills/*/SKILL.md` (Claude Code: one junction per canonical skill,
+    plus host-only skills)
   - `~/.kimi-code/skills/*/SKILL.md` (Kimi-native overlays)
-  - `~/.gemini/config/skills/*/SKILL.md` (Antigravity IDE global home)
-  - `~/.gemini/antigravity-cli/skills/*/SKILL.md` (Antigravity CLI global home)
-  - `~/.pi/skills/*/SKILL.md` **and** `~/.pi/agent/skills/*/SKILL.md` (PI — two
-    roots, both live, and it mounts a hand-picked subset rather than the whole
-    canonical set, so enumerate it instead of assuming parity with `~/.agents`)
-- The six surface groups above span seven roots, because PI has two roots. The Antigravity CLI root is **not** flat
-  Markdown — globbing `*.md` there returns only its CLI-native router skill and
-  hides every canonical skill junctioned into it, so the audit reports false
-  absences. Most entries in the Claude Code and both Antigravity roots are
-  directory junctions onto `~/.agents/skills/<skill>`; a junction is the same
-  bytes as its target, so it can never diverge from canonical. Resolve each
-  entry's shape before treating a same-named pair as two copies to diff.
+  - `~/.gemini/config/skills/*/SKILL.md` (Antigravity loose skills; the IDE and
+    CLI share `~/.gemini/config/`)
+  - `~/.pi/agent/skills/*/SKILL.md` (PI-specific skills)
+  - `~/.gemini/config/skills.json`: Antigravity loads the canonical home through
+    the entry whose `path` is its absolute path, minus that entry's `exclude`
+    names.
+  - `~/.pi/agent/settings.json`: PI loads the canonical home minus each
+    `-<absolute path>` entry in `skills`.
+- How each runtime reaches the canonical home was measured on 2026-11-07 and
+  2026-11-08. Antigravity does not follow
+  junctions, and PI would load a junctioned skill twice, so a junction in either
+  loose root is residue of the older model: report it, never count it as a
+  mount. `~/.gemini/antigravity-cli/skills/` and `~/.pi/skills/` are retired, not
+  runtime roots. A Claude junction is the same bytes as its target, so it can
+  never diverge from canonical. Resolve each entry's shape before treating a
+  same-named pair as two copies to diff.
 - Decide ownership per skill by reading the YAML frontmatter of every discovered
   `SKILL.md`. The `owner: <your-org>` marker is the source of truth for
   your-org-owned skills:

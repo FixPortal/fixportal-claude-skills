@@ -2,19 +2,48 @@
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+import uuid
 
 
 SKILLS = Path(__file__).resolve().parents[2]
 ENTRY = SKILLS / "scaffold-ci/assets/Test-PowerShellTestSafety.ps1"
 HELPER = SKILLS / "scaffold-ci/assets/Find-PesterSuites.ps1"
+MARKER = ".powershell-safety-test-owner"
+
+
+def owned_tempdir(test, prefix):
+    """Create a temp directory and register a cleanup that deletes it only on positive ownership evidence."""
+    path = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+    token = uuid.uuid4().hex
+    (path / MARKER).write_text(token, encoding="utf-8")
+
+    def remove():
+        marker = path / MARKER
+        owned = (path.parent == Path(tempfile.gettempdir()).resolve() and path.name.startswith(prefix)
+                 and not path.is_symlink() and marker.is_file() and marker.read_text(encoding="utf-8") == token)
+        if not owned:
+            raise AssertionError(f"refusing to delete a directory this test does not own: {path}")
+        print(f"removing owned fixture {path}", file=sys.stderr)
+        # Git writes its object files read-only; Windows refuses to unlink those until the bit is cleared.
+        def clear_readonly(func, target, _exc):
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+
+        handler = {"onexc": clear_readonly} if sys.version_info >= (3, 12) else {"onerror": clear_readonly}
+        shutil.rmtree(path, **handler)
+
+    test.addCleanup(remove)
+    return path
 
 
 class SafetyLintTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="powershell-safety-"))
+        self.root = owned_tempdir(self, "powershell-safety-")
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         self.tools = self.root / ".github/scripts"
         self.tools.mkdir(parents=True)
@@ -100,7 +129,7 @@ class SafetyLintTests(unittest.TestCase):
         self.assertIn("no tracked", result.stdout + result.stderr)
 
     def test_non_repository_fails(self):
-        result = self.lint(Path(tempfile.mkdtemp(prefix="not-a-repository-")))
+        result = self.lint(owned_tempdir(self, "not-a-repository-"))
         self.assertNotEqual(result.returncode, 0)
 
     def test_untracked_worktree_not_read(self):
@@ -128,7 +157,7 @@ class SafetyLintTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "symlink creation requires separate Windows privilege")
     def test_tracked_symlink_not_followed(self):
-        outside = Path(tempfile.mkdtemp(prefix="outside-source-")) / "source.ps1"
+        outside = owned_tempdir(self, "outside-source-") / "source.ps1"
         outside.write_text("$fixtureRoot = 'safe'\n", encoding="utf-8")
         (self.root / "verify-link.ps1").symlink_to(outside)
         subprocess.run(["git", "-C", str(self.root), "add", "verify-link.ps1"], check=True)

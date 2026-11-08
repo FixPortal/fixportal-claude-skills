@@ -132,8 +132,12 @@ discovers in a project. A skill that sits in, or is linked from, a project's
 own skills folder loads as part of that project, whatever the global list says.
 Starting either runtime in the home folder is the case that matters here: from
 `~`, both of them read `~/.agents/skills/` as the project's own skills and load
-all of it. Check what actually loads with the runtime's own listing (`/skills` in
-Antigravity) rather than trusting the configuration.
+all of it. Check what actually loads with each runtime's own listing rather than
+trusting the configuration:
+
+- **Antigravity CLI:** `agy -p "/skills"`, or `/skills` in an interactive session.
+- **Antigravity IDE:** the Customizations section of the settings.
+- **PI:** the RPC command `{"type":"get_commands"}`, or `pi config`.
 
 To use a skill from this repository, copy `skills/<name>/` to
 `~/.agents/skills/<name>/` and mount it as above. For a single project, use that

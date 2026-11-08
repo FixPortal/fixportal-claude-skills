@@ -1,4 +1,4 @@
-# Audit Brief — one skill, four axes, six runtime surfaces
+# Audit Brief — one skill, four axes, five skill roots
 
 You are auditing **one** skill the user authored. Read its `SKILL.md` (and any
 supporting files in its directory). Score the four axes below, **verify every
@@ -152,13 +152,16 @@ axis on 2026-10-11; it is not a concern for this estate.
 
 ## Cross-home drift (this skill only)
 
-You were told this skill's path(s). Compare the **six runtime surfaces**:
-`~/.claude/skills`, `~/.agents/skills`, `~/.kimi-code/skills`,
-`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`, and
-`~/.pi/skills` (with `~/.pi/agent/skills`, which PI reads as a second root). If
-it exists in two or more, diff the bodies pairwise and report divergence. If it
-exists in only one home, report which (e.g. Claude-home-only, or
-gemini-home-only for a skill authored only in Antigravity).
+You were told this skill's path(s). Compare the **five skill roots**:
+`~/.agents/skills` (canonical; Codex, Kimi and PI scan it), `~/.claude/skills`,
+`~/.kimi-code/skills`, `~/.gemini/config/skills` (Antigravity loose skills) and
+`~/.pi/agent/skills` (PI-specific skills). Antigravity loads the canonical home
+through `~/.gemini/config/skills.json`, and PI excludes skills through
+`-<absolute path>` entries in `~/.pi/agent/settings.json`, so a junction in either
+loose root is not how those runtimes see the skill. If it exists as a real copy in
+two or more roots, diff the bodies pairwise and report divergence. If it exists in
+only one home, report which (e.g. Claude-home-only, or gemini-home-only for a
+skill authored only in Antigravity).
 
 Report the cross-home result **only** in the `drift` field — do **not** record
 a sibling home as a `references_checked` entry, and never mark an absent
