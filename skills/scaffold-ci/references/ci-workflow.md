@@ -18,6 +18,26 @@ Read this reference whenever `ci.yml`, deploy/publish jobs, runners, or the CI G
 
 ## Non-negotiable house rules for `ci.yml`
 
+Repositories with tracked Pester tests (`*.Test.ps1`/`*.Tests.ps1`) or `verify-*.ps1`
+scripts must run the parse-only safety lint before tests in an existing required
+quality job. Copy `assets/Test-PowerShellTestSafety.ps1` and
+`assets/Find-PesterSuites.ps1` into `.github/scripts/`, then regenerate
+the canonical-asset manifest. Add this step at repository root (override any job
+working-directory default):
+
+```yaml
+      - name: Lint PowerShell test safety (parse only)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: ./.github/scripts/Test-PowerShellTestSafety.ps1
+```
+
+It checks tracked test/verifier source for automatic-variable assignments and
+parse errors, rejects linked paths and empty coverage, and never executes that
+source. It is not containment: Pester/destructive local checks still use the
+isolated execution lane. A repository without matching scripts does not need
+this step; do not add an empty gate.
+
 These are the deltas an unaided agent gets wrong. Get them right:
 
 1. **Concurrency depends on whether the repo deploys.**

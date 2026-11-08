@@ -1,6 +1,8 @@
 {
   "schema": 1,
   "assets": [
+    { "canonical": "assets/Test-PowerShellTestSafety.ps1", "relative": ".github/scripts/Test-PowerShellTestSafety.ps1", "verbatim": true },
+    { "canonical": "assets/Find-PesterSuites.ps1", "relative": ".github/scripts/Find-PesterSuites.ps1", "verbatim": true },
     { "canonical": "assets/assert_canonical_assets.py", "relative": ".github/scripts/assert_canonical_assets.py", "verbatim": true },
     { "canonical": "assets/assert_gate_coverage.py", "relative": ".github/scripts/assert_gate_coverage.py", "verbatim": true },
     { "canonical": "assets/assert_workflow_hygiene.py", "relative": ".github/scripts/assert_workflow_hygiene.py", "verbatim": true },

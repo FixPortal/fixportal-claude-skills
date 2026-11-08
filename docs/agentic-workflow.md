@@ -9,8 +9,9 @@ where it still does not hold.
 The skills in this repository are the reusable part. This document is the context
 around them. Claude Code is the main runtime, but the skills are not Claude Code
 skills. Each one lives once in a shared canonical home, and every agent CLI on the
-machine mounts that same copy, either by reading the home directly or through a
-directory junction. Instruction files and hooks are per runtime. Skills are not.
+machine mounts that same copy: by reading the home directly, through a directory
+junction, or through a config entry that points at it. Instruction files and hooks
+are per runtime. Skills are not.
 
 ## The problem
 
