@@ -24,6 +24,7 @@
     ".github/scripts/test_assert_no_private_tokens.py",
     ".github/workflows/ci.yml",
     ".github/workflows/review-policy-guard.yml",
+    ".github/workflows/review-tier.yml",
     ".github/scripts/assert_gate_coverage.py",
     ".github/scripts/assert_workflow_hygiene.py",
     ".claude/review-policy.json",

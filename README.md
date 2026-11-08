@@ -97,10 +97,15 @@ a fix made in one of them leaves the others broken without any sign of it.
 |---|---|
 | Codex | Scans it directly |
 | Kimi Code | Scans it directly. `~/.kimi-code/skills/` holds only Kimi-specific overlays, which shadow the canonical skill of the same name |
+| PI | Scans it directly, as one of its two global roots (the other is `~/.pi/agent/skills/`) |
+| Antigravity (IDE and CLI) | An entry in `~/.gemini/config/skills.json`, which both share. It does not follow junctions, and it needs an absolute path: `~/` is not expanded there |
 | Claude Code | A directory junction per skill: `~/.claude/skills/<skill>` → `~/.agents/skills/<skill>` |
-| Antigravity IDE | A junction per skill under `~/.gemini/config/skills/` |
-| Antigravity CLI | A junction per skill under `~/.gemini/antigravity-cli/skills/` |
-| PI | A junction per skill under both roots it reads, `~/.pi/skills/` and `~/.pi/agent/skills/` |
+
+The Antigravity entry, with the path written out in full:
+
+```json
+{ "entries": [ { "path": "C:/Users/<you>/.agents/skills", "exclude": ["some-private-skill"] } ] }
+```
 
 On Windows a junction needs no administrator rights:
 
@@ -116,8 +121,11 @@ link (`ln -s`) is the equivalent. I have only run this setup on Windows.
 Mounting into every runtime is the default, not an absolute rule. A runtime that
 routes through a third-party model provider sends the full text of every skill it
 mounts to that provider. In the private working set, a few skills that need
-private identity or local context are therefore left out of those runtimes. The
-copies published here are sanitised, so that restriction does not apply to them.
+private identity or local context are therefore left out of those runtimes,
+through each runtime's own exclude list: Antigravity's `exclude` names above, and
+for PI a `-<absolute path>` entry per skill in the `skills` list of
+`~/.pi/agent/settings.json`. The copies published here are
+sanitised, so that restriction does not apply to them.
 
 To use a skill from this repository, copy `skills/<name>/` to
 `~/.agents/skills/<name>/` and mount it as above. For a single project, use that
