@@ -5,14 +5,22 @@
 param([string] $Repository = (Join-Path $PSScriptRoot '..' '..'))
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $Repository).Path
-$gitRoot = & git -C $root rev-parse --show-toplevel
-if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -ne [IO.Path]::GetFullPath($root)) {
-    throw 'Repository must be the Git checkout root'
+# Git writes UTF-8; PowerShell decodes native output with [Console]::OutputEncoding, which on Windows is often a legacy
+# code page that garbles a non-ASCII path. Decode as UTF-8 for both captures and restore the caller's setting after.
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $gitRoot = & git -C $root rev-parse --show-toplevel
+    if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($gitRoot) -ne [IO.Path]::GetFullPath($root)) {
+        throw 'Repository must be the Git checkout root'
+    }
+    # NUL separators preserve spaces, Unicode and newlines; no filesystem walk or untracked worktree reads.
+    $listed = @(& git -C $root -c core.quotepath=false ls-files --stage -z -- ':(icase)*.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Git tracked-file discovery failed' }
+} finally {
+    [Console]::OutputEncoding = $consoleEncoding
 }
 . (Join-Path $PSScriptRoot 'Find-PesterSuites.ps1')
-# NUL separators preserve spaces, Unicode and newlines; no filesystem walk or untracked worktree reads.
-$listed = @(& git -C $root -c core.quotepath=false ls-files --stage -z -- ':(icase)*.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'Git tracked-file discovery failed' }
 $files = @(
     foreach ($record in (($listed -join "`n") -split "`0" | Where-Object { $_ })) {
         if ($record -notmatch '(?s)^(?<Mode>[0-9]{6}) [0-9a-f]+ (?<Stage>[0-3])\t(?<Path>.+)$') { throw 'Unrecognized Git index record' }
