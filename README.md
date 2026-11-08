@@ -127,6 +127,14 @@ for PI a `-<absolute path>` entry per skill in the `skills` list of
 `~/.pi/agent/settings.json`. The copies published here are
 sanitised, so that restriction does not apply to them.
 
+Both exclusions are global settings, and neither covers skills that a runtime
+discovers in a project. A skill that sits in, or is linked from, a project's
+own skills folder loads as part of that project, whatever the global list says.
+Starting either runtime in the home folder is the case that matters here: from
+`~`, both of them read `~/.agents/skills/` as the project's own skills and load
+all of it. Check what actually loads with the runtime's own listing (`/skills` in
+Antigravity) rather than trusting the configuration.
+
 To use a skill from this repository, copy `skills/<name>/` to
 `~/.agents/skills/<name>/` and mount it as above. For a single project, use that
 repository's own skills folder instead.
