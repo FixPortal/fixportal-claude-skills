@@ -58,9 +58,8 @@ jobs:
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
         with:
           shellcheck: true
+      # No dotnet-version: setup-dotnet installs from global.json, the single SDK pin.
       - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 10.0.x
       - name: Restore solution
         run: dotnet restore YourSolution.sln
       - name: Restore local tools
