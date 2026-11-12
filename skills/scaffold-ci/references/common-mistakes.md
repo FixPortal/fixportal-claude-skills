@@ -23,6 +23,7 @@ if explicitly asked:
 | Dead `workflow_dispatch` `environment` input | Bare `workflow_dispatch:` unless a deploy job reads `${{ inputs.environment }}`. |
 | Believing `version:` on `raven-actions/actionlint` is invalid | It is valid — actionlint's own semver, defaulting to `latest`. The action-ref SHA pins the *action*, not the actionlint *binary*. Omit it to take the default, or set an explicit semver if you want the binary reproducible too. |
 | Push builds every branch alongside `pull_request` | Push only mainline + tags `v*`; let `pull_request` cover branches. |
+| `dotnet-version` on `setup-dotnet` | It overrides `global.json`, so CI and local builds can resolve different SDKs. Remove it; the pin lives in the `global.json` `sdk` section (see `scaffold-dotnet`). Use `global-json-file` only when the file is not at the repo root. |
 | Stale `@v4` pins | checkout@v7, setup-dotnet@v6, setup-node@v7, upload-artifact@v7. |
 | Tag-pinning `raven-actions/actionlint` | Third-party — pin the full commit SHA with a `# v2` comment; semgrep's edit hook flags a floating tag. |
 | No actionlint in a substantive job | Make it the first validation step after checkout; zero-authority gate-control jobs are exempt. |

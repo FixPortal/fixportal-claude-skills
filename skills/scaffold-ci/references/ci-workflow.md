@@ -138,7 +138,7 @@ repo, not a scaffold default.
 | `actions/upload-artifact` | `v7` |
 | `raven-actions/actionlint` | `3d39aea434753780c3b3d4a1a31c854b4dbf49d7` (`v2`) |
 
-.NET: `10.0.x`. Node: `24`.
+.NET SDK: from the root `global.json` `sdk` section; never a `dotnet-version` input (see `scaffold-dotnet`). Node: `24`.
 
 **First-party `actions/*` take the major tag; third-party actions take a full commit
 SHA.** `raven-actions/actionlint` is third-party, so pin the SHA with a trailing `# v2`
@@ -197,10 +197,9 @@ jobs:
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
         with:
           shellcheck: true
+      # No dotnet-version: setup-dotnet installs from global.json, the single SDK pin.
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '10.0.x'
       - name: Restore local tools
         run: dotnet tool restore
       - name: Check C# formatting
@@ -305,9 +304,8 @@ jobs:
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
         with:
           shellcheck: true
+      # No dotnet-version: setup-dotnet installs from global.json, the single SDK pin.
       - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '10.0.x'
       - run: dotnet test tests/YourProject.ExtendedTests/YourProject.ExtendedTests.csproj --configuration Release
 ```
 

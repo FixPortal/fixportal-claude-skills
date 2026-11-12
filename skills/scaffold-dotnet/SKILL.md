@@ -38,7 +38,7 @@ Apply standard .NET project and solution preferences when creating new projects 
 ## Example — minimal CLI skeleton
 
 This demonstrates solution layout and repository-local formatting only. It
-intentionally omits the complete scaffold's `Directory.Build.props`,
+intentionally omits the complete scaffold's `global.json`, `Directory.Build.props`,
 `Directory.Packages.props`, `.gitignore`, `nuget.config`, CodeStyle and NodaTime
 references, tests, Dependabot, CI, and Solution Items; apply the checklist and
 the named sibling skills for those surfaces.
@@ -79,6 +79,7 @@ dotnet build YourOrg.Example.slnx --configuration Release
 - `tests/` folder for test projects
 - Preserve an existing project's layout unless relocation is explicitly authorized
 - A **Solution Items** solution folder containing:
+  - `global.json` (the single SDK pin — see Project Defaults)
   - `Directory.Build.props` (common project settings)
   - `Directory.Packages.props` (central package management)
   - `.editorconfig` — thin formatter stub (copied from `~/.claude/resources/dotnet-thin.editorconfig`) with layout settings plus documented Roslyn formatter-compatibility preferences; analyzer/style **rules** remain owned by `<YourOrg.CodeStyle>` — see *Code Style and Analysis* below
@@ -94,6 +95,24 @@ dotnet build YourOrg.Example.slnx --configuration Release
 
 - New projects target `net10.0`.
 - Preserve an existing target framework (for example, an intentional `netstandard2.0` library) unless migration is explicitly authorized.
+- Pin the SDK in a root `global.json` `sdk` section: `"version": "<exact SDK>"` and
+  `"rollForward": "latestFeature"`. This file is the single SDK pin; CI reads it too
+  (`scaffold-ci` forbids `dotnet-version` on `setup-dotnet`). Without it, installing a newer
+  SDK (for example SDK 11 beside SDK 10) silently changes what builds locally while CI stays
+  green — see "An unpinned SDK plus `LangVersion=latest` lets an SDK install break the build"
+  in `~/.agents/notes/dotnet-runtime-traps.md`, if that note is present.
+  - Choose the version deliberately: the newest SDK in `dotnet --list-sdks` whose
+    major.minor matches the target framework (`10.0.x` for `net10.0`). Never use bare
+    `dotnet --version` to choose it; without a `global.json` that reports the newest SDK
+    installed, whatever its major.
+  - New repo: `dotnet new globaljson --sdk-version <version> --roll-forward latestFeature`.
+  - Existing `global.json`: merge the `sdk` section in by hand and keep every other section,
+    such as `test.runner`. Never overwrite the file or run the template with `--force`.
+    An existing pin is preserved unless an SDK migration is explicitly authorized.
+- Do not set `LangVersion`; the target framework's default applies (C# 14 on `net10.0`).
+  When normalising, remove a `latest` or `preview` value unless a comment beside it states
+  why it is needed. `latest` ties the language to whichever SDK resolves, which is the
+  failure the SDK pin above exists to prevent.
 - `Nullable`: enable
 - `ImplicitUsings`: enable
 - Examples must use syntax compatible with the project's declared language version; do not assume C# 12 features.
