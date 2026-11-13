@@ -361,6 +361,8 @@ Describe 'Protect-SecretValues' {
         @{ marker = 'fixture-env-repository-token' }   # property repositoryToken
         @{ marker = 'fixture-env-admin-credentials' }  # property adminCredentials
         @{ marker = 'fixture-env-pfx-blob' }           # property pfxBlob
+        @{ marker = 'fixture-env-named-pair-key' }     # { name, key, value }: key is not the name here
+        @{ marker = 'fixture-env-lonely-key' }         # a key property with no value beside it
     ) {
         (Get-Content -LiteralPath $out -Raw).Contains($marker) | Should -BeFalse
     }
@@ -375,6 +377,8 @@ Describe 'Protect-SecretValues' {
         @{ property = 'clientSecretSettingName'; expected = 'PROVIDER_AUTHENTICATION_SECRET' }
         @{ property = 'query'; expected = "requests | where Password == 'x'" }
         @{ property = 'sshPublicKey'; expected = 'ssh-ed25519 AAAAfixturePublicKeyMaterial' }   # a public key is not a secret
+        @{ property = 'public_key'; expected = 'ssh-ed25519 AAAAfixturePublicUnderscore' }      # nor in snake case
+        @{ property = 'public-key'; expected = 'ssh-ed25519 AAAAfixturePublicHyphen' }          # nor in kebab case
     ) {
         (Get-TestResource $inventory 'ai-one').properties.$property | Should -Be $expected
     }
@@ -385,6 +389,14 @@ Describe 'Protect-SecretValues' {
         $header = (Get-TestResource $inventory 'ai-one').properties.headers[0]
         $header.key | Should -Be 'Authorization'
         $header.value | Should -Be '[REDACTED]'
+    }
+
+    # With a name beside it, "key" is not the entry's name, so the exemption does not apply.
+    It 'redacts key in a { name, key, value } object and keeps its ordinary value' {
+        $pair = (Get-TestResource $inventory 'ai-one').properties.namedPairs[0]
+        $pair.key | Should -Be '[REDACTED]'
+        $pair.name | Should -Be 'signing'
+        $pair.value | Should -Be 'plain'
     }
 
     It 'keeps a pair that references a secret and has no value' {

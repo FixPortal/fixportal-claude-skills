@@ -38,7 +38,7 @@ $script:ArmBase = 'https://management.azure.com'
 # counts, not a list of known ones: a list misses privateKey, masterKey and whatever comes
 # next, and a redacted non-secret costs far less than a written secret. A public key is the
 # one exception, because it is not a secret and can be evidence.
-$script:SecretPropertyPattern = '(?i)(password|passwd|pwd|secret|connectionstring|(?<!public)key|token|credentials?|pfx(blob|data)?|certificate(blob|data))$'
+$script:SecretPropertyPattern = '(?i)(password|passwd|pwd|secret|connectionstring|(?<!public[_-]?)key|token|credentials?|pfx(blob|data)?|certificate(blob|data))$'
 # The name of a { name, value } or { key, value } pair.
 $script:SecretNamePattern = '(?i)secret|passw|pwd|pass$|token|hmac|api[_-]?keys?|webhook|authorization|keys?$'
 # Any string that carries a credential assignment. The trailing class excludes '=' so that a
@@ -258,8 +258,10 @@ function Protect-SecretValues {
     foreach ($property in $InputObject.PSObject.Properties) {
         $value = $property.Value
         if ($value -is [string]) {
-            # In a { key, value } pair the property called "key" holds the entry's name.
-            $isPairKey = $property.Name -eq 'key' -and $names -contains 'value'
+            # In a { key, value } pair with no "name" beside it, the property called "key" holds
+            # the entry's name. With a name present, key is just another property and is redacted.
+            # Either way the string itself is still checked by Test-SecretString below.
+            $isPairKey = $property.Name -eq 'key' -and $names -contains 'value' -and $names -notcontains 'name'
             $isSecret = ($property.Name -match $script:SecretPropertyPattern -and -not $isPairKey) -or
                 ($property.Name -eq 'value' -and ($InSecretsArray -or $isSecretPair)) -or
                 (Test-SecretString $value)
