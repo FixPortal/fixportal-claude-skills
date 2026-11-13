@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "types": {
+    "microsoft.sql/servers": [
+      { "name": "firewallRules", "path": "firewallRules", "type": "Microsoft.Sql/servers/firewallRules" },
+      { "name": "virtualNetworkRules", "path": "virtualNetworkRules", "type": "Microsoft.Sql/servers/virtualNetworkRules" },
+      { "name": "administrators", "path": "administrators", "type": "Microsoft.Sql/servers/administrators" }
+    ],
+    "microsoft.keyvault/vaults": [],
+    "microsoft.insights/components": [],
+    "MICROSOFT.INSIGHTS/ACTIONGROUPS": [],
+    "microsoft.web/sites": [
+      { "name": "webConfig", "path": "config/web", "type": "Microsoft.Web/sites/config", "absentWhen": [""] },
+      { "name": "authConfig", "path": "authConfigs", "type": "Microsoft.Web/sites/authConfigs", "absentWhen": ["AuthConfigNotFound"] }
+    ]
+  },
+  "postOnly": {
+    "microsoft.web/sites": [
+      { "name": "appSettings", "why": "the app-settings read is a POST and returns secret values" }
+    ]
+  }
+}
