@@ -34,8 +34,11 @@ $script:ArmBase = 'https://management.azure.com'
 # secretRef, clientSecretSettingName) is not a secret and is kept: it is evidence of how the
 # secret is supplied.
 #
-# A property whose name ends in one of these, at any depth.
-$script:SecretPropertyPattern = '(?i)(password|passwd|pwd|secret|connectionstring|instrumentationkey|accountkey|apikey|sharedkey|accesskey|primarykey|secondarykey|sastoken)$'
+# A property whose name ends in one of these, at any depth. Any name ending in "key" or "token"
+# counts, not a list of known ones: a list misses privateKey, masterKey and whatever comes
+# next, and a redacted non-secret costs far less than a written secret. A public key is the
+# one exception, because it is not a secret and can be evidence.
+$script:SecretPropertyPattern = '(?i)(password|passwd|pwd|secret|connectionstring|(?<!public)key|token|credentials?|pfx(blob|data)?|certificate(blob|data))$'
 # The name of a { name, value } or { key, value } pair.
 $script:SecretNamePattern = '(?i)secret|passw|pwd|pass$|token|hmac|api[_-]?keys?|webhook|authorization|keys?$'
 # Any string that carries a credential assignment. The trailing class excludes '=' so that a
@@ -255,7 +258,9 @@ function Protect-SecretValues {
     foreach ($property in $InputObject.PSObject.Properties) {
         $value = $property.Value
         if ($value -is [string]) {
-            $isSecret = $property.Name -match $script:SecretPropertyPattern -or
+            # In a { key, value } pair the property called "key" holds the entry's name.
+            $isPairKey = $property.Name -eq 'key' -and $names -contains 'value'
+            $isSecret = ($property.Name -match $script:SecretPropertyPattern -and -not $isPairKey) -or
                 ($property.Name -eq 'value' -and ($InSecretsArray -or $isSecretPair)) -or
                 (Test-SecretString $value)
             # An empty value stays empty: "nothing is set here" is evidence, and not a secret.
