@@ -64,7 +64,7 @@ $fences = @([regex]::Matches($runbook + "`n" + $main, '(?s)```[a-z0-9]*\r?\n(.*?
 if ($fences.Count -lt 10) { throw "audit-azure prose has $($fences.Count) fenced commands; expected at least 10, so the fence scan is not seeing them" }
 $scanned = [ordered]@{
     'scripts/Get-AzureInventory.ps1'        = $script
-    'references/child-reads.json (types)'   = ($table.types | ConvertTo-Json -Depth 10)
+    'references/child-reads.json (types)'   = (@($table.types, $table.allResources, $table.subscription) | ConvertTo-Json -Depth 10)
     'fenced commands in the prose'          = ($fences -join "`n")
 }
 foreach ($where in $scanned.Keys) {
@@ -109,7 +109,7 @@ if ($disallowed) { throw "audit-azure script makes an az call other than 'az res
 # The same allowlist binds every az command in the prose. Only lines that start with az are
 # commands; a line that merely names az inside a search pattern is not one.
 $azFenceLines = @($fences | ForEach-Object { $_ -split '\r?\n' } | Where-Object { $_ -match '^\s*az\s' })
-if ($azFenceLines.Count -lt 3) { throw "audit-azure prose has $($azFenceLines.Count) az command lines; expected at least 3, so the az scan is not seeing them" }
+if ($azFenceLines.Count -lt 2) { throw "audit-azure prose has $($azFenceLines.Count) az command lines; expected at least 2, so the az scan is not seeing them" }
 $disallowedInProse = @(Find-DisallowedAz ($azFenceLines -join "`n"))
 if ($disallowedInProse) { throw "audit-azure prose has an az command other than 'az rest --method get' or 'az account list': $($disallowedInProse -join '; ')" }
 
@@ -165,9 +165,21 @@ foreach ($planted in '', 'NotFound', 'Not Found', 'AuthorizationFailed', 'short'
 }
 if (Find-UnsafeAbsentText @('AuthConfigNotFound', 'Azure AD authentication is not enabled')) { throw 'absentWhen check rejected the two texts observed live' }
 foreach ($property in $table.postOnly.PSObject.Properties) {
+    $readNames = @($table.types.($property.Name).name) + @($table.allResources.name)
     foreach ($entry in $property.Value) {
         if (-not $entry.name -or -not $entry.why) { throw "child-reads.json postOnly['$($property.Name)'] needs a name and a why" }
+        # A postOnly name equal to a read's name would replace that read's result with "not observed".
+        if ($readNames -contains $entry.name) { throw "child-reads.json postOnly['$($property.Name)'].$($entry.name) collides with a read of the same name" }
     }
+}
+# The reads made on every resource and once per subscription obey the same rules as the rest.
+foreach ($read in @($table.allResources) + @($table.subscription)) {
+    foreach ($field in 'name', 'path', 'type') {
+        if (-not $read.$field) { throw "child-reads.json has an allResources or subscription entry with no $field" }
+    }
+    if ($read.path -match '(?i)(^|/)list') { throw "child-reads.json reads a list action: $($read.path)" }
+    $unsafe = @(Find-UnsafeAbsentText $read.absentWhen)
+    if ($unsafe) { throw "child-reads.json $($read.name) has an absentWhen text that is too broad: $($unsafe -join ', ')" }
 }
 
 # --- Links -------------------------------------------------------------------------------

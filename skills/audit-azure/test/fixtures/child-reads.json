@@ -7,6 +7,10 @@
       { "name": "administrators", "path": "administrators", "type": "Microsoft.Sql/servers/administrators" }
     ],
     "microsoft.keyvault/vaults": [],
+    "microsoft.operationalinsights/workspaces": [
+      { "name": "tables", "path": "tables", "type": "Microsoft.OperationalInsights/workspaces/tables",
+        "select": ["name", "properties.plan", "properties.retentionInDays", "properties.totalRetentionInDays"] }
+    ],
     "microsoft.insights/components": [],
     "MICROSOFT.INSIGHTS/ACTIONGROUPS": [],
     "microsoft.web/sites": [
@@ -14,6 +18,15 @@
       { "name": "authConfig", "path": "authConfigs", "type": "Microsoft.Web/sites/authConfigs", "absentWhen": ["AuthConfigNotFound"] }
     ]
   },
+  "allResources": [
+    { "name": "diagnosticSettings", "path": "providers/Microsoft.Insights/diagnosticSettings", "type": "Microsoft.Insights/diagnosticSettings", "apiVersion": "2021-05-01-preview",
+      "absentWhen": ["does not support diagnostic settings"] }
+  ],
+  "subscription": [
+    { "name": "locks", "path": "providers/Microsoft.Authorization/locks", "type": "Microsoft.Authorization/locks" },
+    { "name": "budgets", "path": "providers/Microsoft.Consumption/budgets", "type": "Microsoft.Consumption/budgets",
+      "drop": ["currentSpend", "forecastSpend", "contactEmails", "contactRoles", "contactGroups"] }
+  ],
   "postOnly": {
     "microsoft.web/sites": [
       { "name": "appSettings", "why": "the app-settings read is a POST and returns secret values" }

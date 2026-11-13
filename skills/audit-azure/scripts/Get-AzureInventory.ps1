@@ -49,6 +49,9 @@ $script:UriCredentialPattern = '(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@'
 # A command-line flag whose next argument is its secret value.
 $script:SecretFlagPattern = '(?i)^-{1,2}[\w-]*(password|passwd|pwd|secret|token|key)$'
 
+# Waits, in seconds, before each retry of a throttled call. Its length is the retry count.
+$script:ThrottleRetryDelaysSeconds = @(2, 5, 15)
+
 function Invoke-AzGet {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Url)
@@ -57,12 +60,21 @@ function Invoke-AzGet {
     $urlArgument = $IsWindows ? "`"$Url`"" : $Url
     $errorFile = [IO.Path]::GetTempFileName()
     try {
-        $output = az rest --method get --url $urlArgument --output json 2> $errorFile
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
+        # A throttled call is retried on a short fixed schedule. Any other failure is not: it
+        # is reported at once, so a permission failure never waits out a retry.
+        for ($attempt = 0; ; $attempt++) {
+            $output = az rest --method get --url $urlArgument --output json 2> $errorFile
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -eq 0) { break }
+
             $stderr = ((Get-Content -LiteralPath $errorFile) -join ' ').Trim()
             if ($stderr.Length -gt 500) { $stderr = $stderr.Substring(0, 500) }
-            throw "AzGet failed ($exitCode): $stderr"
+            # The status forms only. A bare number in an error text is not a status code.
+            $throttled = $stderr -match '(?i)too many requests|\(429\)|status code:? 429|throttl'
+            if (-not $throttled -or $attempt -ge $script:ThrottleRetryDelaysSeconds.Count) {
+                throw "AzGet failed ($exitCode): $stderr"
+            }
+            Start-Sleep -Seconds $script:ThrottleRetryDelaysSeconds[$attempt]
         }
     }
     finally {
@@ -90,8 +102,9 @@ function Get-AzPaged {
 }
 
 function Get-AzAccounts {
-    # The one read that is not az rest: it lists the local login and makes no Azure resource call.
-    $output = az account list --all --output json 2> $null
+    # The one read that is not az rest. --refresh asks Azure for the current subscriptions
+    # instead of trusting the local login cache, so one created since the last login is seen.
+    $output = az account list --all --refresh --output json 2> $null
     if ($LASTEXITCODE -ne 0) { throw "az account list failed ($LASTEXITCODE). Run: az login" }
     # Emits one account per pipeline item, so callers can filter it directly.
     ($output -join "`n") | ConvertFrom-Json
@@ -162,25 +175,67 @@ function ConvertTo-ArmUrl {
     "$script:ArmBase$escaped`?api-version=$ApiVersion"
 }
 
-function Get-ChildReads {
+function Select-ReadFields {
+    # Shapes the items of a list read as its table entry asks. `select` keeps only the named
+    # fields, each under its last path segment: a workspace's tables come with their whole
+    # schema, and only the plan and retention are decisions. `drop` removes named properties
+    # at any depth: a budget comes with spend figures and contact addresses, which are not
+    # this audit's to hold.
+    param($Items, $Read)
+
+    $shaped = @(foreach ($item in $Items) {
+            if ($Read.select) {
+                $kept = [ordered]@{}
+                foreach ($path in $Read.select) {
+                    $value = $item
+                    foreach ($segment in ($path -split '\.')) { $value = $value.$segment }
+                    $kept[($path -split '\.')[-1]] = $value
+                }
+                $kept
+            }
+            else { $item }
+        })
+    if ($Read.drop) { foreach ($item in $shaped) { Remove-NamedProperties -InputObject $item -Names $Read.drop } }
+    , $shaped
+}
+
+function Remove-NamedProperties {
+    # In place, at any depth. Expects the tree ConvertFrom-Json produces.
+    param($InputObject, [string[]] $Names)
+
+    if ($null -eq $InputObject -or $InputObject -is [string] -or $InputObject -is [ValueType]) { return }
+    if ($InputObject -is [System.Collections.IList]) {
+        foreach ($item in $InputObject) { Remove-NamedProperties -InputObject $item -Names $Names }
+        return
+    }
+    foreach ($name in @($InputObject.PSObject.Properties.Name)) {
+        if ($Names -contains $name) { $InputObject.PSObject.Properties.Remove($name) }
+        else { Remove-NamedProperties -InputObject $InputObject.$name -Names $Names }
+    }
+}
+
+function Get-TableReads {
+    # Makes each read a table lists, below one base id: a resource's children, or the reads
+    # made once for a subscription. Every result is one of the four shapes the runbook names.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] $Resource,
-        [Parameter(Mandatory)] $Table,
+        [Parameter(Mandatory)][string] $BaseId,
+        $Reads,
         [Parameter(Mandatory)][hashtable] $ProviderIndex
     )
 
-    $key = $Resource.type.ToLowerInvariant()
-    $children = [ordered]@{}
-
-    foreach ($read in $Table.types.$key) {
-        $version = Resolve-ApiVersion -ProviderIndex $ProviderIndex -Type $read.type
-        $children[$read.name] = if (-not $version) {
+    $results = [ordered]@{}
+    foreach ($read in $Reads) {
+        # An entry may pin its api-version. The metadata is the default, but it can mislead:
+        # diagnostic settings are listed with no default and one old stable version that does
+        # not serve this read (observed: 404 OperationNotFound at 2016-09-01).
+        $version = $read.apiVersion ?? (Resolve-ApiVersion -ProviderIndex $ProviderIndex -Type $read.type)
+        $results[$read.name] = if (-not $version) {
             New-NotObserved -Kind error -Reason "no api-version found for $($read.type) in the provider metadata"
         }
         else {
             try {
-                $response = Invoke-AzGet -Url (ConvertTo-ArmUrl -Path "$($Resource.id)/$($read.path)" -ApiVersion $version)
+                $response = Invoke-AzGet -Url (ConvertTo-ArmUrl -Path "$BaseId/$($read.path)" -ApiVersion $version)
                 if ($null -eq $response) {
                     # An empty body is not a setting. Stored as null it would be a fifth shape
                     # that no reader checks for.
@@ -193,7 +248,7 @@ function Get-ChildReads {
                     # is truthy.
                     $items = @($response.value)
                     if ($response.nextLink) { $items += Get-AzPaged -Url $response.nextLink }
-                    [ordered]@{ items = $items }
+                    [ordered]@{ items = (Select-ReadFields -Items $items -Read $read) }
                 }
                 else { $response }
             }
@@ -213,6 +268,21 @@ function Get-ChildReads {
             }
         }
     }
+    $results
+}
+
+function Get-ChildReads {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Resource,
+        [Parameter(Mandatory)] $Table,
+        [Parameter(Mandatory)][hashtable] $ProviderIndex
+    )
+
+    $key = $Resource.type.ToLowerInvariant()
+    # The reads for this resource's type, then the reads made on every resource.
+    $reads = @($Table.types.$key) + @($Table.allResources) | Where-Object { $null -ne $_ }
+    $children = Get-TableReads -BaseId $Resource.id -Reads $reads -ProviderIndex $ProviderIndex
 
     # Named so the gap is visible in the evidence. Never read: the only route is a POST.
     foreach ($entry in $Table.postOnly.$key) {
@@ -220,6 +290,22 @@ function Get-ChildReads {
     }
 
     $children
+}
+
+function Assert-ChildReadsTable {
+    # A postOnly name equal to a read's name for the same type would replace that read's
+    # result with "not observed", silently. Refuse the table instead.
+    param([Parameter(Mandatory)] $Table, [Parameter(Mandatory)][string] $Path)
+
+    if ($Table.schema -ne 1) { throw "child-reads table has schema '$($Table.schema)', expected 1: $Path" }
+    foreach ($type in $Table.postOnly.PSObject.Properties) {
+        $readNames = @($Table.types.($type.Name).name) + @($Table.allResources.name)
+        foreach ($entry in $type.Value) {
+            if ($readNames -contains $entry.name) {
+                throw "child-reads table: postOnly '$($entry.name)' for $($type.Name) collides with a read of the same name: $Path"
+            }
+        }
+    }
 }
 
 function Protect-SecretValues {
@@ -289,10 +375,18 @@ function Get-AzureInventory {
     )
     $ErrorActionPreference = 'Stop'
 
-    if (Test-Path -LiteralPath $OutFile) { throw "refusing to overwrite existing output: $OutFile" }
+    # Everything that can stop the write is checked before the first Azure read, so a bad
+    # output path costs nothing and never follows a hundred reads.
+    $outFolder = Split-Path -Parent $OutFile
+    if ($outFolder -and -not (Test-Path -LiteralPath $outFolder -PathType Container)) {
+        throw "output folder does not exist: $outFolder"
+    }
+    foreach ($target in $OutFile, "$OutFile.sha256") {
+        if (Test-Path -LiteralPath $target) { throw "refusing to overwrite existing output: $target" }
+    }
 
     $table = Get-Content -LiteralPath $ChildReadsPath -Raw | ConvertFrom-Json
-    if ($table.schema -ne 1) { throw "child-reads table has schema '$($table.schema)', expected 1: $ChildReadsPath" }
+    Assert-ChildReadsTable -Table $table -Path $ChildReadsPath
     $liveTypes = [System.Collections.Generic.HashSet[string]]::new()
 
     $subscriptions = Get-TenantSubscriptions -SubscriptionName $SubscriptionName
@@ -358,14 +452,11 @@ function Get-AzureInventory {
             }
         }
 
-        $roleVersion = $index['microsoft.authorization/roleassignments']
-        $roleAssignments = if (-not $roleVersion) {
-            New-NotObserved -Kind error -Reason 'no api-version found for Microsoft.Authorization/roleAssignments in the provider metadata'
-        }
-        else {
-            try { [ordered]@{ items = Get-AzPaged -Url "$root/providers/Microsoft.Authorization/roleAssignments?api-version=$roleVersion" } }
-            catch { New-NotObserved -Kind error -Reason $_.Exception.Message }
-        }
+        # Role assignments are always read. The table adds the other once-per-subscription
+        # reads (management locks, budgets), which no resource listing returns.
+        $subscriptionId = "/subscriptions/$($subscription.id)"
+        $roleRead = [pscustomobject]@{ name = 'roleAssignments'; path = 'providers/Microsoft.Authorization/roleAssignments'; type = 'Microsoft.Authorization/roleAssignments' }
+        $roleAssignments = (Get-TableReads -BaseId $subscriptionId -Reads @($roleRead) -ProviderIndex $index)['roleAssignments']
 
         $inventory.subscriptions += [ordered]@{
             id              = $subscription.id
@@ -373,6 +464,7 @@ function Get-AzureInventory {
             resourceGroups  = @($groups | ForEach-Object { [ordered]@{ name = $_.name; location = $_.location; managedBy = $_.managedBy } })
             resources       = @($resources)
             roleAssignments = $roleAssignments
+            reads           = Get-TableReads -BaseId $subscriptionId -Reads $table.subscription -ProviderIndex $index
         }
     }
 
@@ -381,11 +473,23 @@ function Get-AzureInventory {
 
     $redacted = Protect-SecretValues -InputObject ($inventory | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100)
     $json = $redacted | ConvertTo-Json -Depth 100
-    # New-Item without -Force fails if the file appeared since the check above: no overwrite, ever.
+    # New-Item without -Force fails if a file appeared since the check above: no overwrite, ever.
     $created = New-Item -ItemType File -Path $OutFile -ErrorAction Stop
-    [IO.File]::WriteAllText($created.FullName, $json)
-    $hash = (Get-FileHash -LiteralPath $created.FullName -Algorithm SHA256).Hash
-    [IO.File]::WriteAllText("$($created.FullName).sha256", "$hash  $($created.Name)")
+    try {
+        [IO.File]::WriteAllText($created.FullName, $json)
+        $hash = (Get-FileHash -LiteralPath $created.FullName -Algorithm SHA256).Hash
+        $sidecar = New-Item -ItemType File -Path "$($created.FullName).sha256" -ErrorAction Stop
+        [IO.File]::WriteAllText($sidecar.FullName, "$hash  $($created.Name)")
+    }
+    catch {
+        # Neither path existed when this run started (checked above), so whatever is at them
+        # now this run created. A half-written evidence file or sha256 file would block the
+        # rerun and could pass for evidence. Remove those two files and report the failure.
+        foreach ($written in $created.FullName, "$($created.FullName).sha256") {
+            Remove-Item -LiteralPath $written -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 
     $redacted
 }
