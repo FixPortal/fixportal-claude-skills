@@ -355,6 +355,12 @@ Describe 'Protect-SecretValues' {
         @{ marker = 'fixture-env-shared-key' }         # property sharedKey
         @{ marker = 'fixture-env-service-uri' }        # token= in a webhook URL
         @{ marker = 'fixture-env-bearer' }             # { key: Authorization, value }
+        # Raised in review of the public port: a fixed list of key names misses most of them.
+        @{ marker = 'fixture-env-private-key' }        # property privateKey
+        @{ marker = 'fixture-env-master-key' }         # property masterKey
+        @{ marker = 'fixture-env-repository-token' }   # property repositoryToken
+        @{ marker = 'fixture-env-admin-credentials' }  # property adminCredentials
+        @{ marker = 'fixture-env-pfx-blob' }           # property pfxBlob
     ) {
         (Get-Content -LiteralPath $out -Raw).Contains($marker) | Should -BeFalse
     }
@@ -368,8 +374,17 @@ Describe 'Protect-SecretValues' {
     It 'keeps a value that names a secret without holding one: <property>' -TestCases @(
         @{ property = 'clientSecretSettingName'; expected = 'PROVIDER_AUTHENTICATION_SECRET' }
         @{ property = 'query'; expected = "requests | where Password == 'x'" }
+        @{ property = 'sshPublicKey'; expected = 'ssh-ed25519 AAAAfixturePublicKeyMaterial' }   # a public key is not a secret
     ) {
         (Get-TestResource $inventory 'ai-one').properties.$property | Should -Be $expected
+    }
+
+    # In a { key, value } pair the key is the entry's name. Redacting it because the property
+    # is called "key" would hide which header or setting the redacted value belongs to.
+    It 'keeps the name of a key/value pair while redacting its value' {
+        $header = (Get-TestResource $inventory 'ai-one').properties.headers[0]
+        $header.key | Should -Be 'Authorization'
+        $header.value | Should -Be '[REDACTED]'
     }
 
     It 'keeps a pair that references a secret and has no value' {
