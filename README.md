@@ -60,6 +60,7 @@ failures that shaped them), see [How I work with coding agents](docs/agentic-wor
 | `audit-dotnet-analyzers` | Inventory the analyzer and code-style configuration actually in force across a solution or estate, and produce a portable remediation prompt. |
 | `audit-dependabot-coverage` | Reconcile open advisories against the PRs Dependabot actually raised — the gap between "alerts exist" and "fixes were offered". |
 | `azure-cost-sweep` | Reconcile live Azure spend against the code and IaC that require it. Ranked, risk-annotated, and strict about the difference between a saving applied and a saving *realised* — the latter needs committed IaC plus live verification after a deploy. |
+| `audit-azure` | Read-only audit of a whole Azure estate that asks, for every decision it embodies, whether the reason for it is still true. Estate-first: a GET-only inventory of live resources joined to the Bicep that declares them, a verdict per decision with the observation behind it, and a plain record of what could not be observed. |
 
 ### Session — cross a context boundary without losing the thread
 

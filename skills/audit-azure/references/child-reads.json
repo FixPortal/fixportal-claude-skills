@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "_comment": [
+    "Resource type to the child settings that carry decisions. A resource listing does not return these.",
+    "Keys are lower-case. path is relative to the resource id. type is the child's provider type, used to resolve its api-version.",
+    "An empty list means the type was reviewed and has nothing to read. A live type with no entry at all is reported as unmapped.",
+    "postOnly names settings that can only be read with a POST. They are recorded as NotObserved and never read.",
+    "absentWhen lists error texts that mean the child does not exist (observed 2026-11-13: a Container App with no platform auth answers 404 AuthConfigNotFound; a PostgreSQL server with Entra sign-in off answers 400). Only a listed text is read as absent; any other failure stays NotObserved, so a wrong path here cannot pass for an absence."
+  ],
+  "types": {
+    "microsoft.app/containerapps": [
+      { "name": "authConfigs", "path": "authConfigs", "type": "Microsoft.App/containerApps/authConfigs", "absentWhen": ["AuthConfigNotFound"] }
+    ],
+    "microsoft.app/managedenvironments": [
+      { "name": "certificates", "path": "certificates", "type": "Microsoft.App/managedEnvironments/certificates" },
+      { "name": "storages", "path": "storages", "type": "Microsoft.App/managedEnvironments/storages" }
+    ],
+    "microsoft.app/managedenvironments/managedcertificates": [],
+    "microsoft.sql/servers": [
+      { "name": "firewallRules", "path": "firewallRules", "type": "Microsoft.Sql/servers/firewallRules" },
+      { "name": "virtualNetworkRules", "path": "virtualNetworkRules", "type": "Microsoft.Sql/servers/virtualNetworkRules" },
+      { "name": "azureADOnlyAuthentications", "path": "azureADOnlyAuthentications", "type": "Microsoft.Sql/servers/azureADOnlyAuthentications" },
+      { "name": "administrators", "path": "administrators", "type": "Microsoft.Sql/servers/administrators" }
+    ],
+    "microsoft.sql/servers/databases": [
+      { "name": "backupShortTermRetentionPolicies", "path": "backupShortTermRetentionPolicies", "type": "Microsoft.Sql/servers/databases/backupShortTermRetentionPolicies" },
+      { "name": "backupLongTermRetentionPolicies", "path": "backupLongTermRetentionPolicies", "type": "Microsoft.Sql/servers/databases/backupLongTermRetentionPolicies" }
+    ],
+    "microsoft.dbforpostgresql/flexibleservers": [
+      { "name": "firewallRules", "path": "firewallRules", "type": "Microsoft.DBforPostgreSQL/flexibleServers/firewallRules" },
+      { "name": "administrators", "path": "administrators", "type": "Microsoft.DBforPostgreSQL/flexibleServers/administrators", "absentWhen": ["Azure AD authentication is not enabled"] }
+    ],
+    "microsoft.web/sites": [
+      { "name": "webConfig", "path": "config/web", "type": "Microsoft.Web/sites/config" },
+      { "name": "authSettingsV2", "path": "config/authsettingsV2", "type": "Microsoft.Web/sites/config" }
+    ],
+    "microsoft.web/serverfarms": [],
+    "microsoft.web/staticsites": [
+      { "name": "customDomains", "path": "customDomains", "type": "Microsoft.Web/staticSites/customDomains" },
+      { "name": "linkedBackends", "path": "linkedBackends", "type": "Microsoft.Web/staticSites/linkedBackends" }
+    ],
+    "microsoft.storage/storageaccounts": [
+      { "name": "blobService", "path": "blobServices/default", "type": "Microsoft.Storage/storageAccounts/blobServices" }
+    ],
+    "microsoft.managedidentity/userassignedidentities": [
+      { "name": "federatedIdentityCredentials", "path": "federatedIdentityCredentials", "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials" }
+    ],
+    "microsoft.keyvault/vaults": [],
+    "microsoft.containerregistry/registries": [],
+    "microsoft.operationalinsights/workspaces": [],
+    "microsoft.insights/components": [],
+    "microsoft.insights/datacollectionrules": [],
+    "microsoft.insights/actiongroups": [],
+    "microsoft.alertsmanagement/smartdetectoralertrules": [],
+    "microsoft.network/virtualnetworks": [],
+    "microsoft.network/networkwatchers": [],
+    "microsoft.network/publicipaddresses": [],
+    "microsoft.network/loadbalancers": [],
+    "microsoft.azureactivedirectory/ciamdirectories": []
+  },
+  "postOnly": {
+    "microsoft.web/sites": [
+      { "name": "appSettings", "why": "the app-settings read is a POST and returns secret values" },
+      { "name": "connectionStrings", "why": "the connection-strings read is a POST and returns secret values" }
+    ],
+    "microsoft.web/staticsites": [
+      { "name": "appSettings", "why": "the app-settings read is a POST and returns secret values" }
+    ],
+    "microsoft.containerregistry/registries": [
+      { "name": "credentials", "why": "the admin-credentials read is a POST and returns passwords" }
+    ],
+    "microsoft.storage/storageaccounts": [
+      { "name": "keys", "why": "the account-keys read is a POST and returns the keys" }
+    ]
+  }
+}
