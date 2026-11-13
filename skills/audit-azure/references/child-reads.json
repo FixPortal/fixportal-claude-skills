@@ -5,6 +5,9 @@
     "Keys are lower-case. path is relative to the resource id. type is the child's provider type, used to resolve its api-version.",
     "An empty list means the type was reviewed and has nothing to read. A live type with no entry at all is reported as unmapped.",
     "postOnly names settings that can only be read with a POST. They are recorded as NotObserved and never read.",
+    "allResources lists reads made on every resource that is not platform-managed. subscription lists reads made once per subscription.",
+    "select keeps only the named fields of each item, under the last path segment. drop removes the named properties at any depth: a budget's spend figures and contact addresses are not this audit's to hold.",
+    "apiVersion pins the version for one read. The provider metadata is the default, but it can mislead: diagnostic settings are listed with no default and one old stable version that answers this read with 404 (observed 2026-11-13).",
     "absentWhen lists error texts that mean the child does not exist (observed 2026-11-13: a Container App with no platform auth answers 404 AuthConfigNotFound; a PostgreSQL server with Entra sign-in off answers 400). Only a listed text is read as absent; any other failure stays NotObserved, so a wrong path here cannot pass for an absence."
   ],
   "types": {
@@ -47,7 +50,10 @@
     ],
     "microsoft.keyvault/vaults": [],
     "microsoft.containerregistry/registries": [],
-    "microsoft.operationalinsights/workspaces": [],
+    "microsoft.operationalinsights/workspaces": [
+      { "name": "tables", "path": "tables", "type": "Microsoft.OperationalInsights/workspaces/tables",
+        "select": ["name", "properties.plan", "properties.retentionInDays", "properties.totalRetentionInDays"] }
+    ],
     "microsoft.insights/components": [],
     "microsoft.insights/datacollectionrules": [],
     "microsoft.insights/actiongroups": [],
@@ -58,6 +64,15 @@
     "microsoft.network/loadbalancers": [],
     "microsoft.azureactivedirectory/ciamdirectories": []
   },
+  "allResources": [
+    { "name": "diagnosticSettings", "path": "providers/Microsoft.Insights/diagnosticSettings", "type": "Microsoft.Insights/diagnosticSettings", "apiVersion": "2021-05-01-preview",
+      "absentWhen": ["does not support diagnostic settings"] }
+  ],
+  "subscription": [
+    { "name": "locks", "path": "providers/Microsoft.Authorization/locks", "type": "Microsoft.Authorization/locks" },
+    { "name": "budgets", "path": "providers/Microsoft.Consumption/budgets", "type": "Microsoft.Consumption/budgets",
+      "drop": ["currentSpend", "forecastSpend", "contactEmails", "contactRoles", "contactGroups"] }
+  ],
   "postOnly": {
     "microsoft.web/sites": [
       { "name": "appSettings", "why": "the app-settings read is a POST and returns secret values" },

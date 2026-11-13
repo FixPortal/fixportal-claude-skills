@@ -53,15 +53,20 @@ pass. This is the first as a loop; the other two take the same form:
 foreach ($repository in (Get-ChildItem -LiteralPath "<estate-root>" -Directory | Where-Object { -not $_.Name.StartsWith('.') -and (Test-Path -LiteralPath (Join-Path $_.FullName '.git') -PathType Container) })) { "$($repository.Name): $(git -C $repository.FullName log -1 --format='%D %h %ad' --date=short)" }
 ```
 
+`git grep` exits 1 when a repository has no match, so a loop that ends on such a repository
+reports an error that is not one. A match can also sit in a comment: open each workflow the
+search lists and confirm it deploys before counting it.
+
 `git ls-files` and `git grep` read tracked files only. That is the right set, because
 infrastructure of record is committed, and it does not skip dot-directories the way a `**`
 glob does. Say in the report that untracked files were not read. A repository that is not
 on its default branch is read as it stands; name it in the report's scope. Do not fetch,
 pull or check out.
 
-**Truncated history.** A repository whose history begins at one recent commit (an
-open-sourcing reset, a history rewrite) has lost the commits that record its early reasons.
-Find where its history starts:
+**Truncated history.** A repository's history is truncated when its first commit already
+holds the infrastructure files whole: an open-sourcing reset, a history rewrite, or an
+export from another repository, however long ago. The commits that record its early reasons
+are not in it. Find where its history starts:
 
 ```powershell
 git -C "<repository>" log --reverse --format="%h %ad %s" --date=short
@@ -95,13 +100,16 @@ pwsh -NoProfile -File "<skill-dir>/scripts/Get-AzureInventory.ps1" -Subscription
 ```
 
 The script covers every enabled subscription in the named subscription's tenant. It writes
-the resource groups (empty ones included), every resource with its properties, the child
-settings named in `references/child-reads.json`, and the role assignments. It throws, and
-the run stops, when the login is missing, the subscription is not found, a top-level listing
-fails, or the output file exists.
+the resource groups (empty ones included), every resource with its properties and tags, the
+child settings named in `references/child-reads.json`, and for each subscription its role
+assignments, management locks and budgets. It throws, and the run stops, when the login is
+missing, the subscription is not found, a top-level listing fails, the output folder does
+not exist, or the output file exists. A throttled read is retried three times; any other
+failed read is recorded and the run goes on.
 
-The inventory does not hold diagnostic settings or Log Analytics table plans. A premise that
-rests on one of those needs a further read under the rule in section 5.
+Every resource has a `children.diagnosticSettings` entry. Each workspace's `children.tables`
+lists every table with its plan and retention; most are on the default plan, so filter for
+the ones that are not. Each subscription's `reads` holds its `locks` and `budgets`.
 
 `skippedSubscriptions` names each subscription in the tenant that is not `Enabled`, with its
 state. Such a subscription can still hold resources. Name each in the report's scope as not
@@ -109,7 +117,12 @@ audited.
 
 Role assignments hold principal object ids, not names. Naming a principal needs Microsoft
 Graph, which this skill never calls. Match the ids against the parameter files first; what
-is left is `Not observed`, and the report says which command the operator can run.
+is left is `Not observed`, and the report says which command the operator can run. A role
+is held as a role definition id. A GET of that id returns the role's name, and that read is
+allowed.
+
+The evidence folder holds identifiers the report must not: principal object ids, firewall
+addresses, full resource ids. Keep it beside the report and do not copy from it wholesale.
 
 `ConvertFrom-Json` turns `observedAt` into a local date. Quote the timestamp from the file's
 text, not from a parsed query.
@@ -134,13 +147,13 @@ Before going on, collect three things for the report's scope section:
 - **`unmappedTypes`.** Each is a live resource type the child-reads table has no entry for,
   so its child settings were never read. Report each as not observed and say the table needs
   an entry. Do not edit the table during a run.
-- **Every `notObserved`.** In a resource's `properties`, in any `children` entry, or in
-  `roleAssignments`. Record the kind and the reason. Kind `post-only` is expected: the only
+- **Every `notObserved`.** In a resource's `properties`, in any `children` entry, in
+  `roleAssignments`, or in a subscription's `reads`. Record the kind and the reason. Kind `post-only` is expected: the only
   route to that setting is a POST, which this skill never issues. Kind `error` is a read
   that failed; quote its reason. This lists them:
 
 ```powershell
-$inventory = Get-Content -LiteralPath "<evidence-file>" -Raw | ConvertFrom-Json; foreach ($subscription in $inventory.subscriptions) { if (@($subscription.roleAssignments.PSObject.Properties.Name) -contains 'notObserved') { "$($subscription.name) role assignments: $($subscription.roleAssignments.reason)" } }; foreach ($resource in $inventory.subscriptions.resources) { if (@($resource.properties.PSObject.Properties.Name) -contains 'notObserved') { "$($resource.name): $($resource.properties.reason)" }; foreach ($child in $resource.children.PSObject.Properties) { if (@($child.Value.PSObject.Properties.Name) -contains 'notObserved') { "$($resource.name) / $($child.Name): $($child.Value.kind) - $($child.Value.reason)" } } }
+$inventory = Get-Content -LiteralPath "<evidence-file>" -Raw | ConvertFrom-Json; foreach ($subscription in $inventory.subscriptions) { if (@($subscription.roleAssignments.PSObject.Properties.Name) -contains 'notObserved') { "$($subscription.name) role assignments: $($subscription.roleAssignments.reason)" }; foreach ($read in $subscription.reads.PSObject.Properties) { if (@($read.Value.PSObject.Properties.Name) -contains 'notObserved') { "$($subscription.name) / $($read.Name): $($read.Value.reason)" } } }; foreach ($resource in $inventory.subscriptions.resources) { if (@($resource.properties.PSObject.Properties.Name) -contains 'notObserved') { "$($resource.name): $($resource.properties.reason)" }; foreach ($child in $resource.children.PSObject.Properties) { if (@($child.Value.PSObject.Properties.Name) -contains 'notObserved') { "$($resource.name) / $($child.Name): $($child.Value.kind) - $($child.Value.reason)" } } }
 ```
 
 - **Platform-managed resources.** `platformManaged` is true for resources Azure created in a
@@ -148,7 +161,8 @@ $inventory = Get-Content -LiteralPath "<evidence-file>" -Raw | ConvertFrom-Json;
 
 Test for `notObserved` and `absent` by property name, as the command above does. Do not
 write `if ($value.notObserved)` on something that may be an array: in PowerShell a missing
-property read across two or more objects is an array of nulls, which is true.
+property read across two or more objects is an array of nulls, which is true. Count with the
+same care: `@($null).Count` is 1, so a setting that is null is not a list of one.
 
 `NotObserved` is not "empty". A setting that was not observed supports no verdict except
 `Not observed`. `absent` is an observation and supports a verdict.
@@ -173,6 +187,7 @@ Each resource and each declaration lands in one class:
 |---|---|---|
 | Declared and live | The normal case | Nothing by itself |
 | Live, not declared | Created by hand, or left behind | A resilience finding, even when harmless |
+| Referenced, not declared | A template uses the resource as `existing`, or takes its id as a parameter | Live and known to the template, created elsewhere. Report what creates it |
 | Declared, not live | A deleted stack or a dead environment | Listed separately; its decisions are not tested against live Azure |
 
 The join class is not a verdict. A live resource still gets its decisions and one verdict
@@ -224,28 +239,18 @@ still `Holds` when a README about it is out of date. Count documentation rows ap
 decisions in the summary.
 
 Estate-level absences are decisions too. Report each once. Where the thing exists and no
-template declares it, report that instead, as "live, not declared". Make the two reads below
-once for each enabled subscription.
+template declares it, report that instead, as "live, not declared".
 
 - No alert rule, or alert rules that reach no action group with a receiver.
 - No network security group.
 - No private endpoint, so each resource's own network rules and identity are its only gates.
-- No management lock. Locks are not in the inventory; read them:
-
-```powershell
-az rest --method get --url "https://management.azure.com/subscriptions/<subscription-id>/providers/Microsoft.Authorization/locks?api-version=2016-09-01" --output json
-```
-
-- No budget. Budgets are not in the inventory; read them:
-
-```powershell
-az rest --method get --url "https://management.azure.com/subscriptions/<subscription-id>/providers/Microsoft.Consumption/budgets?api-version=2023-05-01" --output json
-```
-
-  Use the budget read for what was decided: that a budget exists, its amount, its period and
-  its thresholds. The response also carries current and forecast spend and contact
-  addresses. Report neither: spend belongs to `azure-cost-sweep`, and the report holds no
-  personal data.
+- No diagnostic setting. An empty `children.diagnosticSettings.items` means that resource's
+  logs and metrics go nowhere. `absent` there means the type does not support them.
+- No management lock. Read each subscription's `reads.locks`.
+- No budget. Read each subscription's `reads.budgets`. The inventory keeps what was decided:
+  that a budget exists, its amount, its period and its thresholds. It drops current and
+  forecast spend and contact addresses, because spend belongs to `azure-cost-sweep` and the
+  evidence holds no contact details. The amount is in the subscription's billing currency.
 
 **Deploy path.** For each workflow that deploys to the subscription, answer five questions
 and no more. This is not a workflow review; `audit-ci` does that.
@@ -334,7 +339,16 @@ through `az rest --method get`, with `--output json`. Filter the result in Power
 not put a URL with `&` or a `--query` with parentheses on the command line: `az` is a batch
 file on Windows and `cmd` breaks both. If the only way to read a setting is a POST, the
 verdict is `Not observed`. A GET can still return a secret-bearing value: never call a path
-that ends in a list action, and quote only the setting the premise needs.
+that ends in a list action, and quote only the setting the premise needs. The form is:
+
+```powershell
+az rest --method get --url "https://management.azure.com<resource-id>/<child-path>?api-version=<api-version>" --output json
+```
+
+A premise that is a platform rule (a feature needs a tier, a setting needs a network shape)
+is tested against current vendor documentation, found with the runtime's web search or
+fetch tools, and the page is cited. A rule that could not be confirmed is `Not observed`;
+recall is not an observation.
 
 For a quota premise, find the provider's read-only usage endpoint in current Microsoft
 documentation, with the runtime's web search or fetch tools, before calling it; do not
@@ -390,9 +404,12 @@ Register rules:
 
 - **Key.** The dimension, the resource type, and the resource name, or `estate` for an
   estate-level absence: `network-exposure / Microsoft.Sql/servers / <name>`. A decision
-  grouped across resources is keyed by dimension, type and the shared value.
+  grouped across resources is keyed by dimension, type and the shared value. One that is
+  `Inconsistent` has no shared value: key it by dimension, type and the word `mixed`.
 - **Date.** When the decision was made, with its source: the date the decision log gives, or
   the date of the commit that introduced the setting. `not recorded` when neither exists.
+  For a setting already present in the first commit of a truncated history, write
+  `on or before <that commit's date>`.
   The date a decision was observed is the run's timestamp; do not repeat it per row.
 
 Cost evidence: for a tier decision, cite the newest cost sweep log in the vault that covers

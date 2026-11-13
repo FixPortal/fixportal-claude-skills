@@ -14,6 +14,8 @@ BeforeAll {
     $script:arm = 'https://management.azure.com'
     # A test table, not the shipped one, so these tests do not move when the real table gains a type.
     $script:table = Join-Path $PSScriptRoot 'fixtures' 'child-reads.json'
+    # No waiting in tests: the retry schedule keeps its length and loses its delays.
+    $script:ThrottleRetryDelaysSeconds = @(0, 0, 0)
 
     # Serves a fixture response for a URL the way Invoke-AzGet would: parsed JSON, or the
     # same exception text a failed az call raises.
@@ -70,7 +72,7 @@ Describe 'Get-AzPaged' {
     BeforeEach { Mock Invoke-AzGet { Get-FixtureResponse -Url $Url } }
 
     It 'merges every nextLink page' {
-        (Get-AzPaged -Url "$arm/subscriptions/$alpha/resources?api-version=2021-04-01").Count | Should -Be 8
+        (Get-AzPaged -Url "$arm/subscriptions/$alpha/resources?api-version=2021-04-01").Count | Should -Be 9
     }
 
     It 'returns an empty array for an empty listing' {
@@ -204,7 +206,7 @@ Describe 'Child reads' {
     }
 
     It 'reads each child the table names for the type' {
-        (Get-TestResource $inventory 'sql-one').children.firewallRules.items.name | Should -Be @('AllowAllWindowsAzureIps', 'office')
+        (Get-TestResource $inventory 'sql-one').children.firewallRules.items.name | Should -Be @('AllowAllWindowsAzureIps', 'office', 'vpn')
     }
 
     # Provider metadata lists few child types; observed live, it has no entry for firewall
@@ -264,8 +266,8 @@ Describe 'Child reads' {
         Should -Invoke Invoke-AzGet -Times 0 -Exactly -ParameterFilter { $Url -like '*appsettings*' }
     }
 
-    It 'gives a type with an empty list no children' {
-        @((Get-TestResource $inventory 'kv-one').children.PSObject.Properties).Count | Should -Be 0
+    It 'gives a type with an empty list only the all-resources read' {
+        (Get-TestResource $inventory 'kv-one').children.PSObject.Properties.Name | Should -Be @('diagnosticSettings')
     }
 
     It 'reads no children for a platform-managed resource' {
@@ -424,7 +426,177 @@ Describe 'GET only' {
             catch { $global:LASTEXITCODE = 1 }
         }
         $inventory = New-TestInventory
-        @($inventory.subscriptions[0].resources).Count | Should -Be 8
+        @($inventory.subscriptions[0].resources).Count | Should -Be 9
         Should -Invoke az -Times 0 -Exactly -ParameterFilter { $args[0] -ne 'rest' -or ($args -join ' ') -notmatch '--method get' }
+    }
+}
+
+Describe 'Throttling' {
+    BeforeEach { $script:calls = 0 }
+
+    It 'retries a throttled call and returns the eventual response' {
+        Mock az {
+            $script:calls++
+            if ($script:calls -le 2) { $global:LASTEXITCODE = 1; Write-Error 'ERROR: (429) Too Many Requests' -ErrorAction Continue }
+            else { $global:LASTEXITCODE = 0; '{"value":[{"name":"a"}]}' }
+        }
+        (Invoke-AzGet -Url "$arm/x?api-version=1").value[0].name | Should -Be 'a'
+        Should -Invoke az -Times 3 -Exactly
+    }
+
+    It 'does not retry a failure that is not throttling' {
+        Mock az { $global:LASTEXITCODE = 1; Write-Error 'ERROR: (AuthorizationFailed) no' -ErrorAction Continue }
+        { Invoke-AzGet -Url "$arm/x?api-version=1" } | Should -Throw '*AuthorizationFailed*'
+        Should -Invoke az -Times 1 -Exactly
+    }
+
+    # A number in an error is not a status code. Only the status forms count as throttling.
+    It 'does not retry an error that merely contains the number 429' {
+        Mock az { $global:LASTEXITCODE = 1; Write-Error 'ERROR: (NotFound) rule 429 was not found' -ErrorAction Continue }
+        { Invoke-AzGet -Url "$arm/x?api-version=1" } | Should -Throw '*NotFound*'
+        Should -Invoke az -Times 1 -Exactly
+    }
+
+    It 'gives up after the configured retries and reports the throttle' {
+        Mock az { $global:LASTEXITCODE = 1; Write-Error 'ERROR: (429) Too Many Requests' -ErrorAction Continue }
+        { Invoke-AzGet -Url "$arm/x?api-version=1" } | Should -Throw '*Too Many Requests*'
+        Should -Invoke az -Times (1 + $script:ThrottleRetryDelaysSeconds.Count) -Exactly
+    }
+}
+
+Describe 'Get-AzAccounts' {
+    It 'asks az for a refreshed account list, not the local cache' {
+        Mock az { $global:LASTEXITCODE = 0; '[]' }
+        $null = Get-AzAccounts
+        Should -Invoke az -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'account' -and $args[1] -eq 'list' -and $args -contains '--refresh' }
+    }
+
+    It 'throws and says to log in when az fails' {
+        Mock az { $global:LASTEXITCODE = 1 }
+        { Get-AzAccounts } | Should -Throw '*az account list failed*az login*'
+    }
+}
+
+Describe 'Table reads' {
+    BeforeEach {
+        Mock Get-AzAccounts { Get-FixtureAccounts }
+        Mock Invoke-AzGet { Get-FixtureResponse -Url $Url }
+        $script:inventory = New-TestInventory
+    }
+
+    It 'records NotObserved for a read whose type has no api-version anywhere up its path' {
+        $reads = @([pscustomobject]@{ name = 'things'; path = 'things'; type = 'Microsoft.Example/widgets/things' })
+        $result = Get-TableReads -BaseId '/subscriptions/x/resourceGroups/r/providers/Microsoft.Example/widgets/w' -Reads $reads -ProviderIndex @{}
+        $result.things.notObserved | Should -BeTrue
+        $result.things.reason | Should -BeLike '*no api-version*'
+    }
+
+    It 'keeps only the selected fields of a list read' {
+        $tables = (Get-TestResource $inventory 'law-one').children.tables.items
+        $tables[0].PSObject.Properties.Name | Should -Be @('name', 'plan', 'retentionInDays', 'totalRetentionInDays')
+        $tables.plan | Should -Be @('Basic', 'Analytics')
+        $tables[1].totalRetentionInDays | Should -Be 90
+    }
+
+    It 'makes the all-resources read on a resource that is not platform-managed' {
+        (Get-TestResource $inventory 'sql-one').children.diagnosticSettings.items.name | Should -Be 'to-law'
+    }
+
+    # Observed live: the metadata lists diagnostic settings with no default version and one old
+    # stable version, 2016-09-01, which answers this read with 404 OperationNotFound.
+    It 'uses the api-version a table entry pins, over the one the metadata would give' {
+        Should -Invoke Invoke-AzGet -ParameterFilter { $Url -like '*/sql-one/providers/Microsoft.Insights/diagnosticSettings?api-version=2021-05-01-preview' }
+        Should -Invoke Invoke-AzGet -Times 0 -Exactly -ParameterFilter { $Url -like '*diagnosticSettings?api-version=2016-09-01' }
+    }
+
+    It 'records a type that does not support the all-resources read as absent' {
+        (Get-TestResource $inventory 'ai-one').children.diagnosticSettings.absent | Should -BeTrue
+    }
+
+    It 'reads management locks for the subscription, and an empty list is an observed empty list' {
+        $locks = $inventory.subscriptions[0].reads.locks
+        $locks.PSObject.Properties.Name | Should -Be @('items')
+        @($locks.items).Count | Should -Be 0
+    }
+
+    It 'reads budgets for the subscription without spend figures or contact addresses' {
+        $budget = $inventory.subscriptions[0].reads.budgets.items[0]
+        $budget.properties.amount | Should -Be 250
+        $budget.properties.PSObject.Properties.Name | Should -Not -Contain 'currentSpend'
+        $budget.properties.PSObject.Properties.Name | Should -Not -Contain 'forecastSpend'
+        $budget.properties.notifications.actual80.threshold | Should -Be 80
+        $budget.properties.notifications.actual80.PSObject.Properties.Name | Should -Not -Contain 'contactEmails'
+    }
+
+    It 'records a subscription read that fails as NotObserved' {
+        $inventory.subscriptions[1].reads.locks.notObserved | Should -BeTrue
+    }
+}
+
+Describe 'Output file' {
+    BeforeEach {
+        Mock Get-AzAccounts { Get-FixtureAccounts }
+        Mock Invoke-AzGet { Get-FixtureResponse -Url $Url }
+    }
+
+    It 'throws for a missing output folder before making any Azure read' {
+        $out = Join-Path $TestDrive 'no-such-folder' 'inventory.json'
+        { Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $table -OutFile $out } | Should -Throw '*output folder does not exist*'
+        Should -Invoke Invoke-AzGet -Times 0 -Exactly
+    }
+
+    It 'refuses to overwrite an existing sha256 file' {
+        $out = Join-Path $TestDrive 'has-sidecar.json'
+        [IO.File]::WriteAllText("$out.sha256", 'keep')
+        { Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $table -OutFile $out } | Should -Throw '*refusing to overwrite*'
+        [IO.File]::ReadAllText("$out.sha256") | Should -Be 'keep'
+        Test-Path -LiteralPath $out | Should -BeFalse
+    }
+
+    # A failed write must leave nothing behind: a partial file would block the rerun and
+    # could pass for evidence.
+    It 'leaves neither file when hashing the evidence fails' {
+        Mock Get-FileHash { throw 'hash failed' }
+        $out = Join-Path $TestDrive 'hash-fails.json'
+        { Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $table -OutFile $out } | Should -Throw '*hash failed*'
+        Test-Path -LiteralPath $out | Should -BeFalse
+        Test-Path -LiteralPath "$out.sha256" | Should -BeFalse
+    }
+
+    It 'leaves neither file when the sha256 file is created and its write then fails' {
+        Mock New-Item { [IO.File]::WriteAllText($Path, 'partial'); throw 'disk full' } -ParameterFilter { $Path -like '*.sha256' }
+        $out = Join-Path $TestDrive 'sidecar-fails.json'
+        { Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $table -OutFile $out } | Should -Throw '*disk full*'
+        Test-Path -LiteralPath $out | Should -BeFalse
+        Test-Path -LiteralPath "$out.sha256" | Should -BeFalse
+    }
+
+    It 'writes neither spend figures nor contact addresses to the evidence file' {
+        $out = Join-Path $TestDrive 'budgets.json'
+        $null = Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $table -OutFile $out
+        $written = Get-Content -LiteralPath $out -Raw
+        $written.Contains('12345.67') | Should -BeFalse
+        $written.Contains('23456.78') | Should -BeFalse
+        $written.Contains('owner@example.invalid') | Should -BeFalse
+    }
+}
+
+Describe 'Child-reads table' {
+    BeforeEach {
+        Mock Get-AzAccounts { Get-FixtureAccounts }
+        Mock Invoke-AzGet { Get-FixtureResponse -Url $Url }
+    }
+
+    It 'loads the shipped table and maps every fixture type but the invented one' {
+        $out = Join-Path $TestDrive 'shipped.json'
+        (Get-AzureInventory -SubscriptionName 'Alpha' -OutFile $out).unmappedTypes | Should -Be @('microsoft.example/widgets')
+    }
+
+    It 'refuses a table where a postOnly name would replace a real read' {
+        $colliding = Join-Path $TestDrive 'colliding.json'
+        '{ "schema": 1, "types": { "microsoft.web/sites": [ { "name": "webConfig", "path": "config/web", "type": "Microsoft.Web/sites/config" } ] }, "postOnly": { "microsoft.web/sites": [ { "name": "webConfig", "why": "x" } ] } }' |
+            Set-Content -LiteralPath $colliding
+        { Get-AzureInventory -SubscriptionName 'Alpha' -ChildReadsPath $colliding -OutFile (Join-Path $TestDrive 'c.json') } |
+            Should -Throw '*postOnly*webConfig*'
     }
 }
