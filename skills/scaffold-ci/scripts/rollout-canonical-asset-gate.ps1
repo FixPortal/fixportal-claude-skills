@@ -340,7 +340,7 @@ if ($LASTEXITCODE -ne 0) { throw "post-adoption verification failed in ${name}:`
 # The checker-conformance proof: the refreshed gate checker must accept the adopted
 # ci.yml, with the anchor step's own env honored -- a repo the checker rejects needs a
 # conformance migration BEFORE adoption, not a surprise in its local gate after. Extract
-# GATE_EXEMPT / GATE_CONDITIONAL_EXEMPT from the anchor step block (its opener line
+# GATE_EXEMPT / GATE_CONDITIONAL_EXEMPT / GATE_STEP_EXEMPT / GATE_STEP_IF_EXEMPT from the anchor step block (its opener line
 # through the run: line); values may be quoted ('') or bare (docker); an empty value
 # exports nothing. The proof runs AFTER the writes: a throw here leaves all four
 # artefacts spliced, so the follow-up run takes the already-adopted branch -- migrate
@@ -350,22 +350,27 @@ $proofOpeners = [regex]::Matches($ciReread.Substring(0, $proofAnchor.Index), '(?
 $stepOpener = $proofOpeners[$proofOpeners.Count - 1]
 $stepBlock = $ciReread.Substring($stepOpener.Index, $proofAnchor.Index - $stepOpener.Index)
 $gateEnv = @{}
-foreach ($key in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+# Every exemption variable the checker reads: a step-level one left unread failed the proof on a
+# repo whose ci.yml declares it (the house secrets job needs GATE_STEP_IF_EXEMPT).
+$gateEnvKeys = 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT', 'GATE_STEP_EXEMPT', 'GATE_STEP_IF_EXEMPT'
+foreach ($key in $gateEnvKeys) {
     $envMatch = [regex]::Match($stepBlock, "(?m)^[ ]*$key[ \t]*:[ \t]*(?<v>.*?)[ \t]*\r?$")
     if ($envMatch.Success) {
-        $envValue = $envMatch.Groups['v'].Value
-        if ($envValue.Length -ge 2 -and (($envValue.StartsWith("'") -and $envValue.EndsWith("'")) -or ($envValue.StartsWith('"') -and $envValue.EndsWith('"')))) {
-            $envValue = $envValue.Substring(1, $envValue.Length - 2)
-        }
+        $envValue = $envMatch.Groups['v'].Value.Trim()
+        # A YAML value, not raw text: quotes removed, and an unquoted value's trailing ` # comment`
+        # dropped -- it was forwarded as exemption entries (code review).
+        if ($envValue -match "^'((?:[^']|'')*)'") { $envValue = $Matches[1].Replace("''", "'") }
+        elseif ($envValue -match '^"((?:[^"\\]|\\.)*)"') { $envValue = $Matches[1] }
+        else { $envValue = ($envValue -replace '(?:^|\s+)#.*$', '').Trim() }
         $gateEnv[$key] = $envValue
     }
 }
 $previousGateEnv = @{}
-foreach ($key in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+foreach ($key in $gateEnvKeys) {
     $previousGateEnv[$key] = [Environment]::GetEnvironmentVariable($key)
 }
 try {
-    foreach ($key in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+    foreach ($key in $gateEnvKeys) {
         $proofValue = $null
         if ($gateEnv.ContainsKey($key)) { $proofValue = $gateEnv[$key] }
         if ([string]::IsNullOrEmpty($proofValue)) { $proofValue = $null }
@@ -375,7 +380,7 @@ try {
     $checkerExit = $LASTEXITCODE
 }
 finally {
-    foreach ($key in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+    foreach ($key in $gateEnvKeys) {
         [Environment]::SetEnvironmentVariable($key, $previousGateEnv[$key])
     }
 }

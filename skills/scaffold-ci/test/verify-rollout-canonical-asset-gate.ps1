@@ -361,6 +361,19 @@ try {
     $env:GATE_EXEMPT = $null
     if ($bareExit -eq 0 -or $withEnvExit -ne 0) { throw 'env-exempt fixture is not load-bearing: the checker must fail without GATE_EXEMPT and pass with it' }
 
+    # The anchor step's GATE_STEP_IF_EXEMPT is honored too: the house secrets job's event-split
+    # range scans adopt clean when listed, and are refused when not (consumer review C1-D-G2).
+    $secretsJob = "  secrets:`n    name: Secrets`n    runs-on: ubuntu-latest`n    steps:`n      - id: scan-pr-range`n        if: github.event_name == 'pull_request'`n        run: echo pr`n      - id: scan-push-range`n        if: github.event_name == 'push'`n        run: echo push`n      - run: echo tree`n  ci-gate:"
+    $secretsYaml = $ciYaml.Replace('  ci-gate:', $secretsJob).Replace('needs: [gate-coverage]', 'needs: [secrets, gate-coverage]')
+    $r = Invoke-Rollout (New-FixtureRepo 'step-if-unlisted' -CiOverride $secretsYaml)
+    if ($r.Code -eq 0 -or $r.Output -notmatch 'GATE_STEP_IF_EXEMPT') { throw "an unlisted runtime step if: must fail the conformance proof`n$($r.Output)" }
+    $listedYaml = $secretsYaml.Replace("          GATE_EXEMPT: ''", "          GATE_EXEMPT: ''`n          GATE_STEP_IF_EXEMPT: secrets/scan-pr-range secrets/scan-push-range")
+    $r = Invoke-Rollout (New-FixtureRepo 'step-if-listed' -CiOverride $listedYaml)
+    if ($r.Code -ne 0) { throw "a repo listing its runtime step ifs in GATE_STEP_IF_EXEMPT must adopt clean; got $($r.Code)`n$($r.Output)" }
+    # A trailing YAML comment on the entry is not part of the value (code review).
+    $r = Invoke-Rollout (New-FixtureRepo 'step-if-commented' -CiOverride $listedYaml.Replace('secrets/scan-push-range', 'secrets/scan-push-range # event-dependent ranges'))
+    if ($r.Code -ne 0) { throw "a trailing comment on GATE_STEP_IF_EXEMPT must not break adoption; got $($r.Code)`n$($r.Output)" }
+
     'rollout-canonical-asset-gate.ps1 OK - adopt path (byte-identical verifier, verifying manifest, single splice, CRLF preserved, glob-aware policy edit), idempotence, and the no-anchor / workflow_call / gitignored / ReportOnly rails -- plus empty-high strict-JSON, named-entry branch, and every refusal rail, and the off-convention-indent refusal, and the review-driven rails, checker-conformance proof'
 }
 finally {

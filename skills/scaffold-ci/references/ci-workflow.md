@@ -96,6 +96,13 @@ These are the deltas an unaided agent gets wrong. Get them right:
    solution-wide analysis phase (the one that analyses source-generated `*.g.cs` and EF migration
    files), taking InspectCode from about 24 minutes to 1m49s with an identical SARIF result;
    `--exclude` only filters the report and does not skip analysis.
+   What it costs, measured on a consumer repository 2026-11-21 with InspectCode 2026.3 on a scratch
+   project: solution-wide analysis reports `UnusedMember.Global`, `UnusedType.Global`,
+   `ClassNeverInstantiated.Global`, `UnusedAutoPropertyAccessor.Global` and
+   `NotAccessedPositionalProperty.Global`, and `--no-swea` reports none of them. At
+   `--severity=WARNING` only `NotAccessedPositionalProperty.Global` was a warning, so that is
+   the one finding this gate gives up. It stays the default on cost: solution-wide analysis on a
+   source-generator-heavy project took over 45 minutes, against 38 s without it.
    Pin `JetBrains.ReSharper.GlobalTools` in the
    tool manifest. Add the step only once the repo's count under this exact invocation is
    zero; measure in a Linux .NET container, because a Windows Debug sweep undercounts.
@@ -492,6 +499,10 @@ skills root, which would resolve only under that runtime.
           # work belongs here; quality jobs never do. Every name must exist as a job in
           # this workflow — the checker fails on a name that does not.
           GATE_EXEMPT: ''
+          # The `secrets` job's two range scans (dependencies-and-security.md) each run on one
+          # event, because the range is event-dependent; its full-tree scan runs on every event.
+          # Keep this line only with that job in the gate's `needs:`: an entry that exempts nothing is refused.
+          GATE_STEP_IF_EXEMPT: secrets/scan-pr-range secrets/scan-push-range
         run: python3 .github/scripts/assert_gate_coverage.py .github/workflows/ci.yml
 
       - name: Assert canonical asset copies match the committed manifest
@@ -500,7 +511,7 @@ skills root, which would resolve only under that runtime.
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [backend, frontend, gate-coverage]   # the quality jobs in THIS file
+    needs: [backend, frontend, secrets, gate-coverage]   # the quality jobs in THIS file
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -527,6 +538,15 @@ Rules, each of which is a way this goes wrong:
   feeding the gate, so a conditional quality job has to be named in
   `GATE_CONDITIONAL_EXEMPT` with a written rationale beside it. Conditional exemption does
   **not** exempt a job from gate membership; that is `GATE_EXEMPT` alone.
+- **Feeder steps are held to the same rule, by `<job>/<step id>`.** A step with
+  `continue-on-error` is refused unless named in `GATE_STEP_EXEMPT`. A step whose `if:` can
+  skip it on a healthy run (`github.event_name == 'push'`, `steps.x.outputs.y == 'true'`) is
+  refused unless named in `GATE_STEP_IF_EXEMPT`: its job still reports success, so the gate
+  passes over a check that did not run. Only conditions that fold to unconditional --
+  `always()`, `!cancelled()`, `success()` and conjunctions of them -- pass unlisted. Both
+  variables take space- or comma-separated `<job>/<step id>` entries, sit in the gate-coverage
+  step's `env:` beside `GATE_EXEMPT`, and refuse an entry that exempts nothing. A step with no
+  `id:` cannot be listed: give it one.
 - **The gate's own semantics are asserted, not assumed.** `needs:` membership does not
   make a gate real: with no `if: always()` it is skipped exactly when it was needed, and
   with no step keyed on a `needs.<job>.result` it aggregates nothing and reports success

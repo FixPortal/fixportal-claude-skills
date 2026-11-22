@@ -13,7 +13,8 @@ import tempfile
 import unittest
 
 # HYGIENE_ASSET points the suite at another copy, so a red run on the pre-fix asset is one command.
-ASSET = pathlib.Path(os.environ.get("HYGIENE_ASSET") or pathlib.Path(__file__).resolve().parents[1] / "assets" / "assert_workflow_hygiene.py")
+# Resolved now: the asset runs with a temp repository as its working directory, where a relative override names nothing.
+ASSET = pathlib.Path(os.environ.get("HYGIENE_ASSET") or pathlib.Path(__file__).resolve().parents[1] / "assets" / "assert_workflow_hygiene.py").resolve()
 DIGEST = "a" * 64
 WORKFLOW = (
     "on:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
@@ -100,6 +101,58 @@ class DockerfileBaseImages(unittest.TestCase):
         for opener in ('RUN <<"EOF"\n', "RUN 3<<'EOF' cat\n"):
             with self.subTest(opener=opener):
                 self.assert_hygiene(f"FROM node@sha256:{DIGEST}\n{opener}FROM node:20\nEOF\n", True)
+
+    # Each case below was built with Docker 29.9.3 (BuildKit, buildx 0.38.1): Docker pulled the final
+    # FROM's image, so it read that FROM as its own instruction and the scanner must too.
+    def test_resync_partially_quoted_heredoc_delimiter_ends_at_the_unquoted_word(self):
+        for opener in ('COPY <<E"OF" /note\n', 'COPY <<EO"F" /note\n', "COPY <<'E'OF /note\n"):
+            with self.subTest(opener=opener):
+                self.assert_hygiene("FROM scratch AS helper\n" + opener + "hello\nEOF\nFROM alpine:latest\n", False, "'alpine:latest'")
+
+    def test_resync_leading_bom_does_not_hide_the_first_from(self):
+        self.assert_hygiene("\ufeffFROM alpine:latest\n", False, "'alpine:latest'")
+
+    def test_resync_indented_escape_directive_applies(self):
+        self.assert_hygiene("  # escape=`\nFROM scratch AS seed\nLABEL note=x\\\nFROM alpine:latest\n", False, "'alpine:latest'")
+
+    def test_resync_only_a_newline_ends_a_dockerfile_line(self):
+        for separator in ("\u2028", "\v", "\x1c"):
+            with self.subTest(separator=repr(separator)):
+                dockerfile = f'FROM scratch\nLABEL note="x{separator}FROM scratch AS alpine{separator}b"\nFROM alpine\n'
+                self.assert_hygiene(dockerfile, False, "'alpine'")
+
+    def test_resync_vertical_tab_inside_a_comment_names_no_stage(self):
+        self.assert_hygiene("FROM scratch\n# note\vFROM scratch AS alpine\nFROM alpine\n", False, "'alpine'")
+
+    def test_resync_escape_before_a_no_break_space_does_not_continue(self):
+        self.assert_hygiene(f"FROM node@sha256:{DIGEST}\nLABEL note=x\\\u00a0\nFROM alpine:latest\n", False, "'alpine:latest'")
+
+    def test_resync_crlf_dockerfile_still_reads(self):
+        self.assert_hygiene(f"FROM node@sha256:{DIGEST} AS build\r\nCOPY <<EOF /note\r\nFROM node:20\r\nEOF\r\nFROM build\r\n", True)
+
+
+class DisabledServiceImage(unittest.TestCase):
+    def run_services(self, image):
+        workflow = (
+            "on:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+            f"    services:\n      db:\n        image: {image}\n    steps:\n      - run: echo hi\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="hygiene-consumer-review-") as folder:
+            path = pathlib.Path(folder) / ".github/workflows/ci.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(workflow, encoding="utf-8", newline="\n")
+            env = {**os.environ, "PRIVILEGED_TRIGGER_NO_CHECKOUT": "", "TRUSTED_THIRD_PARTY_ACTIONS": ""}
+            done = subprocess.run([sys.executable, str(ASSET)], cwd=folder, capture_output=True, text=True, env=env, timeout=120)
+            return done.returncode, done.stdout + done.stderr
+
+    def test_resync_empty_service_image_starts_nothing_and_is_not_a_ref(self):
+        # GitHub's workflow syntax: an empty `services.<id>.image` means the service does not start.
+        code, output = self.run_services("''")
+        self.assertEqual(code, 0, output)
+
+    def test_resync_mutable_service_image_still_fails(self):
+        code, output = self.run_services("postgres:16")
+        self.assertNotEqual(code, 0, output)
 
 
 if __name__ == "__main__":

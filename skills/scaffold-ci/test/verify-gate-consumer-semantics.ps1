@@ -40,8 +40,14 @@ assert gate.runs_unconditionally('always()&&true')
 assert not gate.runs_unconditionally("'always()'")
 assert not gate.runs_unconditionally('always()&&github.ref')
 assert gate.mask_quoted('echo "continued\\\ntext"; cd sub').count('\n') == 1
-assert gate.changes_directory(['echo "Running gate', 'checks"; cd sub', 'echo done'])
-assert not gate.changes_directory(['echo "Running gate', 'cd sub"', 'echo done'])
+assert gate.changes_directory('echo "Running gate\nchecks"; cd sub\necho done')
+# Command position decides, not quoting: a cd opening a line counts even inside a string.
+assert gate.changes_directory('echo "Running gate\ncd sub"\necho done')
+assert not gate.changes_directory('echo ${cd} abcd {cd,ls}')
+assert not gate.changes_directory('echo "running CD gate"')
+assert not gate.changes_directory('Write-Host "next: cd into web"')
+assert gate.changes_directory('if ! cd sub; then python3 scripts/x.py; fi')
+assert gate.changes_directory('cd$SUB')
 
 plain = ["jobs:\n", "  build:\n", "    runs-on: ubuntu-latest\n", "    steps:\n", "      - run:\n", "          python scripts/gate.py\n", "  ci-gate:\n", "    runs-on: ubuntu-latest\n"]
 jobs = {'build': 1, 'ci-gate': 6}
