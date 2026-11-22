@@ -1538,12 +1538,12 @@ def powershell_ends_non_zero(body, *, throw=True, echo=True):
 
     `echo=False` drops `echo` for the same unknown-shell body: unlike the cmdlets it RUNS
     under bash, with bash's quoting, so a body pwsh reads as messages then `exit 1` can
-    hide an `exit 0` from bash (CodeRabbit, mirror PR #140). Such a body falls through to the
+    hide an `exit 0` from bash (code review). Such a body falls through to the
     both-disciplines check in step_can_fail instead.
     """
     string = r"(?:'(?:[^'\n]|'')*'|\"(?:[^`\"\n]|`.)*\")"
     # `echo` is pwsh's alias for Write-Output and the spelling the house one-liner uses,
-    # so refusing it reddened a `shell: pwsh` gate that does fail (tax portal review
+    # so refusing it reddened a `shell: pwsh` gate that does fail (consumer review
     # 20261101T004738Z, c02-C5). Admitted with a QUOTED argument or none, like the
     # cmdlets: an expression argument stays refused.
     words = "Write-Host|Write-Output|Write-Information" + ("|echo" if echo else "")
@@ -2405,7 +2405,7 @@ def compose_yaml(lines, name=None):
     used to recognise YAML by line shape, and every valid spelling the shape missed was a
     hole: block-scalar text read as keys, a `defaults:` whose flow mapping sat on the next
     line, an anchored or aliased `env:`, an escaped key (adversarial review
-    20261031T213036Z, T1/H3; simulator-frontend 20261101T004730Z, S1/S2). The composer
+    20261031T213036Z, T1/H3; a consumer 20261101T004730Z, S1/S2). The composer
     resolves aliases to the nodes they name and marks every node with the lines it
     occupies, which is exactly what those scans need.
 
@@ -2484,11 +2484,11 @@ def assert_readable_shapes(root, text, name=None):
 
       * a merge key (`<<: *base`) splices in keys no scan sees;
       * a double-quoted key with an escape (`"sh\\x65ll"`) is `shell` to GitHub and nothing
-        to key_pattern (tax portal review 20261101T004738Z, M13);
+        to key_pattern (consumer review 20261101T004738Z, M13);
       * a flow-style `steps:` or a flow-mapping step item carries `run:` text no RUN_KEY
         line ever matches (adversarial review 20261031T213036Z, M5);
       * a flow collection on the line AFTER its key reads as an empty value, so `needs:`
-        loses its list (XM1; simulator-frontend 20261101T004730Z, S2).
+        loses its list (XM1; a consumer 20261101T004730Z, S2).
 
     Also refused:
 
@@ -2522,7 +2522,7 @@ def assert_readable_shapes(root, text, name=None):
     step_nodes_seen = set()
     # The mappings under `with:` and `env:` hold caller data: a key named `uses` there is an input
     # or a variable, not an action reference. The `jobs:` mapping is skipped, because its keys are
-    # job ids and a job may be named `with` or `env` (CodeRabbit, PR #495).
+    # job ids and a job may be named `with` or `env` (code review).
     data_mappings = {
         id(value)
         for node in iter_nodes(root) if isinstance(node, yaml.MappingNode) and node is not jobs_node
@@ -2555,7 +2555,7 @@ def assert_readable_shapes(root, text, name=None):
                 )
             # `uses:` then the path on the next line is a valid scalar GitHub runs (actionlint
             # accepts it, observed 2026-11-21), but every reader takes `uses` from the key's own
-            # line, so the called workflow or action was never walked (ide review, RV-41).
+            # line, so the called workflow or action was never walked (consumer review, RV-41).
             if (
                 isinstance(key, yaml.ScalarNode)
                 and key.value == "uses"
@@ -2638,7 +2638,7 @@ def run_payload_indexes(lines):
     `BASH_ENV:` or `working-directory:` line inside ANY OTHER block scalar -- an `env:`
     value, a `with:` input, a `run-name:` -- was read as a real key: fail-OPEN when it
     spelled a shell the checker then trusted, false RED when it spelled a key the checker
-    refuses (adversarial review 20261031T213036Z, H3; tax portal 20261101T004738Z, M35).
+    refuses (adversarial review 20261031T213036Z, H3; a consumer 20261101T004738Z, M35).
     The parser now decides what is text: the body of every multi-line scalar and the
     inside of every multi-line flow collection, anywhere in the document. `lines` may be
     a whole file or a Slice of one; the answer is relative to `lines`.
@@ -2669,8 +2669,7 @@ def working_directories(node, exclude=(), rewrite=None):
     only `defaults.run.working-directory` reaches a step, so only it is read: scanning
     every other subtree read `on.workflow_call.inputs.working-directory` (an input
     declaration), `strategy.matrix` keys and `with:` inputs as directories, and the input
-    mapping's not-a-string sentinel reddened a valid reusable workflow (CodeRabbit, PR
-    #425). `node` itself is scanned whole when `exclude` is empty. `rewrite` is applied
+    mapping's not-a-string sentinel reddened a valid reusable workflow (code review). `node` itself is scanned whole when `exclude` is empty. `rewrite` is applied
     to each value before classification (a composite action rewrites its action-path
     expression to its own directory).
 
@@ -2764,7 +2763,7 @@ def default_run_shell(node):
     (adversarial review 20261031T213036Z, XL2), and text shaped like one inside an `env:`
     block scalar is a string (H3). The flow, block, anchored, aliased, next-line-flow and
     quoted spellings all resolve the same way because the parser reads them, not a regex
-    (M4, XM1; simulator-frontend 20261101T004730Z, S2, S13). `run:` also appears as a
+    (M4, XM1; a consumer 20261101T004730Z, S2, S13). `run:` also appears as a
     STEP key; the scoped descent is why a step's own `run:` is never read here
     (adversarial review 20260929T030431Z, X1).
 
@@ -3375,7 +3374,7 @@ NPM_RUN_COMMANDS = {"run", "run-script", "rum", "urn"}
 # is made per package in npm_script_commands.
 # `npm ci` and `npm install` run the package's own preinstall..postprepare hooks unless
 # --ignore-scripts is set (npm lib/commands/ci.js), and the *-test commands run them before
-# `test` (ide review, RV-40). npm_script_commands adds pre/post around each name.
+# `test` (consumer review, RV-40). npm_script_commands adds pre/post around each name.
 # shortcut: that also names preprepublish/postprepublish, which npm does not run; a superset.
 NPM_INSTALL_HOOKS = ("install", "prepublish", "prepare")
 NPM_LIFECYCLE_COMMANDS = {
@@ -3530,7 +3529,7 @@ def npm_invocations(text, root=None):
     `npm test` / `npm t` run `scripts.test` with its hooks just as `npm run test` does, and
     reading only `run` left the most common gate command unfollowed. A directory option
     (`--prefix`, `-C`, `--workspace`, `-w`) was read as a flag and its VALUE as the script
-    name, so the real script went untiered (CodeRabbit, mirror PR #140). The options are
+    name, so the real script went untiered (code review). The options are
     returned as `selectors` for npm_package_dirs to resolve to the package npm runs in.
     """
     for match in NPM_COMMAND.finditer(text):
@@ -3597,18 +3596,18 @@ def printed_only(line, start):
 
     `echo "see scripts/report.py"` names a script it never runs. Reading the path out of
     raw text forced that file HIGH and, beside a `cd`, reddened the required check
-    outright (tax portal review 20261101T004738Z, M18). The exemption is the one
+    outright (consumer review 20261101T004738Z, M18). The exemption is the one
     changes_directory already applies to quoted strings: the command must be echo/printf/
     Write-*, nothing before the text may open a substitution, and nothing after it may
     pipe the text onward -- each of those EXECUTES the text. An unquoted `(` in the
     printing command's own arguments counts as a substitution too: `echo (cmd)` and
-    `Write-Host (cmd)` run cmd under pwsh, `echo <(cmd)` runs it under bash (CodeRabbit,
-    PR #425).
+    `Write-Host (cmd)` run cmd under pwsh, `echo <(cmd)` runs it under bash (code
+    review).
     """
     if _holds_substitution(line):
         return False
     # BOTH quoting disciplines must agree, as changes_directory requires: the shell is not
-    # known here, and under bash rules the pwsh string `"C:\out\"` never closes, so a
+    # known here, and under bash rules the pwsh string `".\out\"` never closes, so a
     # script run after it read as part of the printed string (C1-F8).
     return all(_printed_under(line, start, powershell) for powershell in (False, True))
 
@@ -3644,10 +3643,10 @@ def npm_script_commands(root, bases, name, visited):
 
     Resolved from each `base` directory's package.json, with the `pre<name>` and
     `post<name>` hooks npm runs around it, and followed transitively through nested
-    `npm run` calls. A script reached only this way was invisible to the checker: the
+    `npm run` calls. A script reached only this way was invisible to the checker: a
     frontend's `npm run lint:ratchet` ran `scripts/lintRatchet.mjs`, the file that
     enforces a HIGH-tiered ratchet, and nothing required the script itself to be HIGH
-    (simulator-frontend review 20261101T004730Z, S7).
+    (consumer review 20261101T004730Z, S7).
     """
     commands = []
     for base in bases:
@@ -3671,12 +3670,12 @@ def npm_script_commands(root, bases, name, visited):
             commands.append((base, command, None))
             nested_runs = list(npm_invocations(command, root))
             if nested_runs and changes_directory([command]):
-                # After a `cd` the nested npm runs in an unknown package (ide review, RV-13).
+                # After a `cd` the nested npm runs in an unknown package (consumer review, RV-13).
                 commands.append((base, None, f"cannot verify gate script paths after a directory change in package script `{hook}`; drop the `cd` and use npm --prefix"))
                 continue
             for _, nested, selectors, installs in nested_runs:
                 # `"gate": "npm ci --workspace=pkg"` runs the root's install hooks too, as the same
-                # command written in `run:` does (issue 496). From one base, no package means a refusal.
+                # command written in `run:` does. From one base, no package means a refusal.
                 directories, refusals = npm_command_packages(root, [base], selectors, installs)
                 if directories:
                     commands.extend(npm_script_commands(root, directories, nested, visited))
@@ -3688,8 +3687,7 @@ def npm_command_packages(root, bases, selectors, installs):
     """(packages, refusals): the package directories an npm command with `selectors` runs
     scripts in, from any of `bases`, and the refusal from each base it does not resolve from.
 
-    An install runs more hooks than its selectors name (observed with npm 11.14; CodeRabbit,
-    PR #495): the package it runs from always, so `npm ci --workspace=pkg` still ran the root's
+    An install runs more hooks than its selectors name (observed with npm 11.14; code review): the package it runs from always, so `npm ci --workspace=pkg` still ran the root's
     postinstall and prepare, and, with no workspace selector, every workspace's as well.
     `npm run prepare` runs the one package's script only, so it does not expand.
     """
@@ -3749,11 +3747,11 @@ def script_references(body, directories, root):
                 continue
             direct = list(GATE_SCRIPT.finditer(command))
             references = [(script.group(1).replace("\\", "/"), directories | ({base} if base else set())) for script in direct]
-            # `"gate": "python3 gate.py"` runs a root-level script GATE_SCRIPT cannot see (CodeRabbit, PR #426).
+            # `"gate": "python3 gate.py"` runs a root-level script GATE_SCRIPT cannot see (code review).
             # npm runs it from the package's own directory.
             interpreted = [(relative, extra | markers) for relative, extra in interpreter_references(command, [base], root)]
             # `"gate": "cd frontend && node gate.mjs"` runs frontend/gate.mjs, which nothing resolves
-            # from the package directory, so it was dropped untiered (ide review, RV-13). Refused
+            # from the package directory, so it was dropped untiered (consumer review, RV-13). Refused
             # exactly as a `cd` in the run body is: only when the script names something to run, so a
             # path that is merely printed (`cd frontend && echo scripts/report.py`) does not refuse.
             runs = interpreted or any(not printed_only(command, script.start()) and not _in_shell_comment(command, script.start()) for script in direct)
@@ -3765,9 +3763,9 @@ def script_references(body, directories, root):
 
 # A Python interpreter as a command word. The target after it is read by
 # interpreter_references; GATE_SCRIPT alone saw none of `-m`, `unittest discover -s` or a
-# root-level `python3 gate.py` (tax portal review 20261101T004738Z, M36).
-# A path prefix is allowed (`.venv/bin/python`, `/usr/bin/python3`; CodeRabbit, PR #426).
-# A closing quote may follow (`"C:\Program Files\Python\python.exe" gate.py`).
+# root-level `python3 gate.py` (consumer review 20261101T004738Z, M36).
+# A path prefix is allowed (`.venv/bin/python`, `/usr/bin/python3`; code review).
+# A closing quote may follow (`"/opt/Python 3/bin/python" gate.py`).
 PYTHON_COMMAND = re.compile(r"(?<![\w.-])python(?:3(?:\.\d+)*)?(?:\.exe)?(?=[\"']?[ \t])")
 # Spellings of the checkout root in a target path, read as the repository root.
 WORKSPACE_PREFIX = re.compile(r"^(?:\$\{?GITHUB_WORKSPACE\}?|\$\{\{\s*github\.workspace\s*\}\}|\$env:GITHUB_WORKSPACE)/")
@@ -3779,7 +3777,7 @@ REDIRECT_OPEN = re.compile(r"\d*>>?|&>>?|\d*<")
 PYTHON_VALUE_OPTIONS = {"-X", "-W", "-Q"}
 # pytest options whose value is a separate token, so it is not read as a path.
 PYTEST_VALUE_OPTIONS = {"-k", "-m", "-c", "-p", "-o", "-n", "-W", "-r", "--rootdir", "--confcutdir", "--basetemp", "--junitxml", "--cov", "--cov-report", "--ignore", "--deselect"}
-# unittest options whose value is a separate token (`-k smoke`), so it is not read as a target (Gitar, PR #426).
+# unittest options whose value is a separate token (`-k smoke`), so it is not read as a target (code review).
 UNITTEST_VALUE_OPTIONS = {"-k"}
 # Shell separators that end one command, searched in quote-masked text.
 COMMAND_END = re.compile(r";|&&|\|\||\||\n")
@@ -3870,7 +3868,7 @@ def interpreter_references(text, bases, root):
     discover start directory or a pytest path that does not exist, or a `-m` module whose
     top-level package is in the checkout but whose file is not. Those are refused rather
     than passed, because an unresolved target is a gate script nobody can require HIGH
-    (owner decision, PR #425 M36). A module with no trace in the checkout (`pip`, `venv`,
+    (owner decision, M36). A module with no trace in the checkout (`pip`, `venv`,
     `pytest` itself) is an installed tool, not repo code, and passes.
 
     THE BOUNDARY: a module reached only through PYTHONPATH or an installed editable
@@ -3895,13 +3893,13 @@ def interpreter_references(text, bases, root):
         if tokens[index] != "-m":
             target, rooted = WORKSPACE_PREFIX.subn("", tokens[index].replace("\\", "/"))
             if target.endswith(".py"):
-                # A workspace-rooted target names the root file only, whatever working-directory says (CodeRabbit, PR #426).
+                # A workspace-rooted target names the root file only, whatever working-directory says (code review).
                 found = _resolve_under_bases(root, [""] if rooted else bases, target)
                 for relative in found:
                     yield relative, set()
                 # Unresolved here, a relative target is still yielded raw so gate_script_paths
                 # applies its directory-change refusal: `cd sub` then `python3 gate.py` runs
-                # sub/gate.py, which nothing above resolves (CodeRabbit, PR #426). An absolute,
+                # sub/gate.py, which nothing above resolves (code review). An absolute,
                 # home or variable path is outside the checkout and is not a repo gate script,
                 # and a workspace-rooted one that is absent is not in the checkout at all.
                 if not found and not rooted and not re.match(r"^(?:[/~$]|[A-Za-z]:)", target):
@@ -3942,7 +3940,7 @@ _SCRIPT_EXTENSIONS = {
 }
 # Options that take the next token as their value, per interpreter: one shared table read
 # `bash -r gate.sh` (restricted shell, no value) as node's `-r <module>` and swallowed the
-# script (ide review, RV-15). pwsh is matched case-folded, the others as written (node `-C` is
+# script (consumer review, RV-15). pwsh is matched case-folded, the others as written (node `-C` is
 # --conditions and takes a value; `-c` is --check and does not).
 _VALUE_FLAGS = {
     "bash": {"-O", "--rcfile", "--init-file"}, "sh": {"-O"}, "zsh": {"-O"},
@@ -4003,7 +4001,7 @@ def _other_interpreter_references(text, bases, root):
         if is_glob:
             # The shell expands an unquoted glob even when a file is literally named like it.
             # One that matches nothing here is still yielded raw below: after `cd ci`, bash expands
-            # `checks/*` from `ci`, so only the directory-change refusal can catch it (issue 496).
+            # `checks/*` from `ci`, so only the directory-change refusal can catch it.
             found = sorted(set(found) | set(_glob_under_bases(root, [""] if rooted else bases, target, _SCRIPT_EXTENSIONS[interpreter])))
         for relative in found:
             yield relative, set()
@@ -4015,7 +4013,7 @@ def _other_interpreter_references(text, bases, root):
 
 
 def _in_shell_comment(text, start):
-    """True when `start` follows an unquoted `#` on its line: `# python3 -m pytest ci` runs nothing (CodeRabbit, PR #426).
+    """True when `start` follows an unquoted `#` on its line: `# python3 -m pytest ci` runs nothing (code review).
 
     Under BOTH quoting disciplines, since the shell is not known here: a `#` that only one
     of them reads as unquoted may be string content under the shell that runs the body.
@@ -4032,8 +4030,7 @@ def _holds_substitution(text):
     """True when `text` holds a command substitution, `$(...)` or backticks, or an ANSI-C string `$'..'`.
 
     An ANSI-C string keeps `\'` inside the string, which neither quote scanner models, so
-    `label=$'can\'t # note'; python3 scripts/gate.py` reads the command as a comment
-    (fixportal-agents-skills#486).
+    `label=$'can\'t # note'; python3 scripts/gate.py` reads the command as a comment.
 
     A substitution runs its commands wherever it sits, a comment included in a string, and
     its own quotes nest inside the string around it: in `echo "$(echo " # "; python3
@@ -4083,7 +4080,7 @@ def without_agreed_comments(text):
     A feeder body keeps its `#` lines, because one can close a string opened above it.
     But the quote scanners do not know a comment from code, so a quote inside a real
     comment (`# "`) opened a string that swallowed the commands on later lines, and a
-    script they run went untiered (CodeRabbit, PR #479). Blanking what both shells agree
+    script they run went untiered (code review). Blanking what both shells agree
     is a comment removes those quotes; text only one shell reads as a comment stays, since
     it may be code under the shell that runs the body.
     """
@@ -4112,7 +4109,7 @@ def _interpreter_tokens(segment):
     """The words of one interpreter command, quotes stripped, redirections dropped.
 
     Non-POSIX shlex, because POSIX mode treats a backslash as an escape and turns
-    `.\\ci\\gate.py` into `.cigate.py` (CodeRabbit, PR #426). Quotes are stripped per
+    `.\\ci\\gate.py` into `.cigate.py` (code review). Quotes are stripped per
     token, which also cleans a token cut from inside `bash -c "python3 gate.py"`.
     """
     try:
@@ -4120,7 +4117,7 @@ def _interpreter_tokens(segment):
     except ValueError:
         raw = segment.split()
     # A word ending in one backslash escaped the space after it (`gate\ script.py` in bash). Not
-    # before an option: `tests\ -q` is a Windows trailing separator, not an escape (Gitar, PR #426).
+    # before an option: `tests\ -q` is a Windows trailing separator, not an escape (code review).
     words = []
     for word in raw:
         if words and words[-1].endswith("\\") and not words[-1].endswith("\\\\") and not word.startswith("-"):
@@ -4228,7 +4225,7 @@ def _pytest_references(root, bases, args):
         for relative in found:
             yield relative, set()
             # pytest also imports every conftest.py from its rootdir down to a collected file, and one
-            # can skip the gate's tests (ide review, RV-14; observed with pytest 9.1). Every ancestor up
+            # can skip the gate's tests (consumer review, RV-14; observed with pytest 9.1). Every ancestor up
             # to the repository root is named, whatever --rootdir/--confcutdir say: a superset.
             parts = relative.split("/")
             for depth in range(len(parts)):
@@ -4284,7 +4281,7 @@ def gate_script_paths(lines, jobs, needs, gate_job, root):
         seen_bodies.add(body_key)
         body_list = list(body_readings(body))
         # One verdict per BODY, across its readings: a `cd` one reading sees applies to a
-        # script only the other reading sees (CodeRabbit, PR #483).
+        # script only the other reading sees (code review).
         moved = any(changes_directory(reading) for reading in body_list)
         readings.extend((job_id, reading, body_directories, moved) for reading in body_list)
     for job_id, body, body_directories, moved in readings:
@@ -4465,13 +4462,13 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
 # BASH_ENV names a start-up file bash sources, SHELLOPTS and BASHOPTS set shell
 # options such as noexec at start-up, and BASH_FUNC_name%% imports a function over a
 # builtin. Refusing BASH_ENV alone left every other route open (adversarial review
-# 20261031T213036Z, M2; tax portal 20261101T004738Z, M16).
+# 20261031T213036Z, M2; a consumer 20261101T004738Z, M16).
 #
 # `ENV` is NOT one of them. Bash reads it only when interactive in POSIX mode; a step runs
 # a script file non-interactively. Observed 2026-11-19 with bash 5.3 under the runner's
 # own flags (`ENV=file bash --noprofile --norc -eo pipefail body.sh`): the file is not
 # sourced, while the same command with BASH_ENV sources it. Refusing the name made an
-# ordinary `env: ENV: prod` a permanent false red (ci-frontend review 20261119T121117Z,
+# ordinary `env: ENV: prod` a permanent false red (consumer review 20261119T121117Z,
 # C1-F9). Every accepted gate shell is bash or pwsh, so `sh` never runs a gate step.
 STARTUP_ENV_KEYS = ("BASH_ENV", "SHELLOPTS", "BASHOPTS")
 # The same routes spelled inside a GATE JOB run body -- a GITHUB_ENV write, or a write to
@@ -4561,11 +4558,11 @@ def assert_feeder_steps(workflow_path, lines, jobs, feeders, step_exempt, used_e
     Keys are matched at the step's OWN column, the guard step_can_fail already applies:
     an action INPUT named `if` or `continue-on-error` under `with:` is a value, not a step
     control, and reading it as one reddened a correct workflow (adversarial review
-    20261031T213036Z, L3; tax portal 20261101T004738Z, M20).
+    20261031T213036Z, L3; a consumer 20261101T004738Z, M20).
 
     A best-effort step is exempted by naming `<job>/<step id>` in GATE_STEP_EXEMPT -- an
     explicit, reviewable list, as GATE_EXEMPT is for jobs. Fail-closed with no exemption
-    reddened the first consumer with a best-effort step (simulator-frontend review
+    reddened the first consumer with a best-effort step (consumer review
     20261101T004730Z, S12). `label` prefixes the job id when the jobs belong to a called
     reusable workflow, in messages and in exemption entries alike.
     """
@@ -4677,7 +4674,7 @@ def check_file(workflow_path, gate_job, exempt, conditional_exempt, *, on_empty=
     The same holds for a stale GATE_STEP_EXEMPT entry. `step_usage` is directory mode's
     (used entries, feeder job ids) pair, shared by every file and judged once after the
     loop: judged per file, `build/lint` used by ci.yml's `build` read as stale in a
-    release.yml whose own `build` has no tolerated step (CodeRabbit, mirror PR #140; issue #429). Without it
+    release.yml whose own `build` has no tolerated step (code review). Without it
     (file mode) the file is judged on its own.
 
     READ AS utf-8-sig. A plain utf-8 read leaves a leading BOM in the first character,

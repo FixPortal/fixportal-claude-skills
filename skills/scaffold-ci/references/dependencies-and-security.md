@@ -18,9 +18,11 @@ Read this reference for Dependabot or repository security-surface work.
 
 ## `dependabot.yml`
 
-Canonical = the richer house variant: weekly, Monday 06:00 Europe/London, PR limits, commit
+Canonical = the richer house variant: monthly, 06:00 Europe/London, PR limits, commit
 prefixes (`chore` for deps, `ci` for actions, `include: scope`), and fine-grained nuget
-groups. Include the ecosystems the repo actually uses.
+groups. Include the ecosystems the repo actually uses. The cadence is monthly because each
+Dependabot PR triggers full CI, so monthly batching cuts runner minutes; security updates
+are unaffected by the schedule. Do not add `day:`, which applies only to weekly.
 
 ```yaml
 version: 2
@@ -29,8 +31,7 @@ updates:
   - package-ecosystem: nuget
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Europe/London
     open-pull-requests-limit: 10
@@ -60,8 +61,7 @@ updates:
   - package-ecosystem: npm
     directory: /src/your-ui
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Europe/London
     open-pull-requests-limit: 10
@@ -83,8 +83,7 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Europe/London
     open-pull-requests-limit: 10
@@ -98,8 +97,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
       timezone: Europe/London
     open-pull-requests-limit: 5
@@ -116,7 +114,7 @@ yet dependencies — Dependabot ignores empty groups, and the file won't need ed
 those packages appear later.
 
 Lighter fallback (smaller repositories): a single grouped `nuget-minor-and-patch` /
-`npm-minor-and-patch` group + `github-actions`, weekly, no time/limit/prefix detail. Use the
+`npm-minor-and-patch` group + `github-actions`, monthly, no time/limit/prefix detail. Use the
 richer variant by default.
 
 **Peer-locked toolchains:** when packages constrain each other through peer ranges, give the

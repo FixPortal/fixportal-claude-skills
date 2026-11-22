@@ -251,25 +251,74 @@ echo "HIGH=$high"
         if ($out -notmatch "HIGH=$($case.High)\b") { throw "M5: $($case.N) renames should give high=$($case.High) (the guard counts paths, not records):`n$out" }
     }
 
-    # L5 + XL9: a dependency-bot PR skips classification AND sheds a stale review-high label.
+    # L5 + XL9: a dependency-bot PR skips classification AND sheds a stale review-high label --
+    # but only while every commit is the bot's. A maintainer commit on a bot branch (a pinned
+    # toolchain bump that needs a HIGH-tier script edit) was skipped too, so it merged
+    # untiered (consumer review run 20261121T000254Z, D2-AR-1). An unreadable commit list,
+    # or a commit with no linked login, counts as not the bot's: classification fails closed.
+    if ($tierWorkflow -notmatch '(?m)^\s+bot_author_mixed=false\s*$' -or $tierWorkflow -notmatch '(?m)^\s+commits_unreadable=false\s*$') {
+        throw 'D2-AR-1: review-tier.yml must initialise bot_author_mixed=false and commits_unreadable=false before the bot-author check'
+    }
     $skip = Get-Block $tierWorkflow 'if \[ "\$PR_AUTHOR" ='
     foreach ($case in @(
-        @{ Author = 'dependabot[bot]'; Skipped = $true },
-        @{ Author = 'renovate[bot]';   Skipped = $true },
-        @{ Author = 'octocat';         Skipped = $false }
+        @{ Author = 'dependabot[bot]'; Commits = 'dependabot[bot]', 'dependabot[bot]'; Skipped = $true;  Mixed = 'false'; Why = 'an all-bot Dependabot PR' },
+        @{ Author = 'renovate[bot]';   Commits = 'renovate[bot]';                      Skipped = $true;  Mixed = 'false'; Why = 'an all-bot Renovate PR' },
+        @{ Author = 'dependabot[bot]'; Commits = 'dependabot[bot]', 'octocat';         Skipped = $false; Mixed = 'true';  Why = 'a Dependabot PR carrying a maintainer commit' },
+        @{ Author = 'dependabot[bot]'; Commits = 'dependabot[bot]', '<unknown>';       Skipped = $false; Mixed = 'true';  Why = 'a Dependabot PR with a commit that has no linked login' },
+        @{ Author = 'dependabot[bot]'; Fail = $true;                                   Skipped = $false; Mixed = 'true';  Why = 'a Dependabot PR whose commit list cannot be read' },
+        # The commits endpoint stops at 250 even under --paginate, so a list shorter than the
+        # PR's own commit count is not evidence that the rest are the bot's (code
+        # review). Not "unreadable" either: a re-run returns the same truncated list.
+        @{ Author = 'dependabot[bot]'; Commits = 'dependabot[bot]', 'dependabot[bot]'; Total = '3'; Skipped = $false; Mixed = 'true'; Why = 'a Dependabot PR whose commit list is truncated' },
+        @{ Author = 'dependabot[bot]'; Commits = 'dependabot[bot]'; TotalFail = $true; Unreadable = 'true'; Skipped = $false; Mixed = 'true'; Why = 'a Dependabot PR whose commit count cannot be read' },
+        @{ Author = 'octocat';         Commits = 'octocat';                            Skipped = $false; Mixed = 'false'; Why = 'a human-authored PR' }
     )) {
+        $commitsArm = if ($case.Fail) { 'return 1' } else { "printf '%s\n' $(($case.Commits | ForEach-Object { "'$_'" }) -join ' ')" }
+        $total = if ($case.Total) { $case.Total } elseif ($case.Commits) { [string]@($case.Commits).Count } else { '0' }
+        $totalArm = if ($case.TotalFail) { 'return 1' } else { "echo $total" }
         $out = Invoke-Bash @"
 set -euo pipefail
-PR_AUTHOR='$($case.Author)' GITHUB_REPOSITORY=o/r PR_NUMBER=1
+PR_AUTHOR='$($case.Author)' GITHUB_REPOSITORY=o/r PR_NUMBER=1 bot_author_mixed=false commits_unreadable=false
 LOG=`$(mktemp); trap 'cat "`$LOG"' EXIT
-gh() { echo "GH:`$*" >> "`$LOG"; }
+gh() { echo "GH:`$*" >> "`$LOG"; case "`$*" in *'/commits'*) $commitsArm ;; *'--jq .commits') $totalArm ;; esac; }
 $skip
-echo AFTER
+echo "AFTER MIXED=`$bot_author_mixed UNREADABLE=`$commits_unreadable"
 "@
         $removed = $out -match 'GH:pr edit 1 --repo o/r --remove-label review-high'
         $reached = $out -match 'AFTER'
-        if ($case.Skipped -and (-not $removed -or $reached)) { throw "L5/XL9: $($case.Author) must skip classification and remove review-high:`n$out" }
-        if (-not $case.Skipped -and ($removed -or -not $reached)) { throw "L5/XL9: $($case.Author) must fall through untouched:`n$out" }
+        if ($case.Skipped -and (-not $removed -or $reached)) { throw "L5/XL9: $($case.Why) must skip classification and remove review-high:`n$out" }
+        if (-not $case.Skipped -and ($removed -or -not $reached)) { throw "L5/XL9/D2-AR-1: $($case.Why) must fall through to classification:`n$out" }
+        $unreadable = if ($case.Fail) { 'true' } elseif ($case.Unreadable) { $case.Unreadable } else { 'false' }
+        if ($reached -and $out -notmatch "AFTER MIXED=$($case.Mixed) UNREADABLE=$unreadable\b") { throw "D2-AR-1: $($case.Why) must leave bot_author_mixed=$($case.Mixed) commits_unreadable=${unreadable}:`n$out" }
+    }
+
+    # D2-AR-1, the HIGH half: a mixed-author bot PR that touches a HIGH path cannot get the
+    # review HIGH requires (CodeRabbit refuses bot-authored PRs), so the job fails, naming the
+    # remedy, instead of pinning a label no reviewer will honour. A human PR is labelled as before.
+    $hb = Get-Block $tierWorkflow 'if \$high; then'
+    # A commit list that could not be read is not evidence of a maintainer commit: that case
+    # fails too (it cannot be shown to be bot-only), but asks for a re-run instead.
+    foreach ($case in @(
+        @{ Mixed = 'true';  Unreadable = 'false'; Fails = $true;  Remedy = 'pull request a maintainer opens'; Why = 'a mixed-author bot PR on a HIGH path' },
+        @{ Mixed = 'true';  Unreadable = 'true';  Fails = $true;  Remedy = 'Re-run this job';                 Why = 'a bot PR whose commits could not be read, on a HIGH path' },
+        @{ Mixed = 'false'; Unreadable = 'false'; Fails = $false; Remedy = '';                                Why = 'a human PR on a HIGH path' }
+    )) {
+        $out = Invoke-Bash @"
+set -euo pipefail
+GITHUB_REPOSITORY=o/r PR_NUMBER=1 PR_AUTHOR='dependabot[bot]' high=true bot_author_mixed=$($case.Mixed) commits_unreadable=$($case.Unreadable)
+tier_high_on_failure() { echo TIERED_HIGH; }
+gh() { echo "GH:`$*"; }
+$hb
+echo REACHED_END
+"@
+        $code = $LASTEXITCODE
+        $labelled = $out -match 'GH:pr edit 1 --repo o/r --add-label review-high'
+        if ($case.Fails -and ($code -eq 0 -or $labelled -or $out -notmatch [regex]::Escape($case.Remedy))) {
+            throw "D2-AR-1: $($case.Why) must fail without labelling and name the remedy (exit $code):`n$out"
+        }
+        if (-not $case.Fails -and ($code -ne 0 -or -not $labelled -or $out -notmatch 'REACHED_END')) {
+            throw "D2-AR-1: $($case.Why) must be labelled review-high as before (exit $code):`n$out"
+        }
     }
 
     # L7 (server half): a bracket or brace entry on the base ref fails closed, loudly.
@@ -532,6 +581,57 @@ foreach ($path in $requiredPaths) {
     if ($policy.high -notcontains $path) { throw "the example policy omits guard-required HIGH path: $path" }
 }
 
+# CodeRabbit is label-triggered when auto-review is off, so the guard must assert the label is
+# still wired. The step's own Python is extracted from the guard and run against fixtures, so
+# what is tested is what ships.
+$labelStep = [regex]::Match($guard, "(?ms)^      - name: CodeRabbit label trigger must stay wired\r?\n(?<body>.*?)(?=^      - |\z)")
+if (-not $labelStep.Success) { throw "review-policy-guard.yml has lost its 'CodeRabbit label trigger must stay wired' step" }
+$labelPython = [regex]::Match($labelStep.Groups['body'].Value, "(?ms)python3 - <<'PY'\r?\n(?<code>.*?)^          PY\r?$")
+if (-not $labelPython.Success) { throw "the 'CodeRabbit label trigger must stay wired' step must carry its Python inline" }
+$labelCode = (($labelPython.Groups['code'].Value -split '\r?\n') | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_.TrimStart() } }) -join "`n"
+$labelPy = @('python3', 'python') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+if ($labelPy) {
+    & $labelPy -c 'import yaml' 2>$null
+    if ($LASTEXITCODE -ne 0) { $labelPy = $null }
+}
+if (-not $labelPy) {
+    Write-Host 'SKIP: python with PyYAML is not available; the CodeRabbit label step was found but not run'
+}
+else {
+    $labelRoot = Join-Path ([IO.Path]::GetTempPath()) ('coderabbit-label-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $labelRoot | Out-Null
+        [IO.File]::WriteAllText((Join-Path $labelRoot 'step.py'), $labelCode + "`n", [Text.UTF8Encoding]::new($false))
+        $labelCases = @(
+            @{ Name = 'label trigger with review-high';         Yaml = "reviews:`n  auto_review:`n    enabled: false`n    labels: [`"review-high`", `"review-high-manual`"]`n"; Code = 0 }
+            @{ Name = 'auto-review on, no labels';              Yaml = "reviews:`n  auto_review:`n    enabled: true`n"; Code = 0 }
+            @{ Name = 'no reviews block at all';                Yaml = "language: en-GB`n"; Code = 0 }
+            @{ Name = 'review-high dropped from the labels';    Yaml = "reviews:`n  auto_review:`n    enabled: false`n    labels: [`"review-high-manual`"]`n"; Code = 1 }
+            @{ Name = 'review-high renamed';                    Yaml = "reviews:`n  auto_review:`n    enabled: false`n    labels: [`"needs-review`"]`n"; Code = 1 }
+            @{ Name = 'auto-review off with no labels list';    Yaml = "reviews:`n  auto_review:`n    enabled: false`n"; Code = 1 }
+            @{ Name = 'labels is not a list';                   Yaml = "reviews:`n  auto_review:`n    enabled: false`n    labels: review-high`n"; Code = 1 }
+            @{ Name = 'an unparseable file';                    Yaml = "reviews: [`n"; Code = 1 }
+        )
+        foreach ($case in $labelCases) {
+            [IO.File]::WriteAllText((Join-Path $labelRoot '.coderabbit.yaml'), $case.Yaml, [Text.UTF8Encoding]::new($false))
+            Push-Location $labelRoot
+            try { $labelOut = & $labelPy 'step.py' 2>&1 | Out-String; $labelExit = $LASTEXITCODE } finally { Pop-Location }
+            if ($labelExit -ne $case.Code) { throw "CodeRabbit label step: $($case.Name) must exit $($case.Code); got ${labelExit}:`n$labelOut" }
+            if ($case.Code -eq 1 -and $labelOut -notmatch '::error file=\.coderabbit\.yaml') { throw "CodeRabbit label step: $($case.Name) must raise an annotated error:`n$labelOut" }
+        }
+        # -Force: on Linux a dotfile counts as hidden and Remove-Item refuses it without it.
+        Remove-Item -LiteralPath (Join-Path $labelRoot '.coderabbit.yaml') -Force
+        Push-Location $labelRoot
+        try { $labelOut = & $labelPy 'step.py' 2>&1 | Out-String; $labelExit = $LASTEXITCODE } finally { Pop-Location }
+        if ($labelExit -ne 1) { throw "CodeRabbit label step: a missing .coderabbit.yaml must fail closed; got ${labelExit}:`n$labelOut" }
+    }
+    finally {
+        if ($labelRoot.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $labelRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # The gate checker must assert the gate's OWN semantics, not just its needs: membership.
 # A gate with no `if: always()` is skipped exactly when an upstream job fails, and a gate
 # with no step keyed on a needs.<job>.result aggregates nothing - both report green.
@@ -635,6 +735,23 @@ if ($mechanicalSync -notmatch '(?s)line\s+endings\s+aside') {
 if ($mechanicalSync -notmatch '(?s)`relative`\s+path\s+of\s+an\s+entry\s+in' -or
     $mechanicalSync -notmatch '(?s)`\.github/canonical-assets\.json`\s+itself') {
     throw 'the mechanical-sync exception must take its paths from the inventory and admit the manifest'
+}
+
+# D2-AR-1, ai-smells half: what makes the post step impossible on a Dependabot PR is the
+# read-only token GitHub issues when DEPENDABOT triggers the run, and that follows
+# github.actor (re-runs keep the original actor's privileges). Keying on the PR author
+# also skipped the scan after a maintainer pushed to the bot branch, where the token is
+# writable and the maintainer's lines are exactly what needs scanning.
+$smellsPath = Join-Path $assets 'ai-smells.yml'
+# This mirror holds back ai-smells.yml: it needs audit-ai-quality, which is not published here.
+$smells = if (Test-Path -LiteralPath $smellsPath) { Get-Content -LiteralPath $smellsPath -Raw } else { $null }
+if ($null -eq $smells) {
+    Write-Host "SKIP: ai-smells.yml is not part of this republished tree - $smellsPath"
+}
+elseif ($smells -match 'pull_request\.user\.login' -or
+    $smells -notmatch "github\.actor != 'dependabot\[bot\]'" -or
+    $smells -notmatch "github\.actor != 'renovate\[bot\]'") {
+    throw "D2-AR-1: ai-smells.yml must skip on github.actor being a dependency bot, not on the PR author"
 }
 
 'scaffold-ci review control plane OK'

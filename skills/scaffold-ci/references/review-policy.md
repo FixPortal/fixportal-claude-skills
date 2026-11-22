@@ -182,12 +182,12 @@ The asymmetry is deliberate — HIGH needs one match, LOW needs unanimity — be
 unrecognised path is unknown risk, and unknown risk is not low risk.
 
 - **`high`** is broadly portable: migrations, `infra/**`, `**/*.bicep`,
-  `.github/dependabot.yml`, auth paths and money-ledger writes. Still trim it to globs the
+  auth paths and money-ledger writes. Still trim it to globs the
   repo actually has.
 - **`.github/workflows/**` is deliberately NOT HIGH, and must not be re-added.** Workflow
   hygiene is asserted mechanically; the measured review-budget rationale is in
-  [provenance.md](provenance.md). `.github/dependabot.yml` stays HIGH because its semantic
-  policy cannot be checked by the workflow parser.
+  [provenance.md](provenance.md). `.github/dependabot.yml` is NORMAL, not HIGH (owner
+  decision 2026-11-16): it changes monthly and costs almost nothing to review.
 - **Dependency manifests do NOT belong in `high`** — not `package.json`,
   `package-lock.json`, `Directory.Packages.props`, `**/*.csproj`. **Reversed 2026-07-29**;
   this list used to include them on supply-chain grounds. Dependency PRs are now out of AI

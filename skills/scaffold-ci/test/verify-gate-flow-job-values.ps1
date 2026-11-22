@@ -17,8 +17,12 @@ $cases = @(
     @{ Name='tag-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    !!map`n    {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Accepted=$false },
     @{ Name='tag-same-line-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    !!map {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Accepted=$false },
     @{ Name='anchor-tag-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    &build_definition !!map`n    {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Aliased=$true; Accepted=$false },
-    @{ Name='anchor-block-positive'; Body="  build:`n    &build_definition`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Aliased=$true; Accepted=$true },
-    @{ Name='anchor-block-conditional'; Reason='job-level ''if:'''; Body="  build:`n    &build_definition`n    if: github.ref == 'refs/heads/main'`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Aliased=$true; Accepted=$false },
+    # An anchor on the job is still read; a second job that is an ALIAS of it is refused
+    # (consumer review 20261119T121117Z, C1-F13): the line scans read the alias as an
+    # empty job, so it carried none of the anchor's `if:`/`needs:`/steps under its own id.
+    @{ Name='anchor-block-positive'; Body="  build:`n    &build_definition`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$true },
+    @{ Name='anchor-block-conditional'; Reason='job-level ''if:'''; Body="  build:`n    &build_definition`n    if: github.ref == 'refs/heads/main'`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$false },
+    @{ Name='alias-job-refused'; Reason='alias of another job'; Body="  build:`n    &build_definition`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Aliased=$true; Accepted=$false },
     @{ Name='tag-block-positive'; Body="  build:`n    !!map`n    runs-on: ubuntu-latest`n    steps:`n      - run: echo check"; Accepted=$true },
     @{ Name='hash-anchor-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    &build_definition#v1 {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$false },
     @{ Name='hash-anchor-tag-flow'; Reason='unsupported flow mapping value'; Body="  build:`n    &build_definition#v1 !!map {if: github.ref == 'refs/heads/main', runs-on: ubuntu-latest, steps: [{run: 'echo check'}]}"; Aliased=$true; Anchor='build_definition#v1'; Accepted=$false },
@@ -54,4 +58,4 @@ try {
     }
     Remove-Item -LiteralPath $resolvedScratch -Recurse -Force
 }
-'Gate flow job-value regressions OK (22 cases).'
+'Gate flow job-value regressions OK (23 cases).'
