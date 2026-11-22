@@ -229,6 +229,103 @@ runs:
         throw "N02-C3: a remote reusable workflow reached through a local one must fail:`n$($exemptRemoteNested.Output)"
     }
 
+    # A remote ACTION is as unfollowable as a remote reusable workflow (its action.yml is
+    # not in the checkout), and one that wraps actions/checkout would walk through the
+    # exemption. So an
+    # exempted workflow may not use a remote action outside actions/* at step level, through a
+    # local composite, or through a local reusable workflow. actions/* stays allowed.
+    $thirdPartyStep = "      - uses: other-org/checkout-wrapper@0123456789abcdef0123456789abcdef01234567`n"
+    $stepHead = "on:`n  pull_request_target:`n    branches: [main]`npermissions:`n  contents: read`njobs:`n  label:`n    runs-on: ubuntu-latest`n    steps:`n"
+    $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = 'ci.yml'
+    try {
+        $exemptStep = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $stepHead + $thirdPartyStep }
+        $exemptStepViaComposite = Invoke-Hygiene @{
+            '.github/workflows/ci.yml' = $stepHead + "      - uses: ./.github/actions/setup`n"
+            '.github/actions/setup/action.yml' = "name: setup`nruns:`n  using: composite`n  steps:`n    - uses: other-org/checkout-wrapper@0123456789abcdef0123456789abcdef01234567`n      shell: bash`n"
+        }
+        $exemptStepViaReusable = Invoke-Hygiene @{
+            '.github/workflows/ci.yml' = $exemptHead + "    uses: ./.github/workflows/_inner.yml`n"
+            '.github/workflows/_inner.yml' = "on: workflow_call`npermissions:`n  contents: read`njobs:`n  inner:`n    runs-on: ubuntu-latest`n    steps:`n" + $thirdPartyStep
+        }
+        $exemptFirstParty = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $stepHead + "      - uses: actions/github-script@v8`n" }
+    } finally { $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = $oldExempt }
+    foreach ($case in @(
+        @{ Name = 'a remote action at step level'; Result = $exemptStep }
+        @{ Name = 'a remote action reached through a local composite'; Result = $exemptStepViaComposite }
+        @{ Name = 'a remote action reached through a local reusable workflow'; Result = $exemptStepViaReusable })) {
+        if ($case.Result.Code -ne 1 -or $case.Result.Output -notmatch 'other-org/checkout-wrapper') {
+            throw "AR-2: an exempted workflow with $($case.Name) must fail naming it:`n$($case.Result.Output)"
+        }
+    }
+    if ($exemptFirstParty.Code -ne 0) { throw "AR-2: a first-party actions/* step must stay allowed under the exemption:`n$($exemptFirstParty.Output)" }
+
+    # consumer review 20261119T121117Z, C2-F4: a container image is remote code too. Each
+    # of these three exited 0 on the pre-fix asset.
+    $exemptJobHead = "on:`n  pull_request_target:`n    branches: [main]`npermissions:`n  contents: read`njobs:`n  label:`n    runs-on: ubuntu-latest`n"
+    $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = 'ci.yml'
+    try {
+        $exemptContainer = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $exemptJobHead + "    container: node@sha256:$DIGEST`n    steps:`n      - run: echo hi`n" }
+        $exemptService = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $exemptJobHead + "    services:`n      db:`n        image: postgres@sha256:$DIGEST`n    steps:`n      - run: echo hi`n" }
+        $exemptDockerAction = Invoke-Hygiene @{
+            '.github/workflows/ci.yml' = $stepHead + "      - uses: ./.github/actions/d`n"
+            '.github/actions/d/action.yml' = "name: d`nruns:`n  using: docker`n  image: docker://alpine@sha256:$DIGEST`n"
+        }
+    } finally { $env:PRIVILEGED_TRIGGER_NO_CHECKOUT = $oldExempt }
+    foreach ($case in @(
+        @{ Name = 'a job container image'; Result = $exemptContainer; Image = 'node@sha256' }
+        @{ Name = 'a service image'; Result = $exemptService; Image = 'postgres@sha256' }
+        @{ Name = 'a local docker action registry image'; Result = $exemptDockerAction; Image = 'alpine@sha256' })) {
+        if ($case.Result.Code -ne 1 -or $case.Result.Output -notmatch 'runs a container image' -or $case.Result.Output -notmatch $case.Image) {
+            throw "C2-F4: an exempted workflow with $($case.Name) must fail naming it:`n$($case.Result.Output)"
+        }
+    }
+
+    # C2-F5: `steps: true` raised TypeError out of digest_pinned_uses (red: a traceback).
+    $stepsNotList = Invoke-Hygiene @{ '.github/workflows/ci.yml' = "on:`n  pull_request:`npermissions:`n  contents: read`njobs:`n  build:`n    runs-on: ubuntu-latest`n    steps: true`n" }
+    if ($stepsNotList.Output -match 'Traceback') { throw "C2-F5: a non-list steps: must not abort the scan with a traceback:`n$($stepsNotList.Output)" }
+
+    # C2-X3: a local Dockerfile build is the repository's code, but its base image is a
+    # registry pull. A mutable FROM exited 0 on the pre-fix asset.
+    $dockerUse = "on:`n  pull_request:`npermissions:`n  contents: read`njobs:`n  build:`n    runs-on: ubuntu-latest`n    steps:`n      - uses: ./.github/actions/d`n"
+    $dockerAction = "name: d`nruns:`n  using: docker`n  image: Dockerfile`n"
+    $mutableFrom = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $dockerUse; '.github/actions/d/action.yml' = $dockerAction; '.github/actions/d/Dockerfile' = "FROM node:20`nRUN echo hi`n" }
+    if ($mutableFrom.Code -ne 1 -or $mutableFrom.Output -notmatch "'node:20'[^\r\n]*not pinned") { throw "C2-X3: a mutable FROM in a local docker action must fail the pin check:`n$($mutableFrom.Output)" }
+    $pinnedFrom = Invoke-Hygiene @{ '.github/workflows/ci.yml' = $dockerUse; '.github/actions/d/action.yml' = $dockerAction; '.github/actions/d/Dockerfile' = "FROM --platform=linux/amd64 node@sha256:$DIGEST AS build`nFROM build AS test`nFROM scratch`n" }
+    if ($pinnedFrom.Code -ne 0) { throw "C2-X3: a digest-pinned FROM, a stage name and scratch must pass:`n$($pinnedFrom.Output)" }
+
+    # A workflow that is not valid UTF-8 must fail the gate with an annotated error, not
+    # abort the scan with a traceback.
+    $badBytesRepo = Join-Path $root ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $badBytesRepo '.github/workflows') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $badBytesRepo '.github/workflows/ci.yml'), [byte[]](0x6E, 0x61, 0x6D, 0x65, 0x3A, 0x20, 0xFF, 0xFE, 0x0A))
+    Push-Location $badBytesRepo
+    try { $badBytes = [pscustomobject]@{ Output = (& $python.Source $script 2>&1 | Out-String); Code = $LASTEXITCODE } }
+    finally { Pop-Location }
+    if ($badBytes.Code -ne 1 -or $badBytes.Output -notmatch '::error file=[^\r\n]*ci\.yml' -or $badBytes.Output -match 'Traceback') {
+        throw "AR-5: a non-UTF-8 workflow must fail with an annotated error and no traceback:`n$($badBytes.Output)"
+    }
+
+    # With the allowlist on, an image pinned `@SHA256:<hex>` is an image, not an action: the
+    # digest tell must ignore case exactly as is_pinned does.
+    $env:TRUSTED_THIRD_PARTY_ACTIONS = 'raven-actions/actionlint'
+    try {
+        $upperDigest = Invoke-Hygiene @{ '.github/workflows/ci.yml' = @"
+name: ci
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: bitnami/postgresql@SHA256:$DIGEST
+    steps:
+      - uses: actions/checkout@v7
+"@ }
+    } finally { $env:TRUSTED_THIRD_PARTY_ACTIONS = $oldTrusted }
+    if ($upperDigest.Code -ne 0) { throw "AR-6: an image pinned @SHA256:<hex> must be treated as an image, not an action:`n$($upperDigest.Output)" }
+
     # --- Duplicate `on:` / YAML-1.1 `True:` key. Which one GitHub honours depends on the
     #     parser, so a trigger could hide in the one this check does not read.
     $dupKey = Invoke-Hygiene @{ '.github/workflows/ci.yml' = @'

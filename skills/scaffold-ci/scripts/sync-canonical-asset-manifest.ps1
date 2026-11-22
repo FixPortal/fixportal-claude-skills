@@ -57,11 +57,14 @@ $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
 # a BOM when one is present and reads BOM-less UTF-8 by default. The decode is STRICT
 # (throwOnInvalidBytes): the Python verifier strict-decodes, so a hash recorded over
 # U+FFFD replacement characters could never verify -- refuse at generation time instead.
-# Must stay equivalent to the verifier's PINNED_USES pattern -- both sides of the contract.
+# Must stay equivalent to the verifier's PINNED_USES and PINNED_FIRST_PARTY_TAG patterns --
+# both sides of the contract.
 $PinnedUses = '(?m)^([ \t]*(?:-[ \t]+)?uses:[ \t]*[^\s@#]+@)[0-9a-f]{40}(?:[ \t]+#.*)?$'
+$PinnedFirstPartyTag = '(?m)^([ \t]*(?:-[ \t]+)?uses:[ \t]*actions/[^\s@#]+@)v\d+(?:\.\d+)*(?:[ \t]+#.*)?$'
 function Get-AssetHash([string] $Path) {
     $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true)) -replace "\r\n?", "`n"
     $text = $text -creplace $PinnedUses, '$1<pinned>'
+    $text = $text -creplace $PinnedFirstPartyTag, '$1<pinned>'
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }

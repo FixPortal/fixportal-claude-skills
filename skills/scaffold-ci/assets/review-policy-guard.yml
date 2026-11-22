@@ -177,6 +177,45 @@ jobs:
           echo "Review policy is tracked, unignored, parseable, and tiers its own control plane HIGH."
           jq -c '{version, high: (.high | length), low: (.low | length)}' "$policy"
 
+      # CodeRabbit is LABEL-TRIGGERED here: with `auto_review.enabled: false` the `labels` list
+      # is the only thing that starts a review, and review-tier.yml applies `review-high`. An
+      # edit that drops or renames that label leaves every check green while CodeRabbit quietly
+      # stops reviewing HIGH PRs, and throttling already makes "no CodeRabbit verdict" routine.
+      # Existence of .coderabbit.yaml (checked above) is not usability, the same lesson as the
+      # policy file. Parsed, not grepped, with the runner's system python3 (see the hygiene
+      # step below for why there is no setup-python). A repo that leaves auto-review ON has no
+      # label dependency and passes.
+      - name: CodeRabbit label trigger must stay wired
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          import yaml
+
+          path = ".coderabbit.yaml"
+          try:
+              with open(path, encoding="utf-8") as handle:
+                  document = yaml.safe_load(handle)
+          except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+              print(f"::error file={path}::cannot be read as YAML, so the review trigger cannot be verified: {error}")
+              sys.exit(1)
+          reviews = document.get("reviews") if isinstance(document, dict) else None
+          auto = reviews.get("auto_review") if isinstance(reviews, dict) else None
+          if not isinstance(auto, dict) or auto.get("enabled") is not False:
+              print("CodeRabbit auto-review is on (or unset); no label trigger to verify.")
+              sys.exit(0)
+          labels = auto.get("labels")
+          if not isinstance(labels, list) or "review-high" not in labels:
+              print(
+                  f"::error file={path}::reviews.auto_review.enabled is false but its labels list does not contain "
+                  "'review-high', so review-tier.yml's label triggers nothing and CodeRabbit never reviews a HIGH PR. "
+                  "Restore the label, or turn auto-review on."
+              )
+              sys.exit(1)
+          print("CodeRabbit is label-triggered and review-high is in its labels.")
+          PY
+
       # PARSED, NOT GREPPED — replaced the two grep steps that used to live here
       # (2026-08-24). Those greps had to exclude comment lines, because the pattern for
       # each rule matched the comment EXPLAINING that rule: the first version failed the

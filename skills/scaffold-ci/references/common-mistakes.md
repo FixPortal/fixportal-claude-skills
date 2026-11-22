@@ -52,4 +52,5 @@ if explicitly asked:
 | `enabled: false` with no `labels` list | Worse than leaving it on: the gate's `review-high` and manual override `review-high-manual` labels go inert, no check registers, and the watch hook reads that as "not installed" and stops gating. |
 | `ignore_title_keywords: ["chore:"]` | Matches this estate's Dependabot titles verbatim, so it silently skips PRs you did not mean to skip. Decide by path in `review-policy.json`. |
 | Dependency manifests in `review-policy.json` `high` | Reversed 2026-07-29 — HIGH requires CodeRabbit, which refuses bot authors, so it demands a reviewer that can never run. |
+| Pushing a fix onto a Dependabot or Renovate branch | The PR stays bot-authored, so CodeRabbit refuses it. `review-tier.yml` classifies a bot PR that carries a non-bot commit and fails "Apply review tier label" if it touches a HIGH path. Open a maintainer PR that lands the bump and the fix together, and close the bot PR. |
 | PR base `branches: [main]` when mainline differs | Check `git symbolic-ref refs/remotes/origin/HEAD`. |

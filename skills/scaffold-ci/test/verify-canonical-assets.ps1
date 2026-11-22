@@ -24,6 +24,7 @@ if (-not $python) { throw 'no python interpreter on this host - the verifier con
 function Get-AssetHash([string] $Path) {
     $text = [IO.File]::ReadAllText($Path) -replace "\r\n?", "`n"
     $text = $text -creplace '(?m)^([ \t]*(?:-[ \t]+)?uses:[ \t]*[^\s@#]+@)[0-9a-f]{40}(?:[ \t]+#.*)?$', '$1<pinned>'
+    $text = $text -creplace '(?m)^([ \t]*(?:-[ \t]+)?uses:[ \t]*actions/[^\s@#]+@)v\d+(?:\.\d+)*(?:[ \t]+#.*)?$', '$1<pinned>'
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }
@@ -137,6 +138,37 @@ try {
     $r = Invoke-Verifier $clean
     if ($r.Code -ne 1) { throw "a non-uses line edit must still diverge; got $($r.Code)`n$($r.Output)" }
     Remove-Item -LiteralPath (Join-Path $clean ($wf -replace '/', [IO.Path]::DirectorySeparatorChar))
+    Write-Manifest $clean @($assetA, $assetB)
+
+    # First-party `actions/*` pins are release TAGS under house policy (the hygiene check
+    # enforces vN for them), so Dependabot's next major rewrites `@v7` to `@v8`. That bump
+    # must verify like a SHA bump does, or the grouped PR red-lines CI Gate until someone
+    # regenerates the manifest by hand. The action NAME
+    # stays hashed and a branch ref stays unmasked, so swapping or unpinning still diverges.
+    $tagWf = '.github/workflows/tagged.yml'
+    $tagLines = @('jobs:', '  s:', '    steps:',
+        '      - uses: actions/checkout@v7',
+        '      - uses: actions/cache/restore@v5.0.1 # pinned by tag',
+        '      - run: echo ok')
+    Write-Asset $clean $tagWf $tagLines
+    Write-Manifest $clean @($assetA, $assetB, $tagWf)
+    $tagBumped = $tagLines.Clone()
+    $tagBumped[3] = '      - uses: actions/checkout@v8'
+    $tagBumped[4] = '      - uses: actions/cache/restore@v6.1 # bumped'
+    Write-Asset $clean $tagWf $tagBumped
+    $r = Invoke-Verifier $clean
+    if ($r.Code -ne 0) { throw "a first-party release-tag bump must verify; got $($r.Code)`n$($r.Output)" }
+    foreach ($bad in @(
+        '      - uses: actions/cache@v8'
+        '      - uses: actions/checkout@main'
+        '      - uses: evil/checkout@v7'
+        '      - uses: actions/checkout@v7-evil')) {
+        $mutant = $tagLines.Clone(); $mutant[3] = $bad
+        Write-Asset $clean $tagWf $mutant
+        $r = Invoke-Verifier $clean
+        if ($r.Code -ne 1) { throw "'$bad' must diverge; got $($r.Code)`n$($r.Output)" }
+    }
+    Remove-Item -LiteralPath (Join-Path $clean ($tagWf -replace '/', [IO.Path]::DirectorySeparatorChar))
     Write-Manifest $clean @($assetA, $assetB)
 
     # unlisted extra file: not the manifest's business in v1 -> still exit 0

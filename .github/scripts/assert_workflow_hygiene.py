@@ -306,7 +306,7 @@ def digest_pinned_uses(document):
         if not isinstance(job, dict):
             continue
         # `steps: true` is not a list; iterating it raised TypeError in place of the
-        # annotated failure the other readers give (ci-frontend review 20261119T121117Z, C2-F5).
+        # annotated failure the other readers give (consumer review 20261119T121117Z, C2-F5).
         steps = job.get("steps") if isinstance(job.get("steps"), list) else []
         candidates = [job.get("uses")] + [step.get("uses") for step in steps if isinstance(step, dict)]
         refs += [ref for ref in candidates if isinstance(ref, str) and is_digest_ref(ref)]
@@ -410,7 +410,7 @@ def dockerfile_base_images(dockerfile):
 
     A local build was exempt from the pin check as "this repository's own reviewed code",
     but its base image is pulled from a registry like any other and ran unpinned while the
-    summary claimed every container image pinned (ci-frontend review 20261119T121117Z,
+    summary claimed every container image pinned (consumer review 20261119T121117Z,
     C2-X3). `scratch` and an earlier build stage's name are not registry images.
     """
     # shortcut: an ARG-built image name is not resolved, so it fails the pin check. Upgrade if one appears.
@@ -579,8 +579,8 @@ def remote_reusable_workflows(document, visited):
     A remote workflow's YAML is not in the checkout, so workflow_checks_out_code cannot see
     whether it checks out head code -- and it runs with the caller's token. In a workflow
     exempted from the target-context refusal that is an unverifiable checkout, so it is
-    refused outright (observatory review 20261031T154535Z N02-C3, owner decision on
-    PR #425). Composite actions cannot call reusable workflows, so only jobs are followed.
+    refused outright (consumer review 20261031T154535Z N02-C3, owner decision on
+    review). Composite actions cannot call reusable workflows, so only jobs are followed.
     """
     found = []
     jobs = document.get("jobs")
@@ -629,7 +629,7 @@ def remote_third_party_actions(document, visited):
         for ref in refs:
             found.extend(_remote_third_party_in_ref(ref, visited))
         # A container or service image is remote code as well: nothing in the checkout
-        # shows what it runs (ci-frontend review 20261119T121117Z, C2-F4).
+        # shows what it runs (consumer review 20261119T121117Z, C2-F4).
         found.extend(container_images(job))
     return found
 
