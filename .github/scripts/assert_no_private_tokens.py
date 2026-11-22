@@ -45,6 +45,9 @@ ALLOWED_PROFILE_PREFIX = re.compile(
     re.IGNORECASE,
 )
 
+# Byte-identical copies of FixPortal/fixportal-agents-skills assets: exempt from class 2 only.
+VERBATIM_CANONICAL = {".github/scripts/assert_gate_coverage.py"}
+
 # Class 3: org-name wiring forms, fragment-built so this file does not flag itself.
 _ORG = "Fix" + "Portal"
 ORG_FORMS = [
@@ -109,7 +112,9 @@ def scan(path, text):
                 continue
             problems.append(f"{path}:{lineno}: Windows user-profile path with a real name: {match.group(0)}")
         for match in DRIVE_PATH.finditer(line):
-            if ALLOWED_PROFILE_PREFIX.match(match.group(0)):
+            # Verbatim canonical copies cannot be edited here; their drive paths are quoted
+            # test strings (e.g. a PowerShell example), not this machine's layout.
+            if path in VERBATIM_CANONICAL or ALLOWED_PROFILE_PREFIX.match(match.group(0)):
                 continue
             problems.append(f"{path}:{lineno}: drive-root absolute path: {match.group(0)}")
         for form in ORG_FORMS:
