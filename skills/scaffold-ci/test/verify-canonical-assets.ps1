@@ -326,6 +326,29 @@ try {
         if ($a.commit -ne $head) { throw "$($a.path) kept commit $($a.commit) under a new repository name; expected $head" }
     }
 
+    # The GENERATOR's first-party tag masking, end to end: a manifest it wrote over a real
+    # tag-pinned workflow must still verify after Dependabot bumps the tag, with no
+    # regeneration. The Write-Manifest cases above only prove the helper and the verifier.
+    # This mirror does not publish assets/ai-smells.yml (it needs audit-ai-quality), so the
+    # case runs only where the asset exists.
+    if (-not (Test-Path -LiteralPath (Join-Path $skillRoot 'assets' 'ai-smells.yml'))) {
+        Write-Host 'SKIP: assets/ai-smells.yml not present in this tree - generator tag-masking case not run'
+    } else {
+    $tagGen = New-FixtureRepo 'gen-tags'
+    New-Item -ItemType Directory -Path (Join-Path $tagGen '.github' 'workflows') -Force | Out-Null
+    $tagGenWf = Join-Path $tagGen '.github' 'workflows' 'ai-smells.yml'
+    Copy-Item (Join-Path $skillRoot 'assets' 'ai-smells.yml') $tagGenWf -Force
+    $tagGenText = [IO.File]::ReadAllText($tagGenWf)
+    if ($tagGenText -notmatch 'uses: actions/checkout@v\d+') { throw 'the tag fixture needs a first-party tag pin in assets/ai-smells.yml' }
+    & $generator -RepoRoot $tagGen | Out-Null
+    [IO.File]::WriteAllText($tagGenWf, ($tagGenText -replace 'uses: actions/checkout@v\d+', 'uses: actions/checkout@v99 # bumped'), [Text.UTF8Encoding]::new($false))
+    $r = Invoke-Verifier $tagGen
+    if ($r.Code -ne 0) { throw "a tag bump over a generator-written manifest must verify without regeneration; got $($r.Code)`n$($r.Output)" }
+    [IO.File]::WriteAllText($tagGenWf, ($tagGenText -replace 'uses: actions/checkout@v\d+', 'uses: evil/checkout@v99'), [Text.UTF8Encoding]::new($false))
+    $r = Invoke-Verifier $tagGen
+    if ($r.Code -ne 1) { throw "swapping the action under a generator-written manifest must diverge; got $($r.Code)`n$($r.Output)" }
+    }
+
     # deliberate-divergence flow: edit -> regenerate -> verifier green again, in one act
     $gateCopy = Join-Path $gen '.github' 'scripts' 'assert_gate_coverage.py'
     Add-Content -LiteralPath $gateCopy -Value '# local hardening, deliberately diverged' -Encoding utf8

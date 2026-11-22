@@ -6,6 +6,7 @@ New-GateFilesRepo does. Python-level so it runs on any host without a PowerShell
 """
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -26,7 +27,7 @@ def gate_yaml(build_body):
     )
 
 
-def run_gate(files, workflow, policy=POLICY_WORKFLOWS):
+def run_gate(files, workflow, policy=POLICY_WORKFLOWS, extra_env=None):
     """(exit code, output) of the asset over a mini repo holding `files` and `workflow` as ci.yml."""
     with tempfile.TemporaryDirectory(prefix="gate-consumer-review-") as folder:
         repo = pathlib.Path(folder)
@@ -36,7 +37,7 @@ def run_gate(files, workflow, policy=POLICY_WORKFLOWS):
             path = repo / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-        env = {**os.environ, "GATE_EXEMPT": "", "GATE_CONDITIONAL_EXEMPT": "", "GATE_FILE_EXEMPT": "", "GATE_STEP_EXEMPT": ""}
+        env = {**os.environ, "GATE_EXEMPT": "", "GATE_CONDITIONAL_EXEMPT": "", "GATE_FILE_EXEMPT": "", "GATE_STEP_EXEMPT": "", **(extra_env or {})}
         done = subprocess.run([sys.executable, "-S", str(ASSET), str(repo / ".github" / "workflows" / "ci.yml")],
                               capture_output=True, text=True, env=env, timeout=120)
         return done.returncode, done.stdout + done.stderr
@@ -83,17 +84,24 @@ class GateCoverageConsumerReview(unittest.TestCase):
                  "scripts/check.mjs": "// probe", "scripts/prep.mjs": "// probe"}
         for command in ("npm ci", "npm install", "npm i", "npm cit", "npm install-test"):
             with self.subTest(command=command):
-                self.assert_gate(files, gate_yaml(f"      - run: {command}\n"), False, "not tiered HIGH")
+                code, output = run_gate(files, gate_yaml(f"      - run: {command}\n"))
+                self.assertNotEqual(code, 0, output)
+                # Both hooks, so the test fails if discovery stops following either one.
+                for script in ("scripts/check.mjs", "scripts/prep.mjs"):
+                    self.assertIn(script, output)
 
     def test_rv40_ignore_scripts_runs_no_hook(self):
         files = {"package.json": '{"scripts":{"postinstall":"node scripts/check.mjs"}}', "scripts/check.mjs": "// probe"}
         self.assert_gate(files, gate_yaml("      - run: npm ci --ignore-scripts\n"), True)
 
-    def test_rv40_cd_then_install_is_refused_only_when_a_package_defines_a_hook(self):
+    def test_rv40_cd_then_install_is_refused_whether_or_not_a_package_defines_a_hook(self):
+        # Word rule: a directory change in a body that runs a package manager is refused outright;
+        # the checker does not inspect hooks to decide (use working-directory: instead).
         hooked = {"frontend/package.json": '{"scripts":{"postinstall":"node scripts/check.mjs"}}', "frontend/scripts/check.mjs": "// probe"}
-        self.assert_gate(hooked, gate_yaml("      - run: cd frontend && npm ci\n"), False, "directory change")
         plain = {"frontend/package.json": '{"scripts":{"gate":"node scripts/check.mjs"}}', "frontend/scripts/check.mjs": "// probe"}
-        self.assert_gate(plain, gate_yaml("      - run: cd frontend && npm ci\n"), True)
+        for label, files in (("hooked", hooked), ("plain", plain)):
+            with self.subTest(label):
+                self.assert_gate(files, gate_yaml("      - run: cd frontend && npm ci\n"), False, "directory change")
 
     def test_rv40_install_without_any_hook_keeps_the_s7_contracts(self):
         # verify-gate-coverage.ps1's S7 cases: an install in another package must not be refused
@@ -202,10 +210,119 @@ class GateCoverageConsumerReview(unittest.TestCase):
         }
         self.assert_gate(files, gate_yaml("      - run: npm run prepare\n"), True)
 
-    def test_rv13_cd_with_only_a_printed_script_path_still_passes(self):
+    def test_rv13_cd_with_a_printed_script_path_is_refused(self):
+        # Word rule: an echoed script path counts as naming it (over-approximation), so a directory
+        # change in the same package script is refused, as for a run script.
         files = {"package.json": '{"scripts":{"gate":"cd frontend && echo scripts/report.py"}}', "scripts/report.py": "x = 1"}
         code, output = run_gate(files, gate_yaml("      - run: npm run gate\n"), '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}')
-        self.assertEqual(code, 0, output)
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("directory change", output)
+
+    # 2026-11-22 estate re-sync review. npm cases observed with npm 11.18.0, bash with Git Bash,
+    # pytest with pytest 9.1.1.
+    def test_resync_ignore_scripts_false_still_runs_the_install_hooks(self):
+        # npm ran every install hook for each spelling below; `--ignore-scripts true` ran none.
+        files = {"package.json": '{"scripts":{"postinstall":"node scripts/check.mjs"}}', "scripts/check.mjs": "// probe"}
+        for command in ("npm ci --ignore-scripts false", "npm install --ignore-scripts --ignore-scripts=false",
+                        "npm ci --ignore-scripts=false", "npm ci --no-ignore-scripts"):
+            with self.subTest(command=command):
+                self.assert_gate(files, gate_yaml(f"      - run: {command}\n"), False, "not tiered HIGH")
+        self.assert_gate(files, gate_yaml("      - run: npm ci --ignore-scripts true\n"), True)
+
+    def test_resync_dependencies_lifecycle_is_an_install_hook(self):
+        # `npm ci` ran a package's `dependencies` script (and its pre/post) when it was the only one.
+        for hook in ("predependencies", "dependencies", "postdependencies"):
+            with self.subTest(hook=hook):
+                files = {"package.json": f'{{"scripts":{{"{hook}":"node scripts/check.mjs"}}}}', "scripts/check.mjs": "// probe"}
+                self.assert_gate(files, gate_yaml("      - run: npm ci\n"), False, "not tiered HIGH")
+
+    def test_resync_commented_ignore_scripts_in_a_package_script_skips_nothing(self):
+        files = {"package.json": '{"scripts":{"gate":"npm ci # --ignore-scripts","postinstall":"node scripts/check.mjs"}}',
+                 "scripts/check.mjs": "// probe"}
+        self.assert_gate(files, gate_yaml("      - run: npm run gate\n"), False, "not tiered HIGH")
+
+    def test_pr504_install_flags_follow_npm_s_own_parsing(self):
+        # npm 11.18.0 ran preinstall, postinstall, prepublish and prepare for each command below.
+        files = {"package.json": '{"scripts":{"postinstall":"node scripts/check.mjs"}}', "scripts/check.mjs": "// probe"}
+        for command in ("npm ci --ignore-scripts=true --cache './c;l' --ignore-scripts=false", "npm ci -- --ignore-scripts"):
+            with self.subTest(command=command):
+                self.assert_gate(files, gate_yaml(f"      - run: {command}\n"), False, "not tiered HIGH")
+
+    def test_pr504_prepublish_is_an_install_hook(self):
+        files = {"package.json": '{"scripts":{"prepublish":"node scripts/check.mjs"}}', "scripts/check.mjs": "// probe"}
+        self.assert_gate(files, gate_yaml("      - run: npm ci\n"), False, "not tiered HIGH")
+
+    def test_resync_ignore_scripts_in_a_later_command_skips_nothing(self):
+        files = {"package.json": '{"scripts":{"postinstall":"node scripts/check.mjs"}}', "scripts/check.mjs": "// probe"}
+        self.assert_gate(files, gate_yaml("      - run: npm ci; echo --ignore-scripts\n"), False, "not tiered HIGH")
+
+    def test_resync_report_is_identical_whatever_the_hash_seed(self):
+        # The same script reached from several jobs was reported under a different job from run to
+        # run (job ids were walked in set order, which follows PYTHONHASHSEED).
+        jobs = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        workflow = "jobs:\n" + "".join(
+            f"  {job}:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 scripts/gate.py\n" for job in jobs
+        ) + (f"  ci-gate:\n    if: always()\n    needs: [{', '.join(jobs)}]\n    runs-on: ubuntu-latest\n    steps:\n"
+             f"      - if: {GATE_IF}\n        run: exit 1\n")
+        outputs = set()
+        for seed in range(8):
+            code, output = run_gate({"scripts/gate.py": "x = 1"}, workflow, extra_env={"PYTHONHASHSEED": str(seed)})
+            self.assertNotEqual(code, 0, output)
+            outputs.add(re.sub(r"gate-consumer-review-\w+", "<repo>", output))
+        self.assertEqual(len(outputs), 1, outputs)
+        # Workflow order: the first job that runs the script is the one named.
+        self.assertIn("scripts/gate.py  (run by 'alpha')", outputs.pop())
+
+    def test_resync_real_npm_after_cd_in_a_package_script_is_still_refused(self):
+        self.assert_gate({"package.json": '{"scripts":{"gate":"cd docs && npm test"}}'}, gate_yaml("      - run: npm run gate\n"), False, "directory change")
+
+    def test_resync_quote_inside_a_package_script_comment_does_not_hide_a_cd(self):
+        files = {"package.json": '{"scripts":{"gate":"# \\"\\ncd frontend && node gate.mjs"}}', "frontend/gate.mjs": "// probe"}
+        self.assert_gate(files, gate_yaml("      - run: npm run gate\n"), False, "directory change")
+
+    def test_resync_executed_path_in_a_package_script_is_still_a_reference(self):
+        files = {"package.json": '{"scripts":{"gate":"python3 scripts/report.py"}}', "scripts/report.py": "x = 1"}
+        self.assert_gate(files, gate_yaml("      - run: npm run gate\n"), False, "scripts/report.py")
+
+    def test_resync_pipe_after_a_multiline_string_runs_the_text(self):
+        files = {"scripts/gate.py": "x = 1"}
+        body = "      - run: |\n          echo \"\n          python3 scripts/gate.py\n          \" | bash\n"
+        self.assert_gate(files, gate_yaml(body), False, "scripts/gate.py")
+
+    def test_resync_hash_after_an_escaped_blank_is_not_a_comment(self):
+        # Git Bash ran the command after `echo label\ #tag;` and after `echo tag\` + newline + `#suffix;`.
+        files = {"scripts/gate.py": "x = 1"}
+        # Block scalars: in a plain `run:` value YAML itself reads ` #tag` as a YAML comment.
+        for body in ("      - run: |\n          echo label\\ #tag; python3 scripts/gate.py\n",
+                     "      - run: |\n          echo tag\\\n          #suffix; python3 scripts/gate.py\n"):
+            with self.subTest(body=body):
+                self.assert_gate(files, gate_yaml(body), False, "scripts/gate.py")
+
+    def test_resync_data_alias_of_a_step_does_not_exempt_its_uses(self):
+        action = {".github/actions/check/action.yml": "runs:\n  using: composite\n  steps:\n    - run: python3 scripts/gate.py\n      shell: bash\n",
+                  "scripts/gate.py": "x = 1"}
+        # Control: written plainly, the action's script is found.
+        self.assert_gate(action, gate_yaml("      - uses: ./.github/actions/check\n"), False, "scripts/gate.py")
+        body = "      - &action_step\n        uses: >-\n          ./.github/actions/check\n        env: *action_step\n"
+        self.assert_gate(action, gate_yaml(body), False)
+
+    def test_resync_step_aliasing_an_in_place_data_mapping_is_refused(self):
+        # The anchored `env:` mapping is data where it is written, but `- *hidden` runs it as a step.
+        action = {".github/actions/check/action.yml": "runs:\n  using: composite\n  steps:\n    - run: python3 scripts/gate.py\n      shell: bash\n",
+                  "scripts/gate.py": "x = 1"}
+        body = "      - run: echo ready\n        env: &hidden\n          uses: >-\n            ./.github/actions/check\n      - *hidden\n"
+        self.assert_gate(action, gate_yaml(body), False, "alias")
+
+    def test_resync_pytest_python_files_override_is_followed(self):
+        files = {"ci/check_gate.py": "def test_gate(): pass"}
+        self.assert_gate(files, gate_yaml("      - run: python3 -m pytest -o python_files=check_*.py ci\n"), False, "ci/check_gate.py")
+        configured = {**files, "pytest.ini": "[pytest]\npython_files = check_*.py\n"}
+        self.assert_gate(configured, gate_yaml("      - run: python3 -m pytest ci\n"), False, "ci/check_gate.py")
+
+    def test_resync_pytest_target_without_tests_still_loads_ancestor_conftests(self):
+        # pytest 9.1.1 imported the root conftest.py for `pytest ci/cases` with only data under ci/cases.
+        files = {"conftest.py": "x = 1", "ci/cases/data.txt": "x"}
+        self.assert_gate(files, gate_yaml("      - run: python3 -m pytest ci/cases\n"), False, "conftest.py")
 
     def test_rv41_uses_on_its_own_line_still_passes(self):
         callee = "on: workflow_call\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"

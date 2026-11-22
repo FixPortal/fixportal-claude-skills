@@ -219,21 +219,49 @@ unrecognised path is unknown risk, and unknown risk is not low risk.
   what can merge exactly as the workflow does. The named-path list above cannot cover a
   checker one repository authored later: a hard-coded path would red every repository
   that does not have that file. So `assert_gate_coverage.py` derives the requirement
-  instead — it reads the scripts each merge-blocking job actually invokes, and fails when
-  one is not covered by a `high` glob. Nothing to maintain per repo: a gate script added
-  years after scaffolding is covered the day it is wired in, and a repository that runs
-  no repo-local scripts from a gated job is unaffected.
+  instead, and fails when a derived script is not covered by a `high` glob. Nothing to
+  maintain per repo: a gate script added years after scaffolding is covered the day it is
+  wired in, and a repository that runs no repo-local scripts from a gated job is unaffected.
 
-  Scoped deliberately to jobs the gate depends on, and to paths that exist on disk. A
-  script in a non-gated job cannot neuter the barrier, and a path that does not resolve
-  cannot be edited to neuter anything — asserting over either would be a false RED.
+  **The derivation is a word rule.** Every word in a gated run body, or in a package script
+  that body runs, that names a tracked repository script must be HIGH. There is no shell
+  parser and no table of interpreter options.
 
-  **Scoped also to a closed set of directory roots** — `.github/scripts/`, `scripts/`,
-  `build/`, `tools/` — so that path-shaped tool arguments and report files are not read as
-  scripts. This is the one limit that is not self-announcing, so state it plainly: a gate
-  script kept outside those roots (`ci/`, `eng/`, the repository root) is **not** derived
-  and must still be listed in `high` by hand, or moved under one of the four. Derivation
-  covers the estate's conventions, not every possible layout.
+  - A word is split on whitespace, quotes, backticks and `; | & ( ) < > = ,`. It is read
+    from the repository root and from every working directory that applies to the body.
+  - A script is a file ending `.ps1 .psm1 .py .sh .bash .mjs .cjs .js` anywhere, or `.ts`
+    under a `scripts`, `build` or `tools` directory.
+  - A prefixed spelling (`$PWD/ci/gate.sh`) falls back to its longest path suffix of two or
+    more segments. `$GITHUB_WORKSPACE/` reads from the root only.
+  - A glob word with a slash requires every script it matches. A directory word under a
+    script root requires every script beneath it.
+  - On a `unittest`, `pytest` or `py.test` line, a directory word requires the `.py` files
+    beneath it, narrowed by a bare pattern word such as `test_*.py`. pytest also requires
+    each `conftest.py` above a target.
+  - `-m pkg.mod` requires `pkg/mod.py` or `pkg/mod/__main__.py`, and each `__init__.py` on
+    the package path.
+  - `npm run <name>` follows that script and its pre/post hooks. `npm test`, `start`,
+    `stop` and `restart` follow their lifecycle script. `npm ci` and `npm install` follow
+    `preinstall`, `install`, `postinstall` and `prepare`. Any other npm, npx, pnpm or yarn
+    spelling puts every script of the package in play. A workspace or prefix option puts
+    every tracked `package.json` in play.
+
+  **It over-approximates.** A script named in a comment, an `echo` or an argument is
+  required HIGH too. That is the accepted cost: more scripts required HIGH, never fewer.
+
+  It is scoped to jobs the gate depends on, and to tracked files that exist. A script in a
+  non-gated job cannot neuter the barrier, and a name that resolves to no file cannot be
+  edited to neuter anything.
+
+  A body, or a package script, that changes directory and names or may run a script is
+  refused. Use `working-directory:`. A directory command (`cd`, `pushd`, `Set-Location` and
+  their aliases) counts at command position only: at line start, after `; & | ( {` or a
+  backtick, after a shell keyword there, or opening a `-c` string. Quotes and comments are
+  not read, so `echo "a; cd b"` counts, while `echo "running CD gate"` does not. A quoted
+  command string that only a pipe runs (`echo "cd x; ..." | bash`) is not detected.
+
+  **Its limits.** A script reached only through a variable, a dynamic launch, or code a
+  gate script itself imports is not derived. List such a script in `high` by hand.
 
   **Rolling the asset into a repo whose gate scripts are unlisted reds its next PR, so
   land both edits together.** `CI Gate` is a required check, and a red required check on an

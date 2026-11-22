@@ -28,7 +28,11 @@
     ".github/scripts/assert_gate_coverage.py",
     ".github/scripts/assert_workflow_hygiene.py",
     ".claude/review-policy.json",
-    ".coderabbit.yaml"
+    ".coderabbit.yaml",
+    "skills/audit-ci/test/verify-blacksmith-guidance.ps1",
+    "skills/audit-tests/test/verify-policy.ps1",
+    "skills/review-sweep/test/verify-runtime-neutral.ps1",
+    "skills/scaffold-ci/test/verify-security-visibility-policy.ps1"
   ],
   "low": [
     "README.md",

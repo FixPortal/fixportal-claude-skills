@@ -330,9 +330,12 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
       # collapsed to `HEAD..<sha>` -- zero commits, exit 0 -- and this gate passed every
       # non-pull_request run having scanned nothing. That is the state this document
       # calls worse than no gate, shipped as the default. The `secrets` job cannot carry
-      # a job-level `if:` (assert_gate_coverage.py refuses one), but a STEP-level `if:`
-      # is permitted, which is where the split belongs.
+      # a job-level `if:` (assert_gate_coverage.py refuses one), so the split is at step
+      # level -- and a runtime step `if:` on a gate feeder is refused too unless the
+      # gate-coverage step names it in GATE_STEP_IF_EXEMPT. Hence the two `id:`s, listed
+      # there as `secrets/scan-pr-range secrets/scan-push-range` (see ci-workflow.md).
       - name: Scan the PR commit range for secrets
+        id: scan-pr-range
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -348,6 +351,7 @@ worse than no gate. `fetch-depth: 0` is required and is not optional tuning:
           "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .
 
       - name: Scan the pushed commit range for secrets
+        id: scan-push-range
         if: github.event_name == 'push'
         env:
           BEFORE_SHA: ${{ github.event.before }}

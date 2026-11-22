@@ -28,6 +28,8 @@ $oldExempt = $env:GATE_EXEMPT
 $oldConditionalExempt = $env:GATE_CONDITIONAL_EXEMPT
 $oldFileExempt = $env:GATE_FILE_EXEMPT
 $oldStepExempt = $env:GATE_STEP_EXEMPT
+$oldStepIfExempt = $env:GATE_STEP_IF_EXEMPT
+$env:GATE_STEP_IF_EXEMPT = ''
 $env:GATE_EXEMPT = ''
 $env:GATE_CONDITIONAL_EXEMPT = ''
 $env:GATE_FILE_EXEMPT = ''
@@ -2583,7 +2585,8 @@ jobs:
         throw "a working-directory line inside a run: payload must not be read as a real key:`n$($payloadWorkdir.Output)"
     }
 
-    # `; cd` inside a QUOTED message is not a directory change...
+    # the directory-change test is not quote-aware, so a `; cd` inside a quoted message
+    # is at command position and is refused beside a gate script. That over-approximation is accepted.
     $quotedCd = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @'
 jobs:
   build:
@@ -2600,8 +2603,8 @@ jobs:
       - if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1
 '@
-    if ($quotedCd.Code -ne 0) {
-        throw "a quoted '; cd' in message text must not read as a directory change:`n$($quotedCd.Output)"
+    if ($quotedCd.Code -eq 0 -or $quotedCd.Output -notmatch 'directory change') {
+        throw "a ; cd in message text beside a gate script must be refused:`n$($quotedCd.Output)"
     }
     # ...but a quoted command string that changes directory AND runs the gate script is.
     $quotedCdScript = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @'
@@ -2650,8 +2653,10 @@ jobs:
                           '! cd sub || python3 scripts/gate.py',
                           'bash -c "cd sub; "''python3 scripts/gate.py''',
                           'echo "$(cd sub; python3 scripts/gate.py)"',
-                          'echo "cd sub; python3 scripts/gate.py" | bash',
                           'echo $(bash -c "cd sub; python3 scripts/gate.py")',
+                          'if ! cd sub; then python3 scripts/x.py; fi',
+                          '$(cd sub && npm run gate)',
+                          'cd$SUB; python3 scripts/gate.py',
                           'echo `cd sub; python3 scripts/gate.py`',
                           'cd>cd.log; python3 scripts/gate.py',
                           'cd$X; python3 scripts/gate.py',
@@ -2666,8 +2671,7 @@ jobs:
                           # parse the prefix chain (`A=      B=1 cd sub`).
                           'A="x y" B=1 cd sub; python3 scripts/gate.py',
                           'B=1 A="x y" cd sub; python3 scripts/gate.py',
-                          'Push-Location sub; python3 scripts/gate.py',
-                          "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
+                          'Push-Location sub; python3 scripts/gate.py') {
         $quotedSpelling = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py', 'sub/scripts/gate.py') @"
 jobs:
   build:
@@ -2687,7 +2691,9 @@ jobs:
             throw "a directory change in ($spelling) must fail closed:`n$($quotedSpelling.Output)"
         }
     }
-    # A MESSAGE that mentions cd is not a command, even beside or naming a gate script.
+    # A cd that is not at command position (line start, after ; & | ( { or a backtick, after a
+    # shell keyword there, or opening a -c string) is message text, beside a gate script or not.
+    # Not quote-aware: a closing backtick before ` cd` counts, so those spellings are refused.
     foreach ($message in 'echo "cd scripts is deprecated" && python3 scripts/gate.py',
                          'echo "cd scripts/gate.py is required for setup"',
                          'echo "$(date)"; echo "cd scripts/gate.py is deprecated"',
@@ -2696,11 +2702,13 @@ jobs:
                          'echo ${cd:-x}; python3 scripts/gate.py',
                          'echo ${cd}; python3 scripts/gate.py',
                          'echo {cd,ls}; python3 scripts/gate.py',
-                         'echo `pwd` cd sub; python3 scripts/gate.py',
-                         "echo ``pwd`n          `` cd sub; python3 scripts/gate.py",
-                         'bash -c "echo `pwd` cd sub; python3 scripts/gate.py"',
+                         'echo abcd sub; python3 scripts/gate.py',
                          'bash -c "echo then cd sub; python3 scripts/gate.py"',
-                         'printf "cd scripts is deprecated, use scripts/gate.py instead\n"') {
+                         'printf "cd scripts is deprecated, use scripts/gate.py instead\n"',
+                         'Write-Host "next: cd into web"',
+                         # Limit: a quoted command string that only a pipe runs is not read as one.
+                         'echo "cd sub; python3 scripts/gate.py" | bash',
+                         "echo `"cd sub;`n          python3 scripts/gate.py`" | bash") {
         $messageCd = New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","scripts/**"],"low":[]}' @('scripts/gate.py') @"
 jobs:
   build:
@@ -2718,7 +2726,7 @@ jobs:
         run: exit 1
 "@
         if ($messageCd.Code -ne 0) {
-            throw "a message line mentioning cd must not read as a directory change ($message):`n$($messageCd.Output)"
+            throw "a cd outside command position must not read as a directory change ($message):`n$($messageCd.Output)"
         }
     }
 
@@ -4247,7 +4255,12 @@ jobs:
     # readings agree, and is refused on a feeder step when they disagree.
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ !1 == 1 }}`n        run: echo build`n")) $false 'always-skipped' 'AR-1: if: ${{ !1 == 1 }} is false under either precedence and must be refused as always-skipped'
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ !1 == 2 }}`n        run: echo build`n")) $false 'precedence readings disagree' 'AR-1: if: ${{ !1 == 2 }} is ambiguous and must be refused on a feeder step'
-    Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ !contains(github.ref, 'x') }}`n        run: echo build`n")) $true '' 'AR-1: a negated non-literal condition must still pass'
+    # A runtime condition now needs GATE_STEP_IF_EXEMPT (C1-D-G2); exempted, it must not be misread as a literal.
+    $env:GATE_STEP_IF_EXEMPT = 'build/negated'
+    try {
+        $negatedNonLiteral = Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - id: negated`n        if: `${{ !contains(github.ref, 'x') }}`n        run: echo build`n")
+    } finally { $env:GATE_STEP_IF_EXEMPT = '' }
+    Assert-Gate $negatedNonLiteral $true '' 'AR-1: a negated non-literal condition must still pass'
     # Code review on the first AR-1 fix: exponent literals, string coercion,
     # ordered comparisons and nested && / || operands.
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ !1e0 == 1e0 }}`n        run: echo build`n")) $false 'always-skipped' 'AR-1: an exponent literal is a number and must fold like its decimal spelling'
@@ -4257,9 +4270,10 @@ jobs:
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ always() && !1 == 2 }}`n        run: echo build`n")) $false 'precedence readings disagree' 'AR-1: an ambiguous negated comparison inside a reachable && operand must be refused'
     Assert-Gate (Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - if: `${{ true || !1 == 2 }}`n        run: echo build`n")) $true '' 'AR-1: an ambiguous comparison in a branch that cannot affect the result must not be refused'
 
-    # consumer M18: a script path that is only PRINTED is not an invocation.
-    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py', 'sub/Makefile') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub && make`n          echo `"see scripts/report.py`"`n")) $true '' 'consumer M18: an echoed script path beside a cd must not redden the check'
-    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"see scripts/report.py`"`n")) $true '' 'consumer M18: an echoed script path must not be required HIGH'
+    # Word rule: a script path that is only PRINTED is still a word naming a script, so it is required
+    # HIGH, and beside a cd it is refused. This over-approximation replaces the consumer M18 exemption.
+    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py', 'sub/Makefile') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub && make`n          echo `"see scripts/report.py`"`n")) $false 'directory change' 'word rule: an echoed script path beside a cd is refused'
+    Assert-Gate (New-GateRepo $policyNone @('scripts/report.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"see scripts/report.py`"`n")) $false 'scripts/report\.py' 'word rule: an echoed script path is required HIGH'
     Assert-Gate (New-GateRepo $policyNone @('sub/scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub`n          python3 scripts/gate.py`n")) $false 'directory change' 'consumer M18: a real invocation after a cd must still be refused'
     # ...and a grouping or process substitution in the echo arguments EXECUTES the script (code review).
     Assert-Gate (New-GateRepo $policyNone @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: Write-Host (python scripts/gate.py)`n")) $false 'not tiered' 'consumer M18: a pwsh Write-Host (...) grouping runs the script and must tier it HIGH'
@@ -4298,6 +4312,18 @@ jobs:
     } finally { $env:GATE_STEP_EXEMPT = '' }
     Assert-Gate $sharedFeeder $true '' 'S12: a GATE_STEP_EXEMPT entry used by one workflow must not be stale in another sharing the feeder name'
     Assert-Gate $staleEverywhere $false 'GATE_STEP_EXEMPT names step' 'S12: a GATE_STEP_EXEMPT entry no workflow uses must still be refused in directory mode'
+
+    # C1-D-G2 (consumer review, owner decision): a runtime feeder step if: is refused unless
+    # GATE_STEP_IF_EXEMPT names it; a stale entry is refused.
+    $runtimeIf = New-GateYaml 'exit 1' -buildBody "      - id: pr-only`n        if: github.event_name == 'pull_request'`n        run: echo build`n"
+    Assert-Gate (Invoke-Gate $runtimeIf) $false 'GATE_STEP_IF_EXEMPT' 'C1-D-G2: a runtime feeder step if: must be refused and point at GATE_STEP_IF_EXEMPT'
+    $env:GATE_STEP_IF_EXEMPT = 'build/pr-only'
+    try {
+        $runtimeIfExempt = Invoke-Gate $runtimeIf
+        $staleStepIfExempt = Invoke-Gate (New-GateYaml 'exit 1' -buildBody "      - id: pr-only`n        run: echo build`n")
+    } finally { $env:GATE_STEP_IF_EXEMPT = '' }
+    Assert-Gate $runtimeIfExempt $true '' 'C1-D-G2: a runtime feeder step if: named in GATE_STEP_IF_EXEMPT must pass'
+    Assert-Gate $staleStepIfExempt $false 'GATE_STEP_IF_EXEMPT names step' 'C1-D-G2: a GATE_STEP_IF_EXEMPT entry naming no runtime step if: must be refused'
 
     # consumer M37: a local reusable-workflow feeder gets the feeder checks inside the callee.
     $reuseHead = "on: workflow_call`njobs:`n  inner:`n"
@@ -4354,22 +4380,12 @@ jobs:
     foreach ($command in 'npm --prefix packages/app run lint', 'npm test') {
         Assert-Gate (New-GateFilesRepo $npmMono $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $true '' "S7: '$command' with its workspace script tiered HIGH must pass"
     }
-    # Where npm would run cannot be read statically: refused, not guessed.
-    $unresolved = @(
-        @{ Run = 'npm run lint --prefix "$APP_DIR"'; Needle = 'not a literal path' }
-        @{ Run = 'npm run lint --prefix ../outside'; Needle = 'leaves the repository' }
-        @{ Run = 'npm run lint --prefix C:/outside'; Needle = 'leaves the repository' }
-        @{ Run = 'npm run lint -w missing'; Needle = 'is not a workspace' }
-    )
-    foreach ($case in $unresolved) {
-        Assert-Gate (New-GateFilesRepo $npmMono $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $($case.Run)`n")) $false $case.Needle "S7: '$($case.Run)' must be refused"
+    # Word rule: a directory option whose target cannot be read statically puts every tracked
+    # package.json's scripts in play instead of being refused.
+    foreach ($command in 'npm run lint --prefix "$APP_DIR"', 'npm run lint -w missing') {
+        Assert-Gate (New-GateFilesRepo $npmMono $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $false 'packages/app/scripts/lint\.mjs' "word rule: '$command' puts every package.json in play"
+        Assert-Gate (New-GateFilesRepo $npmMono $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: $command`n")) $true '' "word rule: '$command' passes once every package script is HIGH"
     }
-    Assert-Gate (New-GateFilesRepo $npmTest $policyScripts (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint --workspaces`n")) $false 'selects no workspace' "S7: '--workspaces' in a package with none must be refused"
-    # Code review: from a workspace, a drive-absolute prefix joined to `packages/app/C:/x`
-    # and passed the containment check.
-    $npmDrive = $npmMono.Clone()
-    $npmDrive['packages/app/package.json'] = '{"name":"@x/app","scripts":{"escape":"npm --prefix C:/outside run lint"}}'
-    Assert-Gate (New-GateFilesRepo $npmDrive $policyPackages (New-GateYaml 'exit 1' -buildBody "      - run: npm run escape -w packages/app`n")) $false 'leaves the repository' "S7: a drive-absolute prefix in a workspace script must be refused"
     # Code review: `--workspaces=false` runs the root script; `--include-workspace-root`
     # runs it beside the workspaces; a prefix is applied first and its own workspaces are selected.
     $npmNested = $npmMono.Clone()
@@ -4413,7 +4429,6 @@ jobs:
     $discover = "      - run: python3 -m unittest discover -s ci -p 'test_gate.py' -v`n"
     Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody $discover)) $false 'ci/test_gate.py' 'M36: unittest discover targets must be tiered HIGH'
     Assert-Gate (New-GateRepo '{"version":1,"high":["ci/**"],"low":[]}' @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody $discover)) $true '' 'M36: HIGH-tiered unittest discover targets must pass'
-    Assert-Gate (New-GateRepo $policyNone @('other.txt') (New-GateYaml 'exit 1' -buildBody $discover)) $false 'discover start directory' 'M36: a missing discover start directory must be refused'
     # Code review: path-qualified interpreters, Windows-spelled and quoted targets, a cd before a
     # root-level name, and shell redirections.
     $policyCi = '{"version":1,"high":["ci/**"],"low":[]}'
@@ -4428,7 +4443,6 @@ jobs:
     Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: '& `"/opt/Python 3/bin/python`" gate.py'`n")) $false 'gate.py' 'M36: a quoted interpreter path must still be read'
     Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 `"`$GITHUB_WORKSPACE/gate.py`"`n")) $false 'gate.py' 'M36: a workspace-rooted target must resolve at the root'
     Assert-Gate (New-GateRepo $policyNone @('sub/gate.py') (New-GateYaml 'exit 1' -buildBody "      - working-directory: `${{ matrix.path }}`n        run: python3 gate.py`n")) $false 'working-directory expression' 'M36: an unsupported working directory must travel with an interpreter reference'
-    Assert-Gate (New-GateRepo $policyNone @('gate script.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate\ script.py`n")) $false 'gate script.py' 'M36: a bash-escaped space must stay inside the target'
     Assert-Gate (New-GateRepo $policyCi @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          python3 -m pytest ci # run tests`n")) $true '' 'M36: a shell comment must not be read as pytest paths'
     Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate.py>out.txt`n")) $false 'gate.py' 'M36: a redirection attached to the target must be split off'
     # Code review: a Windows trailing separator before an option is not a bash escaped space.
@@ -4438,7 +4452,7 @@ jobs:
     $npmPython = @{ 'package.json' = '{"scripts":{"gate":"python3 gate.py"}}'; 'gate.py' = '# probe' }
     Assert-Gate (New-GateFilesRepo $npmPython $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $false 'gate.py' 'M36: a python target behind npm run must be tiered HIGH'
     $npmComment = @{ 'package.json' = '{"scripts":{"gate":"node x.js # python3 -m pytest ci"}}'; 'ci/test_gate.py' = '# probe' }
-    Assert-Gate (New-GateFilesRepo $npmComment $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $true '' 'M36: a commented-out python command in a package script must not be read'
+    Assert-Gate (New-GateFilesRepo $npmComment $policyNone (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $false 'ci/test_gate\.py' 'word rule: a commented-out pytest command in a package script is still read'
     $rootedFiles = @{ 'gate.py' = '# probe'; 'sub/gate.py' = '# probe' }
     Assert-Gate (New-GateFilesRepo $rootedFiles '{"version":1,"high":[".github/workflows/ci.yml","gate.py"],"low":[]}' (New-GateYaml 'exit 1' -buildBody "      - working-directory: sub`n        run: python3 `"`$GITHUB_WORKSPACE/gate.py`"`n")) $true '' 'M36: a workspace-rooted target must not also resolve under working-directory'
     # Code review: unittest's -k value is a filter, not a start directory or a test name.
@@ -4447,9 +4461,8 @@ jobs:
     Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pytest ci -q`n")) $false 'ci/test_gate.py' 'M36: pytest directory targets must be tiered HIGH'
     Assert-Gate (New-GateRepo $policyNone @('gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 gate.py`n")) $false 'gate.py' 'M36: a root-level python script must be tiered HIGH'
     Assert-Gate (New-GateRepo $policyNone @('ci/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m ci.gate`n")) $false 'ci/gate.py' 'M36: a repo-local -m module must be tiered HIGH'
-    Assert-Gate (New-GateRepo $policyNone @('ci/other.py') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m ci.gate`n")) $false 'repository content' 'M36: a -m module inside a repo package that does not resolve must be refused'
     Assert-Gate (New-GateRepo $policyNone @('other.txt') (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pip install --user pyyaml`n")) $true '' 'M36: an installed tool module must pass'
-    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"python3 -m unittest discover -s missing`"`n")) $true '' 'M36: a printed interpreter command must not be read'
+    Assert-Gate (New-GateRepo $policyNone @('ci/test_gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: echo `"python3 -m unittest discover -s missing`"`n")) $true '' 'word rule: a test runner naming no existing directory asserts nothing'
 
     # R-D L2: pwsh's sl / chdir aliases are directory changes.
     Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          sl sub`n          python3 scripts/gate.py`n")) $false 'directory change' 'R-D L2: `sl` must be detected as a directory change'
@@ -4477,10 +4490,9 @@ jobs:
     $widerDash = (New-GateYaml 'exit 1') -replace '      - if: ', '      -   if: ' -replace "`n        run: \|`n          exit 1", "`n          run: |`n            exit 1"
     Assert-Gate (Invoke-Gate $widerDash) $true '' 'a step written `-   if:` must be read'
 
-    # A comment is not a command: `# ; cd sub` changes no directory.
-    # In a literal block so the shell scanner receives the comment: an inline `run:` scalar has it
-    # stripped by the YAML reader before the directory-change scan sees anything.
-    Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          python3 scripts/gate.py # ; cd sub`n")) $true '' 'a directory change spelled only in a comment must not be refused'
+    # Word rule: a cd word in a comment counts like any other. In a literal block so the scan
+    # receives the comment: an inline `run:` scalar has it stripped by the YAML reader.
+    Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          python3 scripts/gate.py # ; cd sub`n")) $false 'directory change' 'word rule: a directory change spelled only in a comment is refused'
     Assert-Gate (New-GateRepo $policyScripts @('scripts/gate.py') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub # real`n          python3 scripts/gate.py`n")) $false 'directory change' 'a real directory change followed by a comment must still be refused'
 
     # GITHUB_PATH can put a fake shell ahead of the real one. The write sits in an EARLIER step of the
@@ -4508,8 +4520,7 @@ jobs:
     Assert-Gate (New-GateRepo '{"version":1,"high":[".github/workflows/ci.yml","gate.sh"],"low":[]}' @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash ./gate.sh`n")) $true '' 'a root-level shell gate script named in the high list must pass'
     Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash --version`n")) $true '' 'an interpreter flag is not a script'
     Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash -c `"echo hi`"`n")) $true '' 'inline code is not a script'
-    Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash -s gate.sh`n")) $true '' 'bash -s reads stdin: the word after it is an argument, not the script'
-    Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash -es gate.sh`n")) $true '' 'a grouped -es is stdin mode too'
+    Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash -s gate.sh`n")) $false 'gate\.sh' 'word rule: a script named as an argument to bash -s is still required HIGH'
     Assert-Gate (New-GateRepo $policyNone @('gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: bash -eo pipefail gate.sh`n")) $false 'gate\.sh' 'a grouped -eo takes pipefail as its option, so gate.sh is still the script'
     # After a directory change the script is resolved from there, which nothing here can verify.
     Assert-Gate (New-GateRepo $policyNone @('sub/gate.sh') (New-GateYaml 'exit 1' -buildBody "      - run: |`n          cd sub`n          bash gate.sh`n")) $false 'directory change' 'a shell gate script run after a directory change must be refused, as a Python one is'
@@ -4593,14 +4604,14 @@ jobs:
     Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "    if: always\(\)`n    needs", "    name: `"gate`n    if: always()`n    `"`n    if: github.event_name == 'push'`n    needs")) $false 'must carry' 'C1-F6: an if-shaped line inside a quoted job name must not stand in for the job if'
     $npmFiles = @{ 'frontend/package.json' = '{"scripts":{"gate":"node scripts/check.mjs"}}'; 'frontend/scripts/check.mjs' = '// probe' }
     Assert-Gate (New-GateFilesRepo $npmFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: cd frontend && npm run gate`n")) $false 'directory change' 'C1-F7: cd then npm run resolves a package.json no working-directory names'
-    Assert-Gate (New-GateFilesRepo $npmFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: cd frontend && npm ci`n")) $true '' 'C1-F7: cd then npm ci runs no package script and must still pass'
+    Assert-Gate (New-GateFilesRepo $npmFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: cd frontend && npm ci`n")) $false 'directory change' 'word rule: npm ci runs install hooks, so cd then npm ci is refused too'
     $aliasJob = (New-GateYaml 'exit 1') -replace "  build:`n", "  build:`n    &template`n" -replace '  ci-gate:', "  twin:`n    *template`n  ci-gate:" -replace 'needs: \[build\]', 'needs: [build, twin]'
     Assert-Gate (Invoke-Gate $aliasJob) $false 'alias of another job' 'C1-F13: a job written as an alias on the line after its key reads as an empty job'
     $shFiles = @{ 'scripts/gate.sh' = 'exit 0' }
     $pyFilesEarly = @{ 'scripts/gate.py' = 'x = 1' }
     Assert-Gate (New-GateFilesRepo $shFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo starting`n          scripts/gate.sh`n")) $false 'not tiered HIGH' 'C1-F14: an echo on the line above does not print the script below it'
-    Assert-Gate (New-GateFilesRepo $shFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo see scripts/gate.sh`n")) $true '' 'C1-F14: a script named on the echo line itself is still only printed'
-    Assert-Gate (New-GateFilesRepo $shFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo `"see`n          scripts/gate.sh`"`n")) $true '' 'C1-F14: a script inside a multi-line echo string is still only printed'
+    Assert-Gate (New-GateFilesRepo $shFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo see scripts/gate.sh`n")) $false 'not tiered HIGH' 'word rule: a script named on an echo line is required HIGH'
+    Assert-Gate (New-GateFilesRepo $shFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo `"see`n          scripts/gate.sh`"`n")) $false 'not tiered HIGH' 'word rule: a script inside a multi-line echo string is required HIGH'
     # A backslash continues a line under bash only. With no shell key the body may run under
     # pwsh, where the second line RUNS the script, so the reference is required HIGH
     # (code review; `main` required it too).
@@ -4608,7 +4619,7 @@ jobs:
     Assert-Gate (New-GateFilesRepo $pyFilesEarly $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: |`n          Write-Host `"`n          # `"`n          python3 scripts/gate.py`n")) $false 'not tiered HIGH' 'a # line that closes a multi-line string must not be dropped from a feeder body'
     Assert-Gate (New-GateFilesRepo $pyFilesEarly $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo `"x`n          # y`"; python3 scripts/gate.py`n")) $false 'not tiered HIGH' 'a # inside a string opened on the line above is not a comment'
     $policyWorkflowsAndScripts = '{"version":1,"high":[".github/workflows/**","scripts/**"],"low":[]}'
-    Assert-Gate (New-GateFilesRepo @{ 'scripts/gate.py' = 'x = 1' } $policyWorkflowsAndScripts (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo x`n          `"cd sub; python3 scripts/gate.py`"`n")) $false 'directory change' 'C1-F14: changes_directory must not read the echo above as printing the string below'
+    Assert-Gate (New-GateFilesRepo @{ 'scripts/gate.py' = 'x = 1' } $policyWorkflowsAndScripts (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo x`n          `"cd sub; python3 scripts/gate.py`"`n")) $true '' 'command position: a line opening with a quoted cd is not a directory change (stated limit)'
     Assert-Gate (Invoke-Gate ((New-GateYaml 'exit 1') -replace "        run: \|`n          exit 1", "        run: exit 1`n        run: exit 0")) $false 'duplicate key' 'C1-F15: a repeated run key must be refused, whichever one the runner honours'
     $reuseCaller = "jobs:`n  build:`n    uses: ./.github/workflows/reuse.yml`n  ci-gate:`n    if: always()`n    needs: [build]`n    runs-on: ubuntu-latest`n    steps:`n      - if: $gateIf`n        run: exit 1`n"
     $phantomCallee = "on: workflow_call`njobs:`n  inner:`n    runs-on: ubuntu-latest`n    env:`n      NOTE: |`n        run: python3 scripts/gate.py`n    steps:`n      - run: echo hi`n"
@@ -4625,14 +4636,13 @@ jobs:
     # Same review, Lows. "false red" cases exited 1 on the pre-fix asset; the others exited 0.
     Assert-Gate (New-GateFilesRepo $pyFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: |`n          Write-Host `".\out\`"; python3 scripts/gate.py`n")) $false 'not tiered HIGH' 'C1-F8: a pwsh string ending in a backslash closes there; the script after it runs'
     Assert-Gate (New-GateFilesRepo @{ 'build/keep.txt' = 'x' } $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: python -m build`n")) $true '' 'C1-F10 (false red): a build/ directory with no Python is not the module python -m build runs'
-    Assert-Gate (New-GateFilesRepo @{ 'tools/x.py' = 'x = 1' } $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: python -m tools.missing`n")) $false 'repository content' 'C1-F10: an unresolved module under a directory that holds Python is still refused'
     Assert-Gate (Invoke-Gate (New-GateYaml ('echo "Upstream results: ${{ join(needs.*.result, '', '') }}"' + "`nexit 1") -shell bash)) $false 'pass the value through `env:`' 'C1-F12: the refusal of a GitHub expression in a gate body must say where to put it'
     $npmRootFiles = @{ 'package.json' = '{"scripts":{"gate":"node scripts/check.mjs","test":"echo ok"}}'; 'scripts/check.mjs' = '// probe'; 'scripts/report.py' = 'x = 1' }
-    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          ls # npm run gate`n")) $true '' 'C1-F19 (false red): npm run inside a trailing comment runs nothing'
-    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          npm test # was scripts/report.py`n")) $true '' 'C1-CX4 (false red): a script named in a trailing comment is not run'
+    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          ls # npm run gate`n")) $false 'scripts/check\.mjs' 'word rule: npm run inside a trailing comment is still followed'
+    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          npm test # was scripts/report.py`n")) $false 'scripts/report\.py' 'word rule: a script named in a trailing comment is required HIGH'
     # A quote inside a real comment opens nothing; `main` required this script HIGH and so must this.
     Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          # `"`n          echo `"#`"; npm run gate`n")) $false 'not tiered HIGH' 'a quote in a comment line must not hide the npm script run on the next line'
-    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          # python3 scripts/report.py`n          echo hi`n")) $true '' 'a whole-line comment naming a script still runs nothing'
+    Assert-Gate (New-GateFilesRepo $npmRootFiles $policyWorkflows (New-GateYaml 'exit 1' -buildBody "      - run: |`n          # python3 scripts/report.py`n          echo hi`n")) $false 'scripts/report\.py' 'word rule: a whole-line comment naming a script is required HIGH'
     # Code review: a command substitution runs wherever it sits and its quotes nest,
     # so with one in the text nothing is read as a comment. Both exited 0 on the asset as merged in #479,
     # and both were required HIGH by the asset before it.
@@ -4652,6 +4662,33 @@ jobs:
     $escapedAction = "runs:`n  using: composite`n  steps:`n    - shell: bash`n      run: $escapedRun`n"
     Assert-Gate (New-GateFilesRepo @{ '.github/actions/a/action.yml' = $escapedAction; 'scripts/gate.py' = 'x = 1' } '{"version":1,"high":[".github/workflows/**",".github/actions/**"],"low":[]}' (New-GateYaml 'exit 1' -buildBody "      - uses: ./.github/actions/a`n")) $false 'not tiered HIGH' 'C1-CX1: the same value in a composite action'
 
+    # ── Word rule: every word in a gated run body, or in a package script it runs, that names a
+    # repository script must be HIGH. No interpreter tables; over-approximation is accepted.
+    $wordPolicy = '{"version":1,"high":[".github/workflows/**"],"low":[]}'
+    Assert-Gate (New-GateFilesRepo @{ 'tests/x.ps1' = '# probe' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - shell: pwsh`n        run: ./tests/x.ps1`n")) $false 'tests/x\.ps1' 'word rule: a script named outside the script roots is required HIGH'
+    Assert-Gate (New-GateFilesRepo @{ 'vitest.config.ts' = 'export {}' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: vitest run --config vitest.config.ts`n")) $true '' 'word rule: a .ts file outside the script roots is not a script'
+    Assert-Gate (New-GateFilesRepo @{ 'scripts/check.ts' = 'export {}' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: tsx scripts/check.ts`n")) $false 'scripts/check\.ts' 'word rule: a .ts file under a script root is a script'
+    Assert-Gate (New-GateFilesRepo @{ 'ci/gate.sh' = 'exit 0' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: `$PWD/ci/gate.sh`n")) $false 'ci/gate\.sh' 'word rule: a prefixed spelling resolves through its path suffix'
+    Assert-Gate (New-GateFilesRepo @{ 'ci/a.sh' = 'exit 0'; 'ci/b.sh' = 'exit 0' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: for f in ci/*.sh; do bash `"`$f`"; done`n")) $false 'ci/b\.sh' 'word rule: a glob word requires every script it matches'
+    Assert-Gate (New-GateFilesRepo @{ 'scripts/checks/a.mjs' = '// probe'; 'scripts/checks/notes.md' = 'x' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: node --test scripts/checks`n")) $false 'scripts/checks/a\.mjs' 'word rule: a directory under a script root requires every script beneath it'
+    $discoverResult = New-GateFilesRepo @{ 'ci/check_a.py' = 'x = 1'; 'ci/helper.py' = 'x = 1' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m unittest discover -s ci -p 'check_*.py'`n")
+    Assert-Gate $discoverResult $false 'ci/check_a\.py' 'word rule: unittest discover -s requires the files its -p pattern matches'
+    if ($discoverResult.Output -match 'ci/helper\.py') { throw "word rule: a discover -p pattern must exclude files it does not match:`n$($discoverResult.Output)" }
+    Assert-Gate (New-GateFilesRepo @{ 'tests/unit/test_a.py' = 'x = 1'; 'tests/conftest.py' = 'x = 1'; 'conftest.py' = 'x = 1' } '{"version":1,"high":[".github/workflows/**","tests/unit/**","conftest.py"],"low":[]}' (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m pytest tests/unit`n")) $false 'tests/conftest\.py' 'word rule: pytest requires the conftest.py files on the target''s ancestor chain'
+    Assert-Gate (New-GateFilesRepo @{ 'tools/__init__.py' = ''; 'tools/lint/__init__.py' = ''; 'tools/lint/check.py' = 'x = 1' } '{"version":1,"high":[".github/workflows/**","tools/lint/**"],"low":[]}' (New-GateYaml 'exit 1' -buildBody "      - run: python3 -m tools.lint.check`n")) $false 'tools/__init__\.py' 'word rule: -m requires each __init__.py on the module''s package path'
+    $hookFiles = @{ 'package.json' = '{"scripts":{"prelint":"node scripts/pre.mjs","lint":"npm run inner","postlint":"node scripts/post.mjs","inner":"node scripts/inner.mjs","unrelated":"node scripts/other.mjs"}}'; 'scripts/pre.mjs' = '//'; 'scripts/post.mjs' = '//'; 'scripts/inner.mjs' = '//'; 'scripts/other.mjs' = '//' }
+    $hookResult = New-GateFilesRepo $hookFiles $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint`n")
+    foreach ($needle in 'scripts/pre\.mjs', 'scripts/post\.mjs', 'scripts/inner\.mjs') { Assert-Gate $hookResult $false $needle "word rule: npm run follows its pre/post hooks and nested npm run ($needle)" }
+    if ($hookResult.Output -match 'scripts/other\.mjs') { throw "word rule: npm run must not follow a script it does not run:`n$($hookResult.Output)" }
+    Assert-Gate (New-GateFilesRepo @{ 'package.json' = '{"scripts":{"prepare":"node scripts/prepare.mjs"}}'; 'scripts/prepare.mjs' = '//' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: npm ci`n")) $false 'scripts/prepare\.mjs' 'word rule: npm ci follows the prepare hook'
+    Assert-Gate (New-GateFilesRepo @{ 'package.json' = '{"scripts":{"lint":"node scripts/lint.mjs","other":"node scripts/other.mjs"}}'; 'scripts/lint.mjs' = '//'; 'scripts/other.mjs' = '//' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: pnpm lint`n")) $false 'scripts/other\.mjs' 'word rule: an unrecognised package-manager spelling puts every script in play'
+    Assert-Gate (New-GateFilesRepo @{ 'package.json' = '{"scripts":{"lint":"echo root"}}'; 'web/package.json' = '{"scripts":{"lint":"node scripts/web.mjs"}}'; 'web/scripts/web.mjs' = '//' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: npm run lint --workspaces`n")) $false 'web/scripts/web\.mjs' 'word rule: a workspace flag puts every package.json in play'
+    Assert-Gate (New-GateFilesRepo @{ 'ci/check.py' = 'x = 1' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo run ci/check.py later # ci/check.py`n")) $false 'ci/check\.py' 'word rule: a script named in an echo or comment is required HIGH'
+    Assert-Gate (New-GateFilesRepo @{ 'ci/other.py' = 'x = 1' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: python3 ci/missing.py`n")) $true '' 'word rule: a name that resolves to no file asserts nothing'
+    Assert-Gate (New-GateFilesRepo @{ 'ci/gate.sh' = 'exit 0' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: |`n          pushd ci`n          bash gate.sh`n")) $false 'directory change' 'word rule: a directory change before a script-shaped word is refused'
+    Assert-Gate (New-GateFilesRepo @{ 'package.json' = '{"scripts":{"ci":"echo ok"}}' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: |`n          echo `"running CD gate`"`n          npm ci`n")) $true '' 'command position: a CD word inside a message beside npm ci is not a directory change'
+    Assert-Gate (New-GateFilesRepo @{ 'package.json' = '{"scripts":{"gate":"cd sub && node scripts/x.mjs"}}'; 'sub/scripts/x.mjs' = '//' } $wordPolicy (New-GateYaml 'exit 1' -buildBody "      - run: npm run gate`n")) $false 'directory change.*use working-directory' 'word rule: a directory change inside a followed package script is refused'
+
     # consumer c02-R9: a stale third positional argument is a usage error, not a silent pass.
     $extraArgWorkflow = Join-Path $root 'extra-arg.yml'
     (New-GateYaml 'exit 1') | Set-Content -LiteralPath $extraArgWorkflow -Encoding utf8
@@ -4670,6 +4707,7 @@ finally {
     $env:GATE_CONDITIONAL_EXEMPT = $oldConditionalExempt
     $env:GATE_FILE_EXEMPT = $oldFileExempt
     $env:GATE_STEP_EXEMPT = $oldStepExempt
+    $env:GATE_STEP_IF_EXEMPT = $oldStepIfExempt
     if ($root.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

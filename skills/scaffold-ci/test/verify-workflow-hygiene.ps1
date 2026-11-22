@@ -323,7 +323,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 "@ }
-    } finally { $env:TRUSTED_THIRD_PARTY_ACTIONS = $oldTrusted }
+    # Back to the suite's own empty allowlist, not the caller's: later fixtures pin raven-actions/actionlint.
+    } finally { $env:TRUSTED_THIRD_PARTY_ACTIONS = '' }
     if ($upperDigest.Code -ne 0) { throw "AR-6: an image pinned @SHA256:<hex> must be treated as an image, not an action:`n$($upperDigest.Output)" }
 
     # --- Duplicate `on:` / YAML-1.1 `True:` key. Which one GitHub honours depends on the
