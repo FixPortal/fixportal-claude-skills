@@ -397,10 +397,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - if: github.event_name == 'pull_request'
+      - id: scan-pr-range
+        if: github.event_name == 'pull_request'
         run: |
           "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .
-      - if: github.event_name == 'push'
+      - id: scan-push-range
+        if: github.event_name == 'push'
         run: |
           "$RUNNER_TEMP/gitleaks" git -v --redact --log-opts="--diff-merges=remerge ${range}" .
       - run: |
@@ -433,6 +435,7 @@ jobs:
       - run: python3 .github/scripts/assert_gate_coverage.py .github/workflows/ci.yml
         env:
           GATE_EXEMPT: publish
+          GATE_STEP_IF_EXEMPT: secrets/scan-pr-range secrets/scan-push-range
   ci-gate:
     name: CI Gate
     if: always()
@@ -960,6 +963,27 @@ jobs:
     [IO.File]::WriteAllText($workflowPath, $commented.Replace("`r`n", "`n"))
     try { & $contractCheck @contractArguments 2>$null | Out-Null }
     catch { throw "inline comments on name:/timeout-minutes: failed the audit: $_" }
+
+    # The forwarded gate exemptions are YAML values too: a trailing comment is not an entry
+    # (code review).
+    $exemptLine = '          GATE_STEP_IF_EXEMPT: secrets/scan-pr-range secrets/scan-push-range'
+    $commentedExempt = $workflow.Replace($exemptLine, "$exemptLine # event-dependent ranges")
+    if ($commentedExempt -eq $workflow) { throw 'the exemption-comment fixture mutated nothing; the case would be vacuous' }
+    [IO.File]::WriteAllText($workflowPath, $commentedExempt.Replace("`r`n", "`n"))
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { throw "a trailing comment on GATE_STEP_IF_EXEMPT failed the audit: $_" }
+
+    # ...and they are read from the step that runs the checker: the same entry on another step of
+    # the gate-coverage job never reaches the checker in CI, so the audit must refuse it too.
+    $otherStepExempt = $workflow.Replace("`n$exemptLine", '').Replace(
+        '      - run: python3 .github/scripts/assert_gate_coverage.py .github/workflows/ci.yml',
+        "      - run: echo unrelated`n        env:`n$exemptLine`n      - run: python3 .github/scripts/assert_gate_coverage.py .github/workflows/ci.yml")
+    if ($otherStepExempt -eq $workflow) { throw 'the other-step exemption fixture mutated nothing; the case would be vacuous' }
+    [IO.File]::WriteAllText($workflowPath, $otherStepExempt.Replace("`r`n", "`n"))
+    $otherStepFailed = $false
+    try { & $contractCheck @contractArguments 2>$null | Out-Null }
+    catch { $otherStepFailed = $true }
+    if (-not $otherStepFailed) { throw 'An exemption declared on a step that does not run the gate checker passed the audit.' }
 
     [IO.File]::WriteAllText($workflowPath, $workflow.Replace("`r`n", "`n"))
     Add-Content -LiteralPath (Join-Path $repo '.github/scripts/assert_workflow_hygiene.py') -Value '# drift'

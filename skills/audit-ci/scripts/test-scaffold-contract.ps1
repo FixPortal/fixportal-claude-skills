@@ -129,6 +129,15 @@ function Get-Steps([string[]] $job) {
 # (CodeRabbit, PR #135.)
 $BlockScalarHeader = '[>|](?:[0-9][+-]?|[+-][0-9]?)?(?:\s+#.*)?'
 
+function ConvertFrom-YamlInlineValue([string] $raw) {
+    # A single-line YAML scalar as its value: quotes removed (`''` unescaped), and an unquoted
+    # value's trailing ` # comment` dropped -- the comment is not part of the value.
+    $value = $raw.Trim()
+    if ($value -match "^'((?:[^']|'')*)'") { return $Matches[1].Replace("''", "'") }
+    if ($value -match '^"((?:[^"\\]|\\.)*)"') { return $Matches[1] }
+    return ($value -replace '(?:^|\s+)#.*$', '').Trim()
+}
+
 function Get-RunSteps([string[]] $job) {
     @(Get-Steps $job | Where-Object { $_ -match '(?m)^\s*(?:-\s*)?run:\s*' })
 }
@@ -327,12 +336,24 @@ $gateCoverageCommands = @(Get-RunSteps $jobs['gate-coverage'] | ForEach-Object {
 # to the prose checklist. Where the reference grants an adaptation, the checker must take
 # that adaptation as INPUT rather than re-deriving it from the canonical asset.
 $gateExemptions = @{}
-foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
-    $match = [regex]::Match($gateCoverage, "(?m)^\s+$name\s*:\s*(?<value>.*?)\s*$")
-    if ($match.Success) { $gateExemptions[$name] = $match.Groups['value'].Value.Trim("'", '"') }
+# The step-level variables too: the house secrets job's event-split range scans need
+# GATE_STEP_IF_EXEMPT, so reading only the job-level two failed every conforming repo.
+$gateExemptionNames = 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT', 'GATE_STEP_EXEMPT', 'GATE_STEP_IF_EXEMPT'
+# Read from what the checker's process actually receives: the step that runs it, then the
+# job-level env above `steps:`. Matching anywhere in the job forwarded another step's value
+# the checker never sees in CI (code review).
+$gateJob = @($jobs['gate-coverage'])
+$checkerSteps = @(Get-Steps $gateJob | Where-Object { @(Get-StepCommands $_ | Where-Object { $_ -match '^python3?\s+\.github/scripts/assert_gate_coverage\.py\b' }).Count })
+$stepsAt = @(for ($i = 0; $i -lt $gateJob.Count; $i++) { if ($gateJob[$i] -match '^    steps:\s*(?:#.*)?$') { $i } }) | Select-Object -First 1
+$jobHead = if ($null -ne $stepsAt) { @($gateJob[0..([Math]::Max(0, $stepsAt - 1))]) -join "`n" } else { '' }
+foreach ($name in $gateExemptionNames) {
+    foreach ($source in @($checkerSteps | Select-Object -First 1) + $jobHead) {
+        $match = [regex]::Match($source, "(?m)^\s+$name\s*:\s*(?<value>.*?)\s*$")
+        if ($match.Success) { $gateExemptions[$name] = ConvertFrom-YamlInlineValue $match.Groups['value'].Value; break }
+    }
 }
 $previousExemptions = @{}
-foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+foreach ($name in $gateExemptionNames) {
     $previousExemptions[$name] = [Environment]::GetEnvironmentVariable($name)
     [Environment]::SetEnvironmentVariable($name, $gateExemptions[$name])
 }
@@ -350,7 +371,7 @@ try {
 }
 catch { $failures.Add($_.Exception.Message) }
 finally {
-    foreach ($name in 'GATE_EXEMPT', 'GATE_CONDITIONAL_EXEMPT') {
+    foreach ($name in $gateExemptionNames) {
         [Environment]::SetEnvironmentVariable($name, $previousExemptions[$name])
     }
 }
