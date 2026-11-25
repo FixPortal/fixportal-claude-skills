@@ -2696,7 +2696,8 @@ def working_directories(node, exclude=(), rewrite=None):
     only `defaults.run.working-directory` reaches a step, so only it is read: scanning
     every other subtree read `on.workflow_call.inputs.working-directory` (an input
     declaration), `strategy.matrix` keys and `with:` inputs as directories, and the input
-    mapping's not-a-string sentinel reddened a valid reusable workflow (code review). `node` itself is scanned whole when `exclude` is empty. `rewrite` is applied
+    mapping's not-a-string sentinel reddened a valid reusable workflow (code review).
+    `node` itself is scanned whole when `exclude` is empty. `rewrite` is applied
     to each value before classification (a composite action rewrites its action-path
     expression to its own directory).
 
@@ -3144,7 +3145,7 @@ def resolve_committed_paths(root, relative, allow_outside_repository=False):
     #
     # Resolve through the filesystem as well as by committed spelling, and keep BOTH
     # spellings. A symlink target is the script whose contents can be edited; tiering only
-    # the link would leave that target outsconsumer review. The error direction is:
+    # the link would leave that target outside review. The error direction is:
     # more scripts required HIGH, never fewer. A disagreement between the lexical and the
     # real answer can only ADD a requirement. A target outside the checkout is refused.
     #
@@ -3220,11 +3221,37 @@ def pytest_targets(arguments):
     return targets
 
 
+def strip_shell_comment(line):
+    """The line without its shell comment: a `#` starts one only at the start of a word, outside quotes
+    (`--user-agent=ci#build` keeps its `#`). Not `strip_comment`, which is the YAML job/needs grammar's own cut."""
+    quote, index, word_start = None, 0, True
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == "\\" and quote == '"':
+                index += 1
+            elif char == quote:
+                quote = None
+        elif char == "#" and word_start:
+            return line[:index]
+        elif char == "\\":
+            index += 1  # an escaped character, even a space, belongs to the current word
+            word_start = False
+        elif char in "'\"":
+            quote = char
+            word_start = False
+        else:
+            word_start = char.isspace() or char in ";&|()"
+        index += 1
+    return line
+
+
 def shell_commands(line):
     """A line's commands as token lists, split at unquoted `; | & && || ( )` as the shell splits them.
     A redirection and its target (`> out.txt`, `2>&1`) are dropped. None when the quoting is unbalanced."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(strip_shell_comment(line), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""  # shlex would end a token at an in-word `#`; strip_shell_comment applies the shell's rule
     try:
         tokens = list(lexer)
     except ValueError:
@@ -3387,16 +3414,53 @@ def npm_flag_value(args, names):
 PYTHON_EXECUTABLE = re.compile(r"(?:.*python[0-9.]*(?:td?|d|w)?|(?:.*[/\\])?(?:py|pypy[0-9.]*))(?:\.exe)?", re.IGNORECASE)
 
 # Commands that print or search their arguments and run none of them (`echo python3 -m unittest`).
-NON_LAUNCHING_COMMANDS = {"echo", "printf", "cat", "grep", "egrep", "fgrep", "rg", "git", "test", "which", "type", "ls"}
+NON_LAUNCHING_COMMANDS = {"echo", "printf", "cat", "grep", "egrep", "fgrep", "rg", "test", "which", "type", "ls"}
+# `git <subcommand>` that prints or searches. Any other subcommand may run its arguments (`git bisect run <cmd>`).
+NON_LAUNCHING_GIT_SUBCOMMANDS = {"log", "grep", "show", "diff", "blame", "describe", "status", "shortlog"}
+# `git` and `env` options that take a separate value.
+GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+ENV_VALUE_OPTIONS = {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}
+
+
+def command_word_index(command):
+    """Where the command word is: after assignments and known wrappers (by basename, so `/usr/bin/env` counts) and
+    after the options of `env`, which would otherwise be read as the command (`env -i echo ...`)."""
+    index = 0
+    while index < len(command):
+        word = command[index]
+        if re.match(r"[A-Za-z_]\w*=", word):
+            index += 1
+        elif posixpath.basename(word) in COMMAND_WRAPPERS:
+            is_env = posixpath.basename(word) == "env"
+            index += 1
+            while is_env and index < len(command) and command[index].startswith("-"):
+                index += 2 if command[index] in ENV_VALUE_OPTIONS else 1
+        else:
+            return index
+    return 0
+
+
+def prints_instead_of_launching(command):
+    """True when the command word only prints or searches its arguments (`echo python3 ...`, `git log --grep python3`)."""
+    index = command_word_index(command)
+    # `env -S '<command line>'` splits its operand into the command and its arguments, so what follows is unknown.
+    if any(word.startswith(("-S", "--split-string")) for word in command[:index]):
+        return False
+    name = posixpath.basename(command[index])
+    if name != "git":
+        return name in NON_LAUNCHING_COMMANDS
+    index += 1
+    while index < len(command) and command[index].startswith("-"):
+        index += 2 if command[index] in GIT_VALUE_OPTIONS else 1
+    return index < len(command) and command[index] in NON_LAUNCHING_GIT_SUBCOMMANDS
 
 
 def has_python_interpreter(command, end):
     """True when a word before `end` is a Python interpreter, so `-m` there names a module. Any such word counts,
     so a wrapper this checker does not know (`poetry run python -m x`, `xvfb-run python -m x`) still launches it;
     only a command that merely prints or searches its arguments does not, whether or not an assignment or a known
-    wrapper (`FOO=1 echo ...`, `env echo ...`) comes first."""
-    head = next((word for word in command if not re.match(r"[A-Za-z_]\w*=", word) and word not in COMMAND_WRAPPERS), command[0])
-    return posixpath.basename(head) not in NON_LAUNCHING_COMMANDS and any(PYTHON_EXECUTABLE.fullmatch(earlier) for earlier in command[:end])
+    wrapper (`FOO=1 echo ...`, `env -i echo ...`) comes first."""
+    return not prints_instead_of_launching(command) and any(PYTHON_EXECUTABLE.fullmatch(earlier) for earlier in command[:end])
 
 
 # Modules `python -m <module>` runs that are tools, not a repository script (issue #506 A5).
@@ -3834,8 +3898,8 @@ def assert_gate_scripts(workflow_path, lines, jobs, needs, gate_job):
 # a script file non-interactively. Observed 2026-11-19 with bash 5.3 under the runner's
 # own flags (`ENV=file bash --noprofile --norc -eo pipefail body.sh`): the file is not
 # sourced, while the same command with BASH_ENV sources it. Refusing the name made an
-# ordinary `env: ENV: prod` a permanent false red (consumer review 20261119T121117Z,
-# C1-F9). Every accepted gate shell is bash or pwsh, so `sh` never runs a gate step.
+# ordinary `env: ENV: prod` a permanent false red (C1-F9). Every accepted gate shell is bash
+# or pwsh, so `sh` never runs a gate step.
 STARTUP_ENV_KEYS = ("BASH_ENV", "SHELLOPTS", "BASHOPTS")
 # The same routes spelled inside a GATE JOB run body -- a GITHUB_ENV write, or a write to
 # pwsh's `$PROFILE`, which the runner loads because its pwsh template omits -NoProfile.
